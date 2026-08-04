@@ -1,0 +1,163 @@
+:root {
+  color-scheme: light dark;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --accent: #ffb020;
+  --danger: #d64545;
+  --border: color-mix(in srgb, currentColor 20%, transparent);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+.app {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+h1 {
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+h2 {
+  font-size: 0.95rem;
+  margin: 0 0 8px;
+}
+
+.hint {
+  font-size: 0.85rem;
+  opacity: 0.75;
+  margin: 0;
+}
+
+.notice {
+  font-size: 0.85rem;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+textarea {
+  width: 100%;
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  resize: vertical;
+}
+
+.qa-factors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.qa-factors label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+.btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #1a1a1a;
+}
+
+.btn-secondary {
+  background: transparent;
+  border-color: var(--border);
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: white;
+}
+
+.error-banner {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 20%, transparent);
+  font-size: 0.85rem;
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.progress-details,
+.issue-details {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  font-size: 0.85rem;
+}
+
+.progress-details dt,
+.issue-details dt {
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.progress-details dd,
+.issue-details dd {
+  margin: 0;
+}
+
+.issue-actions,
+.issue-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.history-compare {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.history-compare pre {
+  white-space: pre-wrap;
+  font-size: 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}

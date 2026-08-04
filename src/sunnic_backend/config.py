@@ -1,4 +1,7 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Annotated
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -7,6 +10,14 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     sunnic_haiku_model: str = "claude-haiku-4-5"
     sunnic_sonnet_model: str = "claude-sonnet-5"
+    gemini_api_keys: Annotated[list[str], NoDecode] = []
+
+    @field_validator("gemini_api_keys", mode="before")
+    @classmethod
+    def _split_gemini_keys(cls, value: str | list[str]) -> list[str]:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
 
 
 settings = Settings()

@@ -3,5 +3,5 @@ export interface ExtractConfluenceContentRequest {
 }
 
 export type ExtractConfluenceContentResponse =
-  | { ok: true; markdown: string }
+  | { ok: true; markdown: string; title: string }
   | { ok: false; error: 'NOT_A_CONFLUENCE_PAGE' | 'FETCH_FAILED'; detail?: string }

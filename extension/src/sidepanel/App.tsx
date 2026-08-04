@@ -2,7 +2,7 @@ import { ErrorBanner } from '../components/common/ErrorBanner'
 import { HistoryExportScreen } from '../components/screens/HistoryExportScreen'
 import { IssueEditScreen } from '../components/screens/IssueEditScreen'
 import { IssueListScreen } from '../components/screens/IssueListScreen'
-import { PasteScreen } from '../components/screens/PasteScreen'
+import { MainScreen } from '../components/screens/MainScreen'
 import { ProgressScreen } from '../components/screens/ProgressScreen'
 import { useAppState } from '../state/hooks'
 
@@ -11,8 +11,8 @@ export function App() {
 
   return (
     <main className="app">
-      {error && screen !== 'paste' && <ErrorBanner message={error} />}
-      {screen === 'paste' && <PasteScreen />}
+      {error && screen !== 'main' && <ErrorBanner message={error} />}
+      {screen === 'main' && <MainScreen />}
       {screen === 'progress' && <ProgressScreen />}
       {screen === 'issues' && <IssueListScreen />}
       {screen === 'edit' && <IssueEditScreen />}

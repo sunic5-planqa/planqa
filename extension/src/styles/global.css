@@ -55,20 +55,70 @@ textarea {
   resize: vertical;
 }
 
-.qa-factors {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
+fieldset {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px 12px;
+  margin: 0;
 }
 
-.qa-factors label {
+fieldset legend {
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.confluence-status {
   display: flex;
   align-items: center;
-  gap: 4px;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.file-picker-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
   font-size: 0.85rem;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.file-picker-button input[type='file'] {
+  display: none;
+}
+
+.reference-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.reference-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+
+.reference-file-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.remove-file-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--danger);
+  font-size: 0.85rem;
+  padding: 0 4px;
 }
 
 .btn {

@@ -6,11 +6,11 @@ import { useAppState } from '../../state/hooks'
 import type { IssueEdit } from '../../state/types'
 import { Button } from '../common/Button'
 
-// 백엔드 export(GET /documents/{id}/export)가 준비될 때까지, 적용/수정된 이슈를 rawText에
+// 백엔드 export(GET /documents/{id}/export)가 준비될 때까지, 적용/수정된 이슈를 원본 텍스트에
 // 문자열 치환으로 반영한 로컬 미리보기. Issue 응답에 오프셋(start/end)이 없어 offset splicing
 // 대신 input_text 기반 치환을 쓴다 — 정밀하지 않지만 데모/검토 목적으로는 충분.
-function buildWorkingTextPreview(rawText: string, issues: IssueResponse[], issueEdits: Record<string, IssueEdit>) {
-  let workingText = rawText
+function buildWorkingTextPreview(sourceText: string, issues: IssueResponse[], issueEdits: Record<string, IssueEdit>) {
+  let workingText = sourceText
   for (const issue of issues) {
     const edit = issueEdits[issue.id]
     if (!edit || edit.action === 'skip') continue
@@ -21,12 +21,13 @@ function buildWorkingTextPreview(rawText: string, issues: IssueResponse[], issue
 }
 
 export function HistoryExportScreen() {
-  const { rawText, issues, issueEdits, documentId } = useAppState()
+  const { confluenceMarkdown, issues, issueEdits, documentId } = useAppState()
+  const sourceText = confluenceMarkdown ?? ''
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'preview'>('idle')
 
   const workingTextPreview = useMemo(
-    () => buildWorkingTextPreview(rawText, issues, issueEdits),
-    [rawText, issues, issueEdits],
+    () => buildWorkingTextPreview(sourceText, issues, issueEdits),
+    [sourceText, issues, issueEdits],
   )
 
   const handleExport = async () => {
@@ -54,7 +55,7 @@ export function HistoryExportScreen() {
       <div className="history-compare">
         <div>
           <h2>원본</h2>
-          <pre>{rawText}</pre>
+          <pre>{sourceText}</pre>
         </div>
         <div>
           <h2>수정본</h2>

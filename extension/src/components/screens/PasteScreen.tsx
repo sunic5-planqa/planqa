@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { api } from '../../api/client'
 import { NotImplementedError } from '../../api/errors'
+import type { ExtractConfluenceContentRequest, ExtractConfluenceContentResponse } from '../../content/messages'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { Button } from '../common/Button'
 import { ErrorBanner } from '../common/ErrorBanner'
@@ -11,6 +12,37 @@ export function PasteScreen() {
   const { rawText, error } = useAppState()
   const dispatch = useAppDispatch()
   const [submitting, setSubmitting] = useState(false)
+  const [importing, setImporting] = useState(false)
+
+  const handleImportFromConfluence = async () => {
+    setImporting(true)
+    dispatch({ type: 'SET_ERROR', error: null })
+
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (!tab.id) {
+        dispatch({ type: 'SET_ERROR', error: '현재 탭을 찾을 수 없습니다.' })
+        return
+      }
+
+      const response = await chrome.tabs.sendMessage<ExtractConfluenceContentRequest, ExtractConfluenceContentResponse>(
+        tab.id,
+        { type: 'EXTRACT_CONFLUENCE_CONTENT' },
+      )
+
+      if (response.ok) {
+        dispatch({ type: 'SET_RAW_TEXT', rawText: response.markdown })
+      } else if (response.error === 'NOT_A_CONFLUENCE_PAGE') {
+        dispatch({ type: 'SET_ERROR', error: '컨플루언스 페이지가 아닙니다.' })
+      } else {
+        dispatch({ type: 'SET_ERROR', error: '컨플루언스 페이지에서 불러오지 못했습니다.' })
+      }
+    } catch {
+      dispatch({ type: 'SET_ERROR', error: '컨플루언스 페이지에서 불러오지 못했습니다.' })
+    } finally {
+      setImporting(false)
+    }
+  }
 
   const handleStart = async () => {
     if (!rawText.trim()) return
@@ -41,6 +73,10 @@ export function PasteScreen() {
     <div className="screen paste-screen">
       <h1>써니C — 기획서 QA</h1>
       <p className="hint">기획서 텍스트를 붙여넣어주세요. #, ## 로 챕터/문단 구조를 표시할 수 있습니다.</p>
+
+      <Button variant="secondary" onClick={() => void handleImportFromConfluence()} disabled={importing}>
+        {importing ? '불러오는 중...' : '컨플루언스에서 가져오기'}
+      </Button>
 
       <textarea
         value={rawText}

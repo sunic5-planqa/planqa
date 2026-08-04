@@ -33,6 +33,12 @@ export default defineManifest({
     service_worker: 'src/background/service-worker.ts',
     type: 'module',
   },
+  content_scripts: [
+    {
+      matches: ['*://*.atlassian.net/*'],
+      js: ['src/content/confluence-extractor.ts'],
+    },
+  ],
   permissions: ['sidePanel', 'storage'],
   host_permissions: ['*://*.atlassian.net/*'],
   ...(devKey ? { key: devKey } : {}),

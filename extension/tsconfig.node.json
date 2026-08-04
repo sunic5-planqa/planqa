@@ -15,5 +15,5 @@
     "strict": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "manifest.config.ts", "package.json"]
+  "include": ["vite.config.ts", "manifest.config.ts", "vitest.config.ts", "package.json"]
 }

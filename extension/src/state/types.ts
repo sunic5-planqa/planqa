@@ -1,15 +1,30 @@
 import type { IssueAction, IssueResponse, ParsedStructure, QAJobStatusResponse } from '../api/types'
 
-export type Screen = 'paste' | 'progress' | 'issues' | 'edit' | 'history'
+export type Screen = 'main' | 'progress' | 'issues' | 'edit' | 'history'
+
+export type ConfluenceStatus = 'idle' | 'detecting' | 'detected' | 'not_confluence' | 'error'
 
 export interface IssueEdit {
   action: IssueAction
   editedText?: string
 }
 
+export interface ReferenceFile {
+  id: string
+  name: string
+  content: string
+}
+
 export interface AppState {
   screen: Screen
-  rawText: string
+
+  confluenceStatus: ConfluenceStatus
+  confluencePageTitle: string | null
+  confluenceMarkdown: string | null
+
+  referenceFiles: ReferenceFile[]
+  selectedReferenceFileIds: string[]
+
   documentId: string | null
   parsedStructure: ParsedStructure | null
   jobId: string | null
@@ -22,8 +37,15 @@ export interface AppState {
 }
 
 export const initialAppState: AppState = {
-  screen: 'paste',
-  rawText: '',
+  screen: 'main',
+
+  confluenceStatus: 'idle',
+  confluencePageTitle: null,
+  confluenceMarkdown: null,
+
+  referenceFiles: [],
+  selectedReferenceFileIds: [],
+
   documentId: null,
   parsedStructure: null,
   jobId: null,

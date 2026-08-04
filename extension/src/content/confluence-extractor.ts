@@ -27,7 +27,7 @@ async function extractCurrentPage(): Promise<ExtractConfluenceContentResponse> {
     if (!res.ok) return { ok: false, error: 'FETCH_FAILED', detail: `${res.status}` }
 
     const data = (await res.json()) as ConfluenceContentResponse
-    return { ok: true, markdown: htmlToChapterMarkdown(data.title, data.body.storage.value) }
+    return { ok: true, markdown: htmlToChapterMarkdown(data.title, data.body.storage.value), title: data.title }
   } catch (err) {
     return { ok: false, error: 'FETCH_FAILED', detail: String(err) }
   }

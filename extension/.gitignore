@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.crxjs/
+dev-key.pem
+*.tsbuildinfo

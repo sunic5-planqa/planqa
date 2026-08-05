@@ -2,9 +2,14 @@ import { useMemo, useState } from 'react'
 import { api } from '../../api/client'
 import { NotImplementedError } from '../../api/errors'
 import type { IssueResponse } from '../../api/types'
-import { useAppState } from '../../state/hooks'
+import { useAppDispatch, useAppState } from '../../state/hooks'
 import type { IssueEdit } from '../../state/types'
 import { Button } from '../common/Button'
+
+function resolveReplacement(issue: IssueResponse, edit: IssueEdit | undefined): string | null {
+  if (!edit || edit.action === 'skip') return null
+  return edit.action === 'edit' ? (edit.editedText ?? issue.input_text) : issue.suggestion
+}
 
 // 백엔드 export(GET /documents/{id}/export)가 준비될 때까지, 적용/수정된 이슈를 원본 텍스트에
 // 문자열 치환으로 반영한 로컬 미리보기. Issue 응답에 오프셋(start/end)이 없어 offset splicing
@@ -12,9 +17,8 @@ import { Button } from '../common/Button'
 function buildWorkingTextPreview(sourceText: string, issues: IssueResponse[], issueEdits: Record<string, IssueEdit>) {
   let workingText = sourceText
   for (const issue of issues) {
-    const edit = issueEdits[issue.id]
-    if (!edit || edit.action === 'skip') continue
-    const replacement = edit.action === 'edit' ? (edit.editedText ?? issue.input_text) : issue.suggestion
+    const replacement = resolveReplacement(issue, issueEdits[issue.id])
+    if (replacement === null) continue
     workingText = workingText.replace(issue.input_text, replacement)
   }
   return workingText
@@ -22,13 +26,19 @@ function buildWorkingTextPreview(sourceText: string, issues: IssueResponse[], is
 
 export function HistoryExportScreen() {
   const { confluenceMarkdown, issues, issueEdits, documentId } = useAppState()
+  const dispatch = useAppDispatch()
   const sourceText = confluenceMarkdown ?? ''
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'preview'>('idle')
+  const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null)
 
   const workingTextPreview = useMemo(
     () => buildWorkingTextPreview(sourceText, issues, issueEdits),
     [sourceText, issues, issueEdits],
   )
+
+  const resolvedIssues = issues
+    .map((issue) => ({ issue, replacement: resolveReplacement(issue, issueEdits[issue.id]) }))
+    .filter((entry): entry is { issue: IssueResponse; replacement: string } => entry.replacement !== null)
 
   const handleExport = async () => {
     let exportText = workingTextPreview
@@ -50,20 +60,32 @@ export function HistoryExportScreen() {
 
   return (
     <div className="screen history-export-screen">
-      <h1>QA 검토 히스토리</h1>
+      <h1>QA 검토</h1>
 
-      <div className="history-compare">
-        <div>
-          <h2>원본</h2>
-          <pre>{sourceText}</pre>
+      {resolvedIssues.length === 0 ? (
+        <p className="hint">적용되거나 수정된 항목이 없습니다.</p>
+      ) : (
+        <div className="diff-list">
+          {resolvedIssues.map(({ issue, replacement }) => (
+            <button
+              key={issue.id}
+              type="button"
+              className={`diff-item ${selectedIssueId === issue.id ? 'selected' : ''}`}
+              onClick={() => setSelectedIssueId(issue.id)}
+            >
+              <span className="diff-original">{issue.input_text}</span>
+              <span className="diff-revised">{replacement}</span>
+            </button>
+          ))}
         </div>
-        <div>
-          <h2>수정본</h2>
-          <pre>{workingTextPreview}</pre>
-        </div>
+      )}
+
+      <div className="issue-actions">
+        <Button onClick={() => void handleExport()}>문서 복사</Button>
+        <Button variant="secondary" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'main' })}>
+          종료
+        </Button>
       </div>
-
-      <Button onClick={() => void handleExport()}>복사</Button>
 
       {copyStatus === 'copied' && <p className="notice">클립보드에 복사했습니다.</p>}
       {copyStatus === 'preview' && <p className="notice">export API 준비중 — 로컬 미리보기를 복사했습니다.</p>}

@@ -21,6 +21,7 @@ export function MainScreen() {
 
     setSubmitting(true)
     dispatch({ type: 'SET_ERROR', error: null })
+    dispatch({ type: 'NAVIGATE', screen: 'loading' })
 
     try {
       const doc = await api.createDocument(confluenceMarkdown)
@@ -36,6 +37,7 @@ export function MainScreen() {
       }
     } catch (docError) {
       dispatch({ type: 'SET_ERROR', error: docError instanceof Error ? docError.message : String(docError) })
+      dispatch({ type: 'NAVIGATE', screen: 'main' })
     } finally {
       setSubmitting(false)
     }

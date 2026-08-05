@@ -1,5 +1,12 @@
 import { htmlToChapterMarkdown } from './confluenceParser'
-import type { ExtractConfluenceContentRequest, ExtractConfluenceContentResponse } from './messages'
+import type {
+  ExtractConfluenceContentRequest,
+  ExtractConfluenceContentResponse,
+  FetchPageMarkdownRequest,
+  FetchPageMarkdownResponse,
+  ListSiblingPagesRequest,
+  ListSiblingPagesResponse,
+} from './messages'
 
 export function extractPageId(url: string): string | null {
   const pathMatch = url.match(/\/pages\/(\d+)/)
@@ -16,28 +23,101 @@ interface ConfluenceContentResponse {
   body: { storage: { value: string } }
 }
 
+interface ConfluenceAncestorsResponse {
+  ancestors: { id: string }[]
+}
+
+interface ConfluenceChildPagesResponse {
+  results: { id: string; title: string }[]
+}
+
+export function parseAncestorParentId(data: ConfluenceAncestorsResponse): string | null {
+  if (!data.ancestors.length) return null
+  return data.ancestors[data.ancestors.length - 1].id
+}
+
+export function parseSiblingPages(
+  data: ConfluenceChildPagesResponse,
+  excludePageId: string,
+): { id: string; title: string }[] {
+  return data.results.filter((page) => page.id !== excludePageId).map((page) => ({ id: page.id, title: page.title }))
+}
+
+async function fetchPageMarkdown(pageId: string): Promise<{ title: string; markdown: string } | null> {
+  const res = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=body.storage`, {
+    credentials: 'include',
+  })
+  if (!res.ok) return null
+
+  const data = (await res.json()) as ConfluenceContentResponse
+  return { title: data.title, markdown: htmlToChapterMarkdown(data.title, data.body.storage.value) }
+}
+
 async function extractCurrentPage(): Promise<ExtractConfluenceContentResponse> {
   const pageId = extractPageId(location.href)
   if (!pageId) return { ok: false, error: 'NOT_A_CONFLUENCE_PAGE' }
 
   try {
-    const res = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=body.storage`, {
-      credentials: 'include',
-    })
-    if (!res.ok) return { ok: false, error: 'FETCH_FAILED', detail: `${res.status}` }
-
-    const data = (await res.json()) as ConfluenceContentResponse
-    return { ok: true, markdown: htmlToChapterMarkdown(data.title, data.body.storage.value), title: data.title }
+    const page = await fetchPageMarkdown(pageId)
+    if (!page) return { ok: false, error: 'FETCH_FAILED' }
+    return { ok: true, markdown: page.markdown, title: page.title }
   } catch (err) {
     return { ok: false, error: 'FETCH_FAILED', detail: String(err) }
   }
 }
 
-chrome.runtime.onMessage.addListener(
-  (message: ExtractConfluenceContentRequest, _sender, sendResponse: (response: ExtractConfluenceContentResponse) => void) => {
-    if (message.type !== 'EXTRACT_CONFLUENCE_CONTENT') return
+async function listSiblingPages(): Promise<ListSiblingPagesResponse> {
+  const pageId = extractPageId(location.href)
+  if (!pageId) return { ok: false, error: 'NOT_A_CONFLUENCE_PAGE' }
 
-    void extractCurrentPage().then(sendResponse)
-    return true
+  try {
+    const ancestorsRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=ancestors`, {
+      credentials: 'include',
+    })
+    if (!ancestorsRes.ok) return { ok: false, error: 'FETCH_FAILED', detail: `${ancestorsRes.status}` }
+
+    const parentId = parseAncestorParentId((await ancestorsRes.json()) as ConfluenceAncestorsResponse)
+    if (!parentId) return { ok: false, error: 'NO_PARENT' }
+
+    const childrenRes = await fetch(`${location.origin}/wiki/rest/api/content/${parentId}/child/page?limit=100`, {
+      credentials: 'include',
+    })
+    if (!childrenRes.ok) return { ok: false, error: 'FETCH_FAILED', detail: `${childrenRes.status}` }
+
+    const siblings = parseSiblingPages((await childrenRes.json()) as ConfluenceChildPagesResponse, pageId)
+    return { ok: true, siblings }
+  } catch (err) {
+    return { ok: false, error: 'FETCH_FAILED', detail: String(err) }
+  }
+}
+
+async function handleFetchPageMarkdown(pageId: string): Promise<FetchPageMarkdownResponse> {
+  try {
+    const page = await fetchPageMarkdown(pageId)
+    if (!page) return { ok: false, error: 'FETCH_FAILED' }
+    return { ok: true, markdown: page.markdown, title: page.title }
+  } catch (err) {
+    return { ok: false, error: 'FETCH_FAILED', detail: String(err) }
+  }
+}
+
+type ContentScriptRequest = ExtractConfluenceContentRequest | ListSiblingPagesRequest | FetchPageMarkdownRequest
+type ContentScriptResponse = ExtractConfluenceContentResponse | ListSiblingPagesResponse | FetchPageMarkdownResponse
+
+chrome.runtime.onMessage.addListener(
+  (message: ContentScriptRequest, _sender, sendResponse: (response: ContentScriptResponse) => void) => {
+    if (message.type === 'EXTRACT_CONFLUENCE_CONTENT') {
+      void extractCurrentPage().then(sendResponse)
+      return true
+    }
+    if (message.type === 'LIST_SIBLING_PAGES') {
+      void listSiblingPages().then(sendResponse)
+      return true
+    }
+    if (message.type === 'FETCH_PAGE_MARKDOWN') {
+      void handleFetchPageMarkdown(message.pageId).then(sendResponse)
+      return true
+    }
+    return undefined
   },
 )

@@ -75,32 +75,39 @@ fieldset legend {
   gap: 8px;
 }
 
-.file-picker-button {
-  display: inline-flex;
+.confluence-db-status {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  width: fit-content;
-  font-size: 0.85rem;
-  padding: 6px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.file-picker-button input[type='file'] {
-  display: none;
-}
-
-.reference-subsection + .reference-subsection {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-
-.reference-subsection-heading {
+  gap: 4px;
   font-size: 0.85rem;
   font-weight: 600;
-  margin: 0 0 4px;
+  margin: 0 0 8px;
+}
+
+.status-dot {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: #2ea043;
+}
+
+.reference-folder {
+  display: flex;
+  flex-direction: column;
+}
+
+.folder-toggle {
+  background: none;
+  border: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+  text-align: left;
+  color: inherit;
+}
+
+.reference-folder .reference-file-list {
+  padding-left: 20px;
 }
 
 .reference-file-list {
@@ -122,15 +129,6 @@ fieldset legend {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-.remove-file-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--danger);
-  font-size: 0.85rem;
-  padding: 0 4px;
 }
 
 .btn {

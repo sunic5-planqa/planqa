@@ -15,7 +15,7 @@ export function useConfluenceSiblingDocs(): void {
       try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
         if (!tab.id) {
-          dispatch({ type: 'CONFLUENCE_SIBLINGS_DETECT_FAILED' })
+          dispatch({ type: 'CONFLUENCE_SIBLINGS_DETECT_FAILED', detail: 'NO_ACTIVE_TAB' })
           return
         }
 
@@ -24,14 +24,15 @@ export function useConfluenceSiblingDocs(): void {
         })
 
         if (response.ok) {
-          dispatch({ type: 'CONFLUENCE_SIBLINGS_LOADED', docs: response.siblings })
+          dispatch({ type: 'CONFLUENCE_SIBLINGS_LOADED', docs: response.siblings, parentTitle: response.parentTitle })
         } else if (response.error === 'NO_PARENT') {
           dispatch({ type: 'CONFLUENCE_SIBLINGS_NO_PARENT' })
         } else {
-          dispatch({ type: 'CONFLUENCE_SIBLINGS_DETECT_FAILED' })
+          const detail = `${response.error}${response.detail ? `: ${response.detail}` : ''}`
+          dispatch({ type: 'CONFLUENCE_SIBLINGS_DETECT_FAILED', detail })
         }
-      } catch {
-        dispatch({ type: 'CONFLUENCE_SIBLINGS_DETECT_FAILED' })
+      } catch (err) {
+        dispatch({ type: 'CONFLUENCE_SIBLINGS_DETECT_FAILED', detail: String(err) })
       }
     })()
   }, [confluenceStatus, dispatch])

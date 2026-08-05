@@ -4,6 +4,7 @@
   --accent: #ffb020;
   --danger: #d64545;
   --border: color-mix(in srgb, currentColor 20%, transparent);
+  --border-strong: color-mix(in srgb, currentColor 55%, transparent);
 }
 
 * {
@@ -55,17 +56,16 @@ textarea {
   resize: vertical;
 }
 
-fieldset {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 12px;
-  margin: 0;
+.panel-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  text-align: center;
 }
 
-fieldset legend {
-  font-size: 0.9rem;
-  font-weight: 600;
-  padding: 0 4px;
+.panel-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0;
 }
 
 .confluence-status {
@@ -75,13 +75,30 @@ fieldset legend {
   gap: 8px;
 }
 
+.references-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.references-heading {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.references-count {
+  font-size: 0.75rem;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
 .confluence-db-status {
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 0.85rem;
   font-weight: 600;
-  margin: 0 0 8px;
+  margin: 4px 0 8px;
 }
 
 .status-dot {
@@ -106,23 +123,43 @@ fieldset legend {
   color: inherit;
 }
 
-.reference-folder .reference-file-list {
-  padding-left: 20px;
-}
-
 .reference-file-list {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
   margin-top: 8px;
+  padding-left: 20px;
+}
+
+.reference-file-list::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 0;
+  bottom: 10px;
+  width: 1px;
+  background: var(--border);
 }
 
 .reference-file-row {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
   font-size: 0.85rem;
+  padding-left: 14px;
+}
+
+.reference-file-row::before {
+  content: '';
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  width: 14px;
+  height: 1px;
+  background: var(--border);
 }
 
 .reference-file-row label {
@@ -159,6 +196,39 @@ fieldset legend {
   color: white;
 }
 
+.qa-start-row {
+  display: flex;
+  justify-content: center;
+}
+
+.btn-bracket {
+  background: none;
+  color: inherit;
+  font-weight: 600;
+}
+
+.btn-bracket::before {
+  content: '[ ';
+  opacity: 0.6;
+}
+
+.btn-bracket::after {
+  content: ' ]';
+  opacity: 0.6;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  padding: 4px 2px;
+  color: inherit;
+  font-weight: 600;
+}
+
+.btn-link:disabled {
+  opacity: 0.5;
+}
+
 .error-banner {
   padding: 8px 12px;
   border-radius: 6px;
@@ -166,36 +236,24 @@ fieldset legend {
   font-size: 0.85rem;
 }
 
-.spinner {
-  width: 24px;
-  height: 24px;
-  border: 3px solid var(--border);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-.progress-details,
 .issue-details {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 4px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   font-size: 0.85rem;
+  border: 2px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 12px;
 }
 
-.progress-details dt,
 .issue-details dt {
+  display: inline-block;
   font-weight: 600;
-  opacity: 0.7;
+  margin: 0 0 4px;
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
 }
 
-.progress-details dd,
 .issue-details dd {
   margin: 0;
 }
@@ -206,18 +264,191 @@ fieldset legend {
   gap: 8px;
 }
 
-.history-compare {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+.loading-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 12px;
+  padding: 24px 0;
 }
 
-.history-compare pre {
-  white-space: pre-wrap;
+.mascot {
+  width: 64px;
+  height: 64px;
+}
+
+.mascot img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.mascot-walk {
+  animation: mascot-bob 0.6s ease-in-out infinite alternate;
+}
+
+.loading-label {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+@keyframes mascot-bob {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-6px);
+  }
+}
+
+.progress-bar {
+  position: relative;
+  height: 24px;
+  border-radius: 6px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: #1a1a1a;
+  transition: width 0.3s ease;
+}
+
+.progress-bar-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.category-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 2px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.category-group-toggle {
+  background: none;
+  border: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 0;
+  text-align: left;
+  color: inherit;
+  width: 100%;
+}
+
+.category-item-list {
+  list-style: none;
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.category-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  opacity: 0.6;
+}
+
+.category-item-done {
+  opacity: 1;
+}
+
+.category-item-in_progress {
+  opacity: 1;
+  font-weight: 600;
+}
+
+.category-item-icon {
+  font-size: 0.7rem;
+}
+
+.overview-panel {
+  border: 2px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.overview-group-toggle {
+  background: none;
+  border: none;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+  text-align: left;
+  color: inherit;
+  width: 100%;
+}
+
+.overview-issue-list {
+  list-style: none;
+  margin: 0;
+  padding-left: 20px;
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+
+.issue-error-count {
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.resolved-badge {
+  margin-left: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #2ea043;
+}
+
+.diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diff-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 8px;
-  max-height: 240px;
-  overflow-y: auto;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.diff-item.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+}
+
+.diff-original {
+  font-size: 0.8rem;
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+.diff-revised {
+  font-size: 0.85rem;
+  font-weight: 600;
 }

@@ -4,6 +4,13 @@ export type Screen = 'main' | 'progress' | 'issues' | 'edit' | 'history'
 
 export type ConfluenceStatus = 'idle' | 'detecting' | 'detected' | 'not_confluence' | 'error'
 
+export type ConfluenceSiblingStatus = 'idle' | 'loading' | 'loaded' | 'no_parent' | 'error'
+
+export interface ConfluenceSiblingDoc {
+  id: string
+  title: string
+}
+
 export interface IssueEdit {
   action: IssueAction
   editedText?: string
@@ -21,6 +28,9 @@ export interface AppState {
   confluenceStatus: ConfluenceStatus
   confluencePageTitle: string | null
   confluenceMarkdown: string | null
+
+  confluenceSiblingStatus: ConfluenceSiblingStatus
+  confluenceSiblingDocs: ConfluenceSiblingDoc[]
 
   referenceFiles: ReferenceFile[]
   selectedReferenceFileIds: string[]
@@ -42,6 +52,9 @@ export const initialAppState: AppState = {
   confluenceStatus: 'idle',
   confluencePageTitle: null,
   confluenceMarkdown: null,
+
+  confluenceSiblingStatus: 'idle',
+  confluenceSiblingDocs: [],
 
   referenceFiles: [],
   selectedReferenceFileIds: [],

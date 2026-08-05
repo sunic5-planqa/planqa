@@ -1,11 +1,17 @@
+import { OverviewPanel } from '../issues/OverviewPanel'
 import { api } from '../../api/client'
 import { NotImplementedError } from '../../api/errors'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { Button } from '../common/Button'
 
+const RESOLVED_ACTIONS = new Set(['apply', 'edit'])
+
 export function IssueListScreen() {
-  const { issues, currentIssueIndex } = useAppState()
+  const { issues, currentIssueIndex, issueEdits } = useAppState()
   const dispatch = useAppDispatch()
+
+  const resolvedCount = issues.filter((i) => RESOLVED_ACTIONS.has(issueEdits[i.id]?.action ?? '')).length
+  const remainingCount = issues.length - resolvedCount
 
   const issue = issues[currentIssueIndex]
   if (!issue) {
@@ -16,6 +22,8 @@ export function IssueListScreen() {
       </div>
     )
   }
+
+  const isResolved = RESOLVED_ACTIONS.has(issueEdits[issue.id]?.action ?? '')
 
   const stageDecision = async (action: 'apply' | 'skip') => {
     dispatch({ type: 'STAGE_ISSUE_EDIT', issueId: issue.id, action })
@@ -30,7 +38,13 @@ export function IssueListScreen() {
 
   return (
     <div className="screen issue-list-screen">
-      <h1>이슈 리뷰</h1>
+      <h1>AI QA Service</h1>
+
+      <OverviewPanel issues={issues} />
+
+      <p className="issue-error-count">
+        문서 오류 <strong>{remainingCount}</strong>개
+      </p>
       <p className="hint">
         {currentIssueIndex + 1} / {issues.length}
       </p>
@@ -45,7 +59,10 @@ export function IssueListScreen() {
         <dt>검증 이유</dt>
         <dd>{issue.reason}</dd>
         <dt>대치 제안</dt>
-        <dd>{issue.suggestion}</dd>
+        <dd>
+          {issue.suggestion}
+          {isResolved && <span className="resolved-badge">✓ 수정완료</span>}
+        </dd>
       </dl>
 
       <div className="issue-actions">
@@ -56,7 +73,7 @@ export function IssueListScreen() {
           스킵
         </Button>
         <Button variant="secondary" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'edit' })}>
-          직접 수정
+          수정하기
         </Button>
       </div>
 
@@ -69,12 +86,9 @@ export function IssueListScreen() {
           이전
         </Button>
         {currentIssueIndex === issues.length - 1 ? (
-          <Button onClick={() => dispatch({ type: 'NAVIGATE', screen: 'history' })}>검토 완료</Button>
+          <Button onClick={() => dispatch({ type: 'NAVIGATE', screen: 'history' })}>QA 완료 ▶</Button>
         ) : (
-          <Button
-            variant="secondary"
-            onClick={() => dispatch({ type: 'NAVIGATE_ISSUE', direction: 'next' })}
-          >
+          <Button variant="secondary" onClick={() => dispatch({ type: 'NAVIGATE_ISSUE', direction: 'next' })}>
             다음
           </Button>
         )}

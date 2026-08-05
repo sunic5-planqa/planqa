@@ -34,11 +34,26 @@ export interface CreateQAJobResponse {
   job_id: string
 }
 
+export type CategoryItemStatus = 'pending' | 'in_progress' | 'done'
+
+export interface CategoryItem {
+  key: string
+  label: string
+  status: CategoryItemStatus
+}
+
+export interface ProgressCategory {
+  key: string
+  label: string
+  items: CategoryItem[]
+}
+
 export interface QAJobStatusResponse {
   status: string
   progress: number
   current_category: string | null
   elapsed_seconds: number
+  categories?: ProgressCategory[]
 }
 
 export interface IssueResponse {

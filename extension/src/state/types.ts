@@ -1,6 +1,6 @@
 import type { IssueAction, IssueResponse, ParsedStructure, QAJobStatusResponse } from '../api/types'
 
-export type Screen = 'main' | 'progress' | 'issues' | 'edit' | 'history'
+export type Screen = 'main' | 'loading' | 'progress' | 'issues' | 'edit' | 'history'
 
 export type ConfluenceStatus = 'idle' | 'detecting' | 'detected' | 'not_confluence' | 'error'
 

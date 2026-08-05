@@ -114,3 +114,20 @@ QA 엔진(검토 에이전트) 핵심 로직 설계가 막혀있는 동안 우�
 
 - **Claude가 검증 불가능한 것**: 실제 상위/하위 구조가 있는 컨플루언스 스페이스에서 상위 감지 → 형제 목록 → 체크 → 본문 변환 왕복. 사용자가 직접 언팩 리로드해서 확인 필요.
 - QA 엔진 핵심 로직(스크리닝→검증)이 없어서 막힌 것들 — 재검증 루프(두 위치 간 이슈 표현하려면 `Issue` 모델에 두 번째 위치 필드 필요), AI 제안 vs 사용자 수정 유사도 비교, 챕터별 개별 로딩 상태(`QAJobStatusResponse` 확장 필요). 전부 QA 엔진 코어가 먼저 있어야 함 — 계속 최우선 순위.
+
+## 2026-08-05 — QA 흐름 와이어프레임 매칭, fixture 기반 (`feature/qa-flow-wireframe-visuals`)
+
+사용자가 공유한 로딩→진행→이슈리뷰→수정→검토완료 와이어프레임 6장을 기준으로 화면 구현 상태를 점검. 카테고리별 실시간 진행률과 AI 재검증은 QA 엔진 코어가 없어서 못 만들지만(여전히 스크리닝/검증 로직 없음, "방안 2" 내부 설계도 미확정), 화면 구조/비주얼은 기존 fixture 폴백 패턴 위에서 지금 바로 맞출 수 있어 이 부분만 먼저 진행.
+
+- `api/types.ts`에 `CategoryItemStatus`/`CategoryItem`/`ProgressCategory` 추가, `QAJobStatusResponse.categories`를 옵셔널로 추가(백엔드는 미변경 — 이 필드는 fixture에서만 채워짐).
+- 신규 화면 `LoadingScreen.tsx`("QA 시작" 클릭 직후, `MainScreen`의 `handleStart`가 제일 먼저 `NAVIGATE loading` 디스패치) — 마스코트 이미지 자리(`/mascot/idle.png`)만 잡아둠, 실제 일러스트는 사용자가 추후 제공 예정.
+- `ProgressScreen.tsx`: 진행률을 막대바(`%` 라벨 포함)로 바꾸고, `jobStatus.categories`가 있을 때 `CategoryTree`(신규, `components/progress/`) 렌더링 — 카테고리별 펼침/접기, 항목 상태(done/in_progress/pending)별 스타일. "QA 중지 Ⅱ" 버튼 추가(실제 pause API는 없어서 메인 화면으로 돌아가는 소프트 취소로 구현 — 화면 언마운트로 `useQAJobPolling`의 폴링도 자연히 멈춤). 미사용 상태였던 `Spinner.tsx`는 걷는 마스코트로 대체되며 삭제.
+- `IssueListScreen.tsx`: 상단에 `OverviewPanel`(신규, `components/issues/`) 추가 — `groupIssuesByCriteria` 순수함수(신규 `state/issueGrouping.ts`, 단위테스트 3개)로 이슈를 검증기준별로 묶어 보여줌. "문서 오류 N개" 카운트를 기존 `issueEdits` 상태에서 파생(적용/수정된 이슈는 제외한 개수). 이미 적용/수정된 이슈는 대치제안 옆에 "✓ 수정완료" 배지 표시하되 수정하기는 계속 가능 — **실제 AI가 재검증한 게 아니라 사용자가 저장했다는 로컬 표시일 뿐**이라는 점을 명확히 구분해둠(진짜 재검증은 QA 엔진 몫).
+- `HistoryExportScreen.tsx`: 원본/수정본 전체 텍스트 두 블록 비교를 없애고, 적용/수정된 이슈만 "원본→수정" 쌍으로 나열하는 리스트로 교체(클릭하면 로컬 강조만 — 실제 컨플루언스 페이지로 스크롤 이동은 이번 스코프 아님). "종료" 버튼 추가(메인으로 복귀). 클립보드 복사 로직(`buildWorkingTextPreview`)은 그대로 유지.
+- 검증: `groupIssuesByCriteria` 테스트 포함 25개 전체 통과, `build`/`lint`/`typecheck` 클린.
+
+### Next
+
+- **마스코트 이미지 에셋 대기 중** — 사용자가 `extension/public/mascot/idle.png`(로딩), `extension/public/mascot/walk.gif`(진행) 파일을 주면 그대로 붙는 구조로 미리 만들어둠, 도착하면 바로 확인.
+- "(서비스명)으로 210건의 문서가 검토됐어요" 같은 누적 통계는 저장할 곳이 없어서 스코프 제외.
+- QA 엔진 핵심 로직 — 계속 최우선 순위. 이게 생겨야 진짜 카테고리별 실시간 진행률, 진짜 재검증(수정이 실제로 규칙을 해소했는지), AI 제안 vs 사용자 수정 유사도 비교까지 이어짐.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractPageId } from './confluence-extractor'
+import { extractPageId, parseAncestorParentId, parseSiblingPages } from './confluence-extractor'
 
 describe('extractPageId', () => {
   it('extracts the id from the modern /pages/{id}/{title} path', () => {
@@ -16,5 +16,40 @@ describe('extractPageId', () => {
 
   it('returns null for a non-Confluence URL', () => {
     expect(extractPageId('https://www.google.com')).toBeNull()
+  })
+})
+
+describe('parseAncestorParentId', () => {
+  it('returns the last ancestor as the immediate parent', () => {
+    const data = { ancestors: [{ id: '1' }, { id: '2' }, { id: '229548' }] }
+
+    expect(parseAncestorParentId(data)).toBe('229548')
+  })
+
+  it('returns null when the page has no ancestors (top-level page)', () => {
+    expect(parseAncestorParentId({ ancestors: [] })).toBeNull()
+  })
+})
+
+describe('parseSiblingPages', () => {
+  it('excludes the current page and maps to id/title pairs', () => {
+    const data = {
+      results: [
+        { id: '229548', title: 'DOC-001' },
+        { id: '229549', title: 'DOC-002' },
+        { id: '229550', title: 'DOC-003' },
+      ],
+    }
+
+    expect(parseSiblingPages(data, '229548')).toEqual([
+      { id: '229549', title: 'DOC-002' },
+      { id: '229550', title: 'DOC-003' },
+    ])
+  })
+
+  it('returns an empty list when there are no other children', () => {
+    const data = { results: [{ id: '229548', title: 'DOC-001' }] }
+
+    expect(parseSiblingPages(data, '229548')).toEqual([])
   })
 })

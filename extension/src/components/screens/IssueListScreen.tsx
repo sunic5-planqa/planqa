@@ -38,7 +38,8 @@ export function IssueListScreen() {
 
   return (
     <div className="screen issue-list-screen">
-      <h1>AI QA Service</h1>
+      <h1 className="panel-title">AI QA Service</h1>
+      <hr className="panel-divider" />
 
       <OverviewPanel issues={issues} />
 
@@ -80,19 +81,30 @@ export function IssueListScreen() {
       <div className="issue-nav">
         <Button
           variant="secondary"
+          className="btn-link"
           disabled={currentIssueIndex === 0}
           onClick={() => dispatch({ type: 'NAVIGATE_ISSUE', direction: 'prev' })}
         >
-          이전
+          {'<'}이전
         </Button>
-        {currentIssueIndex === issues.length - 1 ? (
-          <Button onClick={() => dispatch({ type: 'NAVIGATE', screen: 'history' })}>QA 완료 ▶</Button>
-        ) : (
-          <Button variant="secondary" onClick={() => dispatch({ type: 'NAVIGATE_ISSUE', direction: 'next' })}>
-            다음
+        {currentIssueIndex < issues.length - 1 && (
+          <Button
+            variant="secondary"
+            className="btn-link"
+            onClick={() => dispatch({ type: 'NAVIGATE_ISSUE', direction: 'next' })}
+          >
+            다음{'>'}
           </Button>
         )}
       </div>
+
+      {currentIssueIndex === issues.length - 1 && (
+        <div className="qa-start-row">
+          <Button className="btn-bracket" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'history' })}>
+            QA 완료 ▶
+          </Button>
+        </div>
+      )}
     </div>
   )
 }

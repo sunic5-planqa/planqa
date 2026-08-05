@@ -45,7 +45,8 @@ export function MainScreen() {
 
   return (
     <div className="screen main-screen">
-      <h1>AI QA Service</h1>
+      <h1 className="panel-title">AI QA Service</h1>
+      <hr className="panel-divider" />
 
       <div className="confluence-status">
         {confluenceStatus === 'detecting' && <p className="hint">리뷰 대상 확인 중...</p>}
@@ -63,9 +64,14 @@ export function MainScreen() {
 
       {error && <ErrorBanner message={error} />}
 
-      <Button onClick={() => void handleStart()} disabled={submitting || confluenceStatus !== 'detected'}>
-        {submitting ? '처리 중...' : 'QA 시작 ▶'}
-      </Button>
+      {/* TODO(stats-api): 백엔드에 검토 문서 수 통계 엔드포인트가 생기면
+          "(서비스명)으로 N건의 문서가 검토됐어요" 문구를 여기에 추가한다. */}
+
+      <div className="qa-start-row">
+        <Button className="btn-bracket" onClick={() => void handleStart()} disabled={submitting || confluenceStatus !== 'detected'}>
+          {submitting ? '처리 중...' : 'QA 시작 ▶'}
+        </Button>
+      </div>
     </div>
   )
 }

@@ -60,7 +60,9 @@ export function HistoryExportScreen() {
 
   return (
     <div className="screen history-export-screen">
-      <h1>QA 검토</h1>
+      <h1 className="panel-title">AI QA Service</h1>
+      <hr className="panel-divider" />
+      <h2>QA 검토</h2>
 
       {resolvedIssues.length === 0 ? (
         <p className="hint">적용되거나 수정된 항목이 없습니다.</p>
@@ -80,9 +82,14 @@ export function HistoryExportScreen() {
         </div>
       )}
 
+      <div className="qa-start-row">
+        <Button className="btn-bracket" onClick={() => void handleExport()}>
+          문서 복사
+        </Button>
+      </div>
+
       <div className="issue-actions">
-        <Button onClick={() => void handleExport()}>문서 복사</Button>
-        <Button variant="secondary" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'main' })}>
+        <Button variant="secondary" className="btn-link" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'main' })}>
           종료
         </Button>
       </div>

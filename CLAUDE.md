@@ -1,6 +1,6 @@
-# 써니C (SunniC) Backend
+# 써니C (SunniC)
 
-LLM 기반 서비스 기획서 QA 검증 도구의 FastAPI 백엔드 (Confluence 사이드패널 크롬 익스텐션용).
+LLM 기반 서비스 기획서 QA 검증 도구. `backend/`(FastAPI)와 `extension/`(Confluence 사이드패널 크롬 익스텐션)을 한 저장소에서 관리한다.
 
 # Workflow
 

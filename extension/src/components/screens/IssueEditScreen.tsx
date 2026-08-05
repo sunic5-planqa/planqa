@@ -26,14 +26,18 @@ export function IssueEditScreen() {
 
   return (
     <div className="screen issue-edit-screen">
-      <h1>직접 수정</h1>
+      <h1 className="panel-title">AI QA Service</h1>
+      <hr className="panel-divider" />
+      <h2>직접 수정</h2>
       <p className="hint">원문: {issue.input_text}</p>
 
       <textarea value={editedText} onChange={(e) => setEditedText(e.target.value)} rows={6} />
 
       <div className="issue-actions">
-        <Button onClick={() => void handleApply()}>적용</Button>
-        <Button variant="secondary" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'issues' })}>
+        <Button className="btn-bracket" onClick={() => void handleApply()}>
+          적용
+        </Button>
+        <Button variant="secondary" className="btn-bracket" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'issues' })}>
           취소
         </Button>
       </div>

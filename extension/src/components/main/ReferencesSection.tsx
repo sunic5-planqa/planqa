@@ -18,8 +18,10 @@ export function ReferencesSection() {
   const connected = confluenceSiblingStatus !== 'idle' && confluenceSiblingStatus !== 'error'
 
   return (
-    <fieldset className="references-section">
-      <legend>References (선택된 문서: {selectedReferenceFileIds.length}개)</legend>
+    <div className="references-section">
+      <h2 className="references-heading">
+        References <span className="references-count">(선택된 문서: {selectedReferenceFileIds.length}개)</span>
+      </h2>
 
       <p className="confluence-db-status">
         Confluence DB
@@ -49,6 +51,6 @@ export function ReferencesSection() {
           )}
         </div>
       )}
-    </fieldset>
+    </div>
   )
 }

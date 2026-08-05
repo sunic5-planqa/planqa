@@ -11,10 +11,11 @@ export function ProgressScreen() {
 
   return (
     <div className="screen progress-screen">
-      <h1>AI QA Service</h1>
+      <h1 className="panel-title">AI QA Service</h1>
+      <hr className="panel-divider" />
 
       <div className="mascot mascot-walk">
-        <img src="/mascot/walk.gif" alt="" />
+        <img src="/mascot/walk.png" alt="" />
       </div>
 
       {qaEngineUnavailable && <p className="notice">QA 엔진 준비중 — 데모용 미리보기 데이터를 표시합니다.</p>}
@@ -31,9 +32,11 @@ export function ProgressScreen() {
         </>
       )}
 
-      <Button variant="secondary" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'main' })}>
-        QA 중지 Ⅱ
-      </Button>
+      <div className="qa-start-row">
+        <Button variant="secondary" className="btn-bracket" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'main' })}>
+          QA 중지 Ⅱ
+        </Button>
+      </div>
     </div>
   )
 }

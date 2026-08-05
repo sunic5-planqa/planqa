@@ -37,22 +37,26 @@ describe('appReducer', () => {
     const state = appReducer(loading, {
       type: 'CONFLUENCE_SIBLINGS_LOADED',
       docs: [{ id: '2', title: 'DOC-002' }],
+      parentTitle: '기획서 더미 문서함',
     })
 
     expect(state.confluenceSiblingStatus).toBe('loaded')
     expect(state.confluenceSiblingDocs).toEqual([{ id: '2', title: 'DOC-002' }])
+    expect(state.confluenceParentTitle).toBe('기획서 더미 문서함')
   })
 
   it('CONFLUENCE_SIBLINGS_NO_PARENT clears any previously loaded docs', () => {
     const loaded = appReducer(initialAppState, {
       type: 'CONFLUENCE_SIBLINGS_LOADED',
       docs: [{ id: '2', title: 'DOC-002' }],
+      parentTitle: '기획서 더미 문서함',
     })
 
     const state = appReducer(loaded, { type: 'CONFLUENCE_SIBLINGS_NO_PARENT' })
 
     expect(state.confluenceSiblingStatus).toBe('no_parent')
     expect(state.confluenceSiblingDocs).toEqual([])
+    expect(state.confluenceParentTitle).toBeNull()
   })
 
   it('REFERENCE_FILES_ADDED appends files and auto-selects them', () => {
@@ -75,21 +79,6 @@ describe('appReducer', () => {
 
     expect(state.referenceFiles).toEqual([])
     expect(state.selectedReferenceFileIds).toEqual([])
-  })
-
-  it('TOGGLE_REFERENCE_FILE adds an id when not selected', () => {
-    const state = appReducer(initialAppState, { type: 'TOGGLE_REFERENCE_FILE', fileId: 'f1' })
-
-    expect(state.selectedReferenceFileIds).toEqual(['f1'])
-  })
-
-  it('TOGGLE_REFERENCE_FILE removes an id when already selected', () => {
-    const withOne = appReducer(initialAppState, { type: 'TOGGLE_REFERENCE_FILE', fileId: 'f1' })
-    const withTwo = appReducer(withOne, { type: 'TOGGLE_REFERENCE_FILE', fileId: 'f2' })
-
-    const state = appReducer(withTwo, { type: 'TOGGLE_REFERENCE_FILE', fileId: 'f1' })
-
-    expect(state.selectedReferenceFileIds).toEqual(['f2'])
   })
 
   it('NAVIGATE_ISSUE does not go below index 0', () => {

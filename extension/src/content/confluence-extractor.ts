@@ -24,16 +24,16 @@ interface ConfluenceContentResponse {
 }
 
 interface ConfluenceAncestorsResponse {
-  ancestors: { id: string }[]
+  ancestors: { id: string; title: string }[]
 }
 
 interface ConfluenceChildPagesResponse {
   results: { id: string; title: string }[]
 }
 
-export function parseAncestorParentId(data: ConfluenceAncestorsResponse): string | null {
+export function parseParentInfo(data: ConfluenceAncestorsResponse): { id: string; title: string } | null {
   if (!data.ancestors.length) return null
-  return data.ancestors[data.ancestors.length - 1].id
+  return data.ancestors[data.ancestors.length - 1]
 }
 
 export function parseSiblingPages(
@@ -76,16 +76,16 @@ async function listSiblingPages(): Promise<ListSiblingPagesResponse> {
     })
     if (!ancestorsRes.ok) return { ok: false, error: 'FETCH_FAILED', detail: `${ancestorsRes.status}` }
 
-    const parentId = parseAncestorParentId((await ancestorsRes.json()) as ConfluenceAncestorsResponse)
-    if (!parentId) return { ok: false, error: 'NO_PARENT' }
+    const parent = parseParentInfo((await ancestorsRes.json()) as ConfluenceAncestorsResponse)
+    if (!parent) return { ok: false, error: 'NO_PARENT' }
 
-    const childrenRes = await fetch(`${location.origin}/wiki/rest/api/content/${parentId}/child/page?limit=100`, {
+    const childrenRes = await fetch(`${location.origin}/wiki/rest/api/content/${parent.id}/child/page?limit=100`, {
       credentials: 'include',
     })
     if (!childrenRes.ok) return { ok: false, error: 'FETCH_FAILED', detail: `${childrenRes.status}` }
 
     const siblings = parseSiblingPages((await childrenRes.json()) as ConfluenceChildPagesResponse, pageId)
-    return { ok: true, siblings }
+    return { ok: true, siblings, parentTitle: parent.title }
   } catch (err) {
     return { ok: false, error: 'FETCH_FAILED', detail: String(err) }
   }

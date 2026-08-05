@@ -30,7 +30,9 @@ export interface AppState {
   confluenceMarkdown: string | null
 
   confluenceSiblingStatus: ConfluenceSiblingStatus
+  confluenceParentTitle: string | null
   confluenceSiblingDocs: ConfluenceSiblingDoc[]
+  confluenceSiblingError: string | null
 
   referenceFiles: ReferenceFile[]
   selectedReferenceFileIds: string[]
@@ -54,7 +56,9 @@ export const initialAppState: AppState = {
   confluenceMarkdown: null,
 
   confluenceSiblingStatus: 'idle',
+  confluenceParentTitle: null,
   confluenceSiblingDocs: [],
+  confluenceSiblingError: null,
 
   referenceFiles: [],
   selectedReferenceFileIds: [],

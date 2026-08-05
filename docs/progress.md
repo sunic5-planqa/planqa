@@ -81,3 +81,19 @@ QA 엔진(검토 에이전트) 핵심 로직 설계가 막혀있는 동안 우�
 
 - 선택된 참조 파일 내용을 실제로 QA 요청에 포함시키는 배선은 아직 없음 — QA 엔진이 생기면 함께 연결.
 - QA 엔진(검토 에이전트) 핵심 로직 — 계속 최우선 순위.
+
+## 2026-08-05 — 모노레포 폴더 구조 전환 (`feature/monorepo-restructure`)
+
+프론트(익스텐션)를 같은 저장소에서 계속 관리하기로 하면서, 백엔드가 루트를 독차지하던 구조를 정리. 이 시점엔 이미 `main`에 chrome-extension 체인 전체(스캐폴드/컨플루언스 자동감지/메인화면 재설계)와 `qa-engine-llm-client`가 다른 경로로 먼저 머지돼 있었음 — `dev`는 그보다 뒤처져 있어서 `dev`를 `main`으로 fast-forward한 뒤 이 작업을 시작.
+
+- 백엔드 코드(`src/`, `tests/`, `pyproject.toml`, `uv.lock`, `.python-version`, `.env.example`, `.env`)를 전부 `backend/` 아래로 이동. `extension/`은 이름 그대로 유지(이미 명확한 이름이라 "frontend"로 바꾸지 않음), `docs/`는 백엔드/프론트 공통 기록이라 루트에 유지.
+- `config.py`의 `env_file=".env"`가 CWD 기준 상대경로라, `backend/`에서 실행하는 한 별도 코드 변경 없이 그대로 동작 — `.venv`만 삭제 후 `backend/`에서 `uv sync`로 재생성.
+- `.gitignore`의 `.venv/`, `.pytest_cache/`, `.env` 같은 패턴은 경로 앵커가 없어 `backend/` 하위에서도 그대로 매치됨 — 수정 불필요.
+- `README.md`/`CLAUDE.md`를 모노레포 기준으로 업데이트: 셋업 섹션에 `cd backend`/`cd extension` 구분 추가, README의 "저비용 모델(Haiku)" 문구를 실제 구현(Gemini)에 맞게 수정.
+- 검증: `backend/`에서 `uv run pytest` 25개 전체 통과, `uv run uvicorn ...`으로 새 위치에서 정상 기동(lifespan/설정 로딩 확인) — 다만 로컬에 이미 떠 있던 구경로 기준 서버와 포트 충돌이 있어서 실제 바인딩까지는 확인 못 함, 사용자 쪽에서 기존 프로세스 정리 후 재확인 필요.
+
+### Next
+
+- GitHub Actions 등 CI는 아직 없어서 경로 변경으로 인한 워크플로 수정은 불필요했음(향후 CI 추가 시 `backend/` 기준으로 작성).
+- 레포 이름(`planqa-backend`)이 이제 backend+extension을 다 담는 이름이 아니라서 변경 검토 예정.
+- QA 엔진(검토 에이전트) 핵심 로직 — 계속 최우선 순위.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { extractPageId, parseAncestorParentId, parseSiblingPages } from './confluence-extractor'
+import { extractPageId, parseParentInfo, parseSiblingPages } from './confluence-extractor'
 
 describe('extractPageId', () => {
   it('extracts the id from the modern /pages/{id}/{title} path', () => {
@@ -19,15 +19,21 @@ describe('extractPageId', () => {
   })
 })
 
-describe('parseAncestorParentId', () => {
+describe('parseParentInfo', () => {
   it('returns the last ancestor as the immediate parent', () => {
-    const data = { ancestors: [{ id: '1' }, { id: '2' }, { id: '229548' }] }
+    const data = {
+      ancestors: [
+        { id: '1', title: '루트' },
+        { id: '2', title: '중간' },
+        { id: '229548', title: '기획서 더미 문서함' },
+      ],
+    }
 
-    expect(parseAncestorParentId(data)).toBe('229548')
+    expect(parseParentInfo(data)).toEqual({ id: '229548', title: '기획서 더미 문서함' })
   })
 
   it('returns null when the page has no ancestors (top-level page)', () => {
-    expect(parseAncestorParentId({ ancestors: [] })).toBeNull()
+    expect(parseParentInfo({ ancestors: [] })).toBeNull()
   })
 })
 

@@ -11,7 +11,7 @@ export interface ListSiblingPagesRequest {
 }
 
 export type ListSiblingPagesResponse =
-  | { ok: true; siblings: { id: string; title: string }[] }
+  | { ok: true; siblings: { id: string; title: string }[]; parentTitle: string }
   | { ok: false; error: 'NOT_A_CONFLUENCE_PAGE' | 'NO_PARENT' | 'FETCH_FAILED'; detail?: string }
 
 export interface FetchPageMarkdownRequest {

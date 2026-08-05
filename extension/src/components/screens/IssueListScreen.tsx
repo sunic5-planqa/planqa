@@ -61,7 +61,7 @@ export function IssueListScreen() {
         <dd>{issue.reason}</dd>
         <dt>대치 제안</dt>
         <dd>
-          {issue.suggestion}
+          {issueEdits[issue.id]?.editedText ?? issue.suggestion}
           {isResolved && <span className="resolved-badge">✓ 수정완료</span>}
         </dd>
       </dl>

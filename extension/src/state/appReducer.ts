@@ -1,5 +1,5 @@
 import type { IssueAction, IssueResponse, ParsedStructure, QAJobStatusResponse } from '../api/types'
-import type { AppState, ReferenceFile, Screen } from './types'
+import type { AppState, ConfluenceSiblingDoc, ReferenceFile, Screen } from './types'
 
 export type Action =
   | { type: 'DOCUMENT_CREATED'; documentId: string; parsedStructure: ParsedStructure }
@@ -15,9 +15,12 @@ export type Action =
   | { type: 'CONFLUENCE_DETECTED'; title: string; markdown: string }
   | { type: 'CONFLUENCE_NOT_A_PAGE' }
   | { type: 'CONFLUENCE_DETECT_FAILED'; error: string }
+  | { type: 'CONFLUENCE_SIBLINGS_DETECT_START' }
+  | { type: 'CONFLUENCE_SIBLINGS_LOADED'; docs: ConfluenceSiblingDoc[]; parentTitle: string }
+  | { type: 'CONFLUENCE_SIBLINGS_NO_PARENT' }
+  | { type: 'CONFLUENCE_SIBLINGS_DETECT_FAILED'; detail: string }
   | { type: 'REFERENCE_FILES_ADDED'; files: ReferenceFile[] }
   | { type: 'REMOVE_REFERENCE_FILE'; fileId: string }
-  | { type: 'TOGGLE_REFERENCE_FILE'; fileId: string }
 
 export function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -74,6 +77,35 @@ export function appReducer(state: AppState, action: Action): AppState {
     case 'CONFLUENCE_DETECT_FAILED':
       return { ...state, confluenceStatus: 'error', error: action.error }
 
+    case 'CONFLUENCE_SIBLINGS_DETECT_START':
+      return { ...state, confluenceSiblingStatus: 'loading' }
+
+    case 'CONFLUENCE_SIBLINGS_LOADED':
+      return {
+        ...state,
+        confluenceSiblingStatus: 'loaded',
+        confluenceSiblingDocs: action.docs,
+        confluenceParentTitle: action.parentTitle,
+      }
+
+    case 'CONFLUENCE_SIBLINGS_NO_PARENT':
+      return {
+        ...state,
+        confluenceSiblingStatus: 'no_parent',
+        confluenceSiblingDocs: [],
+        confluenceParentTitle: null,
+        confluenceSiblingError: null,
+      }
+
+    case 'CONFLUENCE_SIBLINGS_DETECT_FAILED':
+      return {
+        ...state,
+        confluenceSiblingStatus: 'error',
+        confluenceSiblingDocs: [],
+        confluenceParentTitle: null,
+        confluenceSiblingError: action.detail,
+      }
+
     case 'REFERENCE_FILES_ADDED':
       return {
         ...state,
@@ -87,13 +119,6 @@ export function appReducer(state: AppState, action: Action): AppState {
         referenceFiles: state.referenceFiles.filter((f) => f.id !== action.fileId),
         selectedReferenceFileIds: state.selectedReferenceFileIds.filter((id) => id !== action.fileId),
       }
-
-    case 'TOGGLE_REFERENCE_FILE': {
-      const selected = state.selectedReferenceFileIds.includes(action.fileId)
-        ? state.selectedReferenceFileIds.filter((id) => id !== action.fileId)
-        : [...state.selectedReferenceFileIds, action.fileId]
-      return { ...state, selectedReferenceFileIds: selected }
-    }
 
     default:
       return state

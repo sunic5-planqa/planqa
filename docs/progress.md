@@ -97,3 +97,20 @@ QA 엔진(검토 에이전트) 핵심 로직 설계가 막혀있는 동안 우�
 - GitHub Actions 등 CI는 아직 없어서 경로 변경으로 인한 워크플로 수정은 불필요했음(향후 CI 추가 시 `backend/` 기준으로 작성).
 - 레포 이름(`planqa-backend`)이 이제 backend+extension을 다 담는 이름이 아니라서 변경 검토 예정.
 - QA 엔진(검토 에이전트) 핵심 로직 — 계속 최우선 순위.
+
+## 2026-08-05 — 컨플루언스 형제 문서 자동감지 (`feature/confluence-sibling-references`)
+
+메인 문서 자동감지에 이어, 그 문서의 상위 컨플루언스 페이지를 찾아 형제 문서들을 References 섹션에 체크박스로 보여주는 기능 추가. 로컬 파일 선택 기능(직전 세션에서 구현)은 그대로 유지 — 둘 다 같은 `referenceFiles`/`selectedReferenceFileIds` 상태로 합쳐짐.
+
+- **컨플루언스 REST API 2단계**: `GET /wiki/rest/api/content/{pageId}?expand=ancestors`로 직속 상위 페이지 id 조회(ancestors 배열의 마지막 항목) → `GET /wiki/rest/api/content/{parentId}/child/page?limit=100`로 형제 페이지 목록(자기 자신 제외) 조회. 목록만 먼저 가볍게 가져오고, 본문은 사용자가 체크했을 때만 별도로 가져옴(불필요한 API 호출 최소화).
+- `confluence-extractor.ts`의 기존 `extractCurrentPage` 로직에서 fetch+마크다운 변환 부분을 `fetchPageMarkdown(pageId)` 공용 헬퍼로 분리 — 메인 문서 감지와 형제 문서 본문 가져오기 둘 다 재사용. 상위/형제 파싱 로직은 `parseAncestorParentId`/`parseSiblingPages` 순수함수로 분리해 단위테스트.
+- `useConfluenceSiblingDocs` 훅 — `useConfluenceAutoDetect`와 동일 패턴, `confluenceStatus === 'detected'`가 되면 자동 실행.
+- `ConfluenceSiblingRow` — 체크하면 그 시점에 `FETCH_PAGE_MARKDOWN` 메시지로 본문을 가져와 `REFERENCE_FILES_ADDED`(id=컨플루언스 페이지 id)로 저장, 체크 해제하면 `REMOVE_REFERENCE_FILE`. 목록 자체(`confluenceSiblingDocs`)는 유지되니 재체크 가능.
+- `ReferencesSection.tsx`를 "컨플루언스 형제 문서" / "로컬 파일" 두 서브섹션으로 분리 — `referenceFiles` 배열에서 형제문서 id를 필터링해 로컬 파일 목록에 안 섞이게 처리.
+- 백엔드 변경 없음 — References는 여전히 QA 엔진이 없어서 백엔드로 전송 안 함.
+- 검증: 신규 순수함수(`parseAncestorParentId`, `parseSiblingPages`) + 리듀서 액션 테스트 포함 24개 전체 통과, `build`/`lint`/`typecheck` 클린.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 상위/하위 구조가 있는 컨플루언스 스페이스에서 상위 감지 → 형제 목록 → 체크 → 본문 변환 왕복. 사용자가 직접 언팩 리로드해서 확인 필요.
+- QA 엔진 핵심 로직(스크리닝→검증)이 없어서 막힌 것들 — 재검증 루프(두 위치 간 이슈 표현하려면 `Issue` 모델에 두 번째 위치 필드 필요), AI 제안 vs 사용자 수정 유사도 비교, 챕터별 개별 로딩 상태(`QAJobStatusResponse` 확장 필요). 전부 QA 엔진 코어가 먼저 있어야 함 — 계속 최우선 순위.

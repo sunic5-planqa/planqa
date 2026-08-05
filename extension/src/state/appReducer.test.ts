@@ -30,6 +30,31 @@ describe('appReducer', () => {
     expect(state.confluenceMarkdown).toBeNull()
   })
 
+  it('CONFLUENCE_SIBLINGS_LOADED stores the sibling docs', () => {
+    const loading = appReducer(initialAppState, { type: 'CONFLUENCE_SIBLINGS_DETECT_START' })
+    expect(loading.confluenceSiblingStatus).toBe('loading')
+
+    const state = appReducer(loading, {
+      type: 'CONFLUENCE_SIBLINGS_LOADED',
+      docs: [{ id: '2', title: 'DOC-002' }],
+    })
+
+    expect(state.confluenceSiblingStatus).toBe('loaded')
+    expect(state.confluenceSiblingDocs).toEqual([{ id: '2', title: 'DOC-002' }])
+  })
+
+  it('CONFLUENCE_SIBLINGS_NO_PARENT clears any previously loaded docs', () => {
+    const loaded = appReducer(initialAppState, {
+      type: 'CONFLUENCE_SIBLINGS_LOADED',
+      docs: [{ id: '2', title: 'DOC-002' }],
+    })
+
+    const state = appReducer(loaded, { type: 'CONFLUENCE_SIBLINGS_NO_PARENT' })
+
+    expect(state.confluenceSiblingStatus).toBe('no_parent')
+    expect(state.confluenceSiblingDocs).toEqual([])
+  })
+
   it('REFERENCE_FILES_ADDED appends files and auto-selects them', () => {
     const state = appReducer(initialAppState, {
       type: 'REFERENCE_FILES_ADDED',

@@ -1,8 +1,15 @@
 import type { IssueAction, IssueResponse, ParsedStructure, QAJobStatusResponse } from '../api/types'
 
-export type Screen = 'main' | 'progress' | 'issues' | 'edit' | 'history'
+export type Screen = 'main' | 'loading' | 'progress' | 'issues' | 'edit' | 'history'
 
 export type ConfluenceStatus = 'idle' | 'detecting' | 'detected' | 'not_confluence' | 'error'
+
+export type ConfluenceSiblingStatus = 'idle' | 'loading' | 'loaded' | 'no_parent' | 'error'
+
+export interface ConfluenceSiblingDoc {
+  id: string
+  title: string
+}
 
 export interface IssueEdit {
   action: IssueAction
@@ -21,6 +28,11 @@ export interface AppState {
   confluenceStatus: ConfluenceStatus
   confluencePageTitle: string | null
   confluenceMarkdown: string | null
+
+  confluenceSiblingStatus: ConfluenceSiblingStatus
+  confluenceParentTitle: string | null
+  confluenceSiblingDocs: ConfluenceSiblingDoc[]
+  confluenceSiblingError: string | null
 
   referenceFiles: ReferenceFile[]
   selectedReferenceFileIds: string[]
@@ -42,6 +54,11 @@ export const initialAppState: AppState = {
   confluenceStatus: 'idle',
   confluencePageTitle: null,
   confluenceMarkdown: null,
+
+  confluenceSiblingStatus: 'idle',
+  confluenceParentTitle: null,
+  confluenceSiblingDocs: [],
+  confluenceSiblingError: null,
 
   referenceFiles: [],
   selectedReferenceFileIds: [],

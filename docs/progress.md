@@ -97,3 +97,37 @@ QA 엔진(검토 에이전트) 핵심 로직 설계가 막혀있는 동안 우�
 - GitHub Actions 등 CI는 아직 없어서 경로 변경으로 인한 워크플로 수정은 불필요했음(향후 CI 추가 시 `backend/` 기준으로 작성).
 - 레포 이름(`planqa-backend`)이 이제 backend+extension을 다 담는 이름이 아니라서 변경 검토 예정.
 - QA 엔진(검토 에이전트) 핵심 로직 — 계속 최우선 순위.
+
+## 2026-08-05 — 컨플루언스 형제 문서 자동감지 (`feature/confluence-sibling-references`)
+
+메인 문서 자동감지에 이어, 그 문서의 상위 컨플루언스 페이지를 찾아 형제 문서들을 References 섹션에 체크박스로 보여주는 기능 추가. 로컬 파일 선택 기능(직전 세션에서 구현)은 그대로 유지 — 둘 다 같은 `referenceFiles`/`selectedReferenceFileIds` 상태로 합쳐짐.
+
+- **컨플루언스 REST API 2단계**: `GET /wiki/rest/api/content/{pageId}?expand=ancestors`로 직속 상위 페이지 id 조회(ancestors 배열의 마지막 항목) → `GET /wiki/rest/api/content/{parentId}/child/page?limit=100`로 형제 페이지 목록(자기 자신 제외) 조회. 목록만 먼저 가볍게 가져오고, 본문은 사용자가 체크했을 때만 별도로 가져옴(불필요한 API 호출 최소화).
+- `confluence-extractor.ts`의 기존 `extractCurrentPage` 로직에서 fetch+마크다운 변환 부분을 `fetchPageMarkdown(pageId)` 공용 헬퍼로 분리 — 메인 문서 감지와 형제 문서 본문 가져오기 둘 다 재사용. 상위/형제 파싱 로직은 `parseAncestorParentId`/`parseSiblingPages` 순수함수로 분리해 단위테스트.
+- `useConfluenceSiblingDocs` 훅 — `useConfluenceAutoDetect`와 동일 패턴, `confluenceStatus === 'detected'`가 되면 자동 실행.
+- `ConfluenceSiblingRow` — 체크하면 그 시점에 `FETCH_PAGE_MARKDOWN` 메시지로 본문을 가져와 `REFERENCE_FILES_ADDED`(id=컨플루언스 페이지 id)로 저장, 체크 해제하면 `REMOVE_REFERENCE_FILE`. 목록 자체(`confluenceSiblingDocs`)는 유지되니 재체크 가능.
+- `ReferencesSection.tsx`를 "컨플루언스 형제 문서" / "로컬 파일" 두 서브섹션으로 분리 — `referenceFiles` 배열에서 형제문서 id를 필터링해 로컬 파일 목록에 안 섞이게 처리.
+- 백엔드 변경 없음 — References는 여전히 QA 엔진이 없어서 백엔드로 전송 안 함.
+- 검증: 신규 순수함수(`parseAncestorParentId`, `parseSiblingPages`) + 리듀서 액션 테스트 포함 24개 전체 통과, `build`/`lint`/`typecheck` 클린.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 상위/하위 구조가 있는 컨플루언스 스페이스에서 상위 감지 → 형제 목록 → 체크 → 본문 변환 왕복. 사용자가 직접 언팩 리로드해서 확인 필요.
+- QA 엔진 핵심 로직(스크리닝→검증)이 없어서 막힌 것들 — 재검증 루프(두 위치 간 이슈 표현하려면 `Issue` 모델에 두 번째 위치 필드 필요), AI 제안 vs 사용자 수정 유사도 비교, 챕터별 개별 로딩 상태(`QAJobStatusResponse` 확장 필요). 전부 QA 엔진 코어가 먼저 있어야 함 — 계속 최우선 순위.
+
+## 2026-08-05 — QA 흐름 와이어프레임 매칭, fixture 기반 (`feature/qa-flow-wireframe-visuals`)
+
+사용자가 공유한 로딩→진행→이슈리뷰→수정→검토완료 와이어프레임 6장을 기준으로 화면 구현 상태를 점검. 카테고리별 실시간 진행률과 AI 재검증은 QA 엔진 코어가 없어서 못 만들지만(여전히 스크리닝/검증 로직 없음, "방안 2" 내부 설계도 미확정), 화면 구조/비주얼은 기존 fixture 폴백 패턴 위에서 지금 바로 맞출 수 있어 이 부분만 먼저 진행.
+
+- `api/types.ts`에 `CategoryItemStatus`/`CategoryItem`/`ProgressCategory` 추가, `QAJobStatusResponse.categories`를 옵셔널로 추가(백엔드는 미변경 — 이 필드는 fixture에서만 채워짐).
+- 신규 화면 `LoadingScreen.tsx`("QA 시작" 클릭 직후, `MainScreen`의 `handleStart`가 제일 먼저 `NAVIGATE loading` 디스패치) — 마스코트 이미지 자리(`/mascot/idle.png`)만 잡아둠, 실제 일러스트는 사용자가 추후 제공 예정.
+- `ProgressScreen.tsx`: 진행률을 막대바(`%` 라벨 포함)로 바꾸고, `jobStatus.categories`가 있을 때 `CategoryTree`(신규, `components/progress/`) 렌더링 — 카테고리별 펼침/접기, 항목 상태(done/in_progress/pending)별 스타일. "QA 중지 Ⅱ" 버튼 추가(실제 pause API는 없어서 메인 화면으로 돌아가는 소프트 취소로 구현 — 화면 언마운트로 `useQAJobPolling`의 폴링도 자연히 멈춤). 미사용 상태였던 `Spinner.tsx`는 걷는 마스코트로 대체되며 삭제.
+- `IssueListScreen.tsx`: 상단에 `OverviewPanel`(신규, `components/issues/`) 추가 — `groupIssuesByCriteria` 순수함수(신규 `state/issueGrouping.ts`, 단위테스트 3개)로 이슈를 검증기준별로 묶어 보여줌. "문서 오류 N개" 카운트를 기존 `issueEdits` 상태에서 파생(적용/수정된 이슈는 제외한 개수). 이미 적용/수정된 이슈는 대치제안 옆에 "✓ 수정완료" 배지 표시하되 수정하기는 계속 가능 — **실제 AI가 재검증한 게 아니라 사용자가 저장했다는 로컬 표시일 뿐**이라는 점을 명확히 구분해둠(진짜 재검증은 QA 엔진 몫).
+- `HistoryExportScreen.tsx`: 원본/수정본 전체 텍스트 두 블록 비교를 없애고, 적용/수정된 이슈만 "원본→수정" 쌍으로 나열하는 리스트로 교체(클릭하면 로컬 강조만 — 실제 컨플루언스 페이지로 스크롤 이동은 이번 스코프 아님). "종료" 버튼 추가(메인으로 복귀). 클립보드 복사 로직(`buildWorkingTextPreview`)은 그대로 유지.
+- 검증: `groupIssuesByCriteria` 테스트 포함 25개 전체 통과, `build`/`lint`/`typecheck` 클린.
+
+### Next
+
+- **마스코트 이미지 에셋 대기 중** — 사용자가 `extension/public/mascot/idle.png`(로딩), `extension/public/mascot/walk.gif`(진행) 파일을 주면 그대로 붙는 구조로 미리 만들어둠, 도착하면 바로 확인.
+- "(서비스명)으로 210건의 문서가 검토됐어요" 같은 누적 통계는 저장할 곳이 없어서 스코프 제외.
+- QA 엔진 핵심 로직 — 계속 최우선 순위. 이게 생겨야 진짜 카테고리별 실시간 진행률, 진짜 재검증(수정이 실제로 규칙을 해소했는지), AI 제안 vs 사용자 수정 유사도 비교까지 이어짐.

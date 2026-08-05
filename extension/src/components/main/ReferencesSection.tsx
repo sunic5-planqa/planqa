@@ -1,52 +1,56 @@
-import { useAppDispatch, useAppState } from '../../state/hooks'
-import { ReferenceFileRow } from './ReferenceFileRow'
-
-async function readFiles(fileList: FileList): Promise<{ id: string; name: string; content: string }[]> {
-  return Promise.all(
-    Array.from(fileList).map(async (file) => ({
-      id: crypto.randomUUID(),
-      name: file.name,
-      content: await file.text(),
-    })),
-  )
-}
+import { useState } from 'react'
+import { useConfluenceSiblingDocs } from '../../hooks/useConfluenceSiblingDocs'
+import { useAppState } from '../../state/hooks'
+import { ConfluenceSiblingRow } from './ConfluenceSiblingRow'
 
 export function ReferencesSection() {
-  const { referenceFiles, selectedReferenceFileIds } = useAppState()
-  const dispatch = useAppDispatch()
+  const {
+    selectedReferenceFileIds,
+    confluenceSiblingStatus,
+    confluenceParentTitle,
+    confluenceSiblingDocs,
+    confluenceSiblingError,
+  } = useAppState()
+  const [expanded, setExpanded] = useState(true)
 
-  const handleFilesPicked = async (fileList: FileList | null) => {
-    if (!fileList || fileList.length === 0) return
-    const files = await readFiles(fileList)
-    dispatch({ type: 'REFERENCE_FILES_ADDED', files })
-  }
+  useConfluenceSiblingDocs()
+
+  const connected = confluenceSiblingStatus !== 'idle' && confluenceSiblingStatus !== 'error'
 
   return (
-    <fieldset className="references-section">
-      <legend>References (선택된 문서: {selectedReferenceFileIds.length}개)</legend>
+    <div className="references-section">
+      <h2 className="references-heading">
+        References <span className="references-count">(선택된 문서: {selectedReferenceFileIds.length}개)</span>
+      </h2>
 
-      <label className="file-picker-button">
-        📎 파일 선택
-        <input
-          type="file"
-          accept=".md,text/markdown"
-          multiple
-          onChange={(e) => {
-            void handleFilesPicked(e.target.files)
-            e.target.value = ''
-          }}
-        />
-      </label>
+      <p className="confluence-db-status">
+        Confluence DB
+        {connected && <span className="status-dot">● Connected</span>}
+      </p>
 
-      {referenceFiles.length === 0 ? (
-        <p className="hint">참조할 마크다운 파일을 선택해주세요.</p>
-      ) : (
-        <div className="reference-file-list">
-          {referenceFiles.map((file) => (
-            <ReferenceFileRow key={file.id} file={file} />
-          ))}
+      {confluenceSiblingStatus === 'loading' && <p className="hint">같은 폴더의 다른 문서를 찾는 중...</p>}
+      {confluenceSiblingStatus === 'no_parent' && <p className="hint">상위 문서가 없어 형제 문서를 찾을 수 없습니다.</p>}
+      {confluenceSiblingStatus === 'error' && (
+        <p className="hint">형제 문서를 불러오지 못했습니다. ({confluenceSiblingError})</p>
+      )}
+
+      {confluenceSiblingStatus === 'loaded' && (
+        <div className="reference-folder">
+          <button type="button" className="folder-toggle" onClick={() => setExpanded((v) => !v)}>
+            📁 {confluenceParentTitle} {expanded ? '▼' : '▶'}
+          </button>
+
+          {expanded && confluenceSiblingDocs.length === 0 && <p className="hint">같은 폴더에 다른 문서가 없습니다.</p>}
+
+          {expanded && confluenceSiblingDocs.length > 0 && (
+            <div className="reference-file-list">
+              {confluenceSiblingDocs.map((doc) => (
+                <ConfluenceSiblingRow key={doc.id} doc={doc} />
+              ))}
+            </div>
+          )}
         </div>
       )}
-    </fieldset>
+    </div>
   )
 }

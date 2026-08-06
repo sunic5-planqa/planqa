@@ -36,6 +36,14 @@ interface HappyDomWindow {
   happyDOM: { setURL: (url: string) => void }
 }
 
+function openEditMode(): { mark: HTMLElement | null } {
+  applyIssueOverlay([ISSUE])
+  const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
+  mark?.click()
+  document.querySelector<HTMLButtonElement>('.sunnic-issue-tooltip button')?.click()
+  return { mark }
+}
+
 beforeEach(() => {
   document.body.innerHTML = `<main>${PAGE_HTML}</main>`
   ;(window as unknown as HappyDomWindow).happyDOM.setURL('http://localhost:8000/mock-confluence/pages/482910')
@@ -60,56 +68,68 @@ describe('applyIssueOverlay', () => {
     expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
   })
 
-  it('clicking the highlight then the fix button saves to Confluence and marks it resolved', async () => {
-    const fetchMock = stubConfluenceFetch()
-    applyIssueOverlay([ISSUE])
-    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
-    mark?.click()
+  it('clicking "오류 수정하기" enters an editable mode pre-filled with the AI suggestion', () => {
+    const { mark } = openEditMode()
 
-    const button = document.querySelector<HTMLButtonElement>('.sunnic-issue-tooltip button')
-    expect(button).not.toBeNull()
-    button?.click()
+    expect(mark?.isContentEditable).toBe(true)
+    expect(mark?.textContent).toBe(ISSUE.suggestion)
+    expect(document.querySelector('.sunnic-issue-edit-controls')).not.toBeNull()
+    expect(document.querySelector('.sunnic-issue-tooltip')).toBeNull()
+  })
+
+  it('cancel restores the original text and exits edit mode without saving', () => {
+    stubConfluenceFetch()
+    const { mark } = openEditMode()
+
+    document.querySelector<HTMLButtonElement>('[data-role="cancel"]')?.click()
+
+    expect(mark?.isContentEditable).toBe(false)
+    expect(mark?.textContent).toBe(ISSUE.input_text)
+    expect(document.querySelector('.sunnic-issue-edit-controls')).toBeNull()
+  })
+
+  it('clicking apply saves the (possibly hand-edited) text to Confluence and marks it resolved', async () => {
+    const fetchMock = stubConfluenceFetch()
+    const { mark } = openEditMode()
+
+    if (mark) mark.textContent = '사람이 직접 고친 문구'
+    document.querySelector<HTMLButtonElement>('[data-role="apply"]')?.click()
 
     await vi.waitFor(() => expect(mark?.classList.contains('sunnic-issue-resolved')).toBe(true))
 
-    expect(mark?.textContent).toBe(ISSUE.suggestion)
-    expect(document.querySelector('.sunnic-issue-tooltip')).toBeNull()
+    expect(mark?.isContentEditable).toBe(false)
+    expect(mark?.textContent).toBe('사람이 직접 고친 문구')
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
       type: 'ISSUE_OVERLAY_RESOLVED',
       issueId: ISSUE.id,
-      editedText: ISSUE.suggestion,
+      editedText: '사람이 직접 고친 문구',
     })
 
     const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
-    expect(putCall).toBeDefined()
     const putBody = JSON.parse((putCall?.[1] as RequestInit).body as string) as { body: { storage: { value: string } } }
-    expect(putBody.body.storage.value).toContain(ISSUE.suggestion)
+    expect(putBody.body.storage.value).toContain('사람이 직접 고친 문구')
   })
 
-  it('shows an inline error and re-enables the button when the original text is missing from Confluence', async () => {
+  it('pressing Enter applies and Escape cancels', async () => {
+    stubConfluenceFetch()
+    const { mark } = openEditMode()
+    mark?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+
+    expect(mark?.isContentEditable).toBe(false)
+    expect(mark?.textContent).toBe(ISSUE.input_text)
+  })
+
+  it('reverts the text and shows an inline error when saving fails', async () => {
     stubConfluenceFetch({ getBody: '<p>완전히 다른 본문</p>' })
-    applyIssueOverlay([ISSUE])
-    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
-    mark?.click()
-    document.querySelector<HTMLButtonElement>('.sunnic-issue-tooltip button')?.click()
+    const { mark } = openEditMode()
 
-    await vi.waitFor(() => expect(document.querySelector('.sunnic-tooltip-error')).not.toBeNull())
+    document.querySelector<HTMLButtonElement>('[data-role="apply"]')?.click()
 
+    await vi.waitFor(() => expect(document.querySelector('[data-error="true"]')).not.toBeNull())
+
+    expect(mark?.textContent).toBe(ISSUE.input_text)
     expect(mark?.classList.contains('sunnic-issue-resolved')).toBe(false)
-    const button = document.querySelector<HTMLButtonElement>('.sunnic-issue-tooltip button')
-    expect(button?.disabled).toBe(false)
     expect(chrome.runtime.sendMessage).not.toHaveBeenCalled()
-  })
-
-  it('shows an inline error when the PUT request fails', async () => {
-    stubConfluenceFetch({ putOk: false })
-    applyIssueOverlay([ISSUE])
-    document.querySelector<HTMLElement>('.sunnic-issue-highlight')?.click()
-    document.querySelector<HTMLButtonElement>('.sunnic-issue-tooltip button')?.click()
-
-    await vi.waitFor(() => expect(document.querySelector('.sunnic-tooltip-error')).not.toBeNull())
-
-    expect(document.querySelector('.sunnic-issue-highlight')?.classList.contains('sunnic-issue-resolved')).toBe(false)
   })
 })
 

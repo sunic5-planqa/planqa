@@ -1,5 +1,7 @@
 :root {
-  color-scheme: light dark;
+  /* Figma 목업이 라이트 전용이라 OS 다크모드를 따라가면 안 됨 — "light dark"로 두면 브라우저가
+     배경/텍스트 기본값을 시스템 설정에 맞춰 자동으로 뒤집어서, 라이트용 텍스트 색과 충돌해 잘 안 보임. */
+  color-scheme: light;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   /* Figma 목업(SCREEN 00~05) 브랜드 컬러 — 이전엔 목업과 무관한 주황(#ffb020)이 --accent였음 */
   --accent: #8b5fd9;
@@ -21,6 +23,8 @@
 body {
   margin: 0;
   min-width: 320px;
+  background: #fff;
+  color: var(--text-body);
 }
 
 .app {
@@ -66,7 +70,7 @@ textarea {
 .panel-title {
   font-size: 1.4rem;
   font-weight: 700;
-  text-align: center;
+  text-align: left;
   color: var(--text-heading);
 }
 
@@ -96,7 +100,7 @@ textarea {
 }
 
 .references-count {
-  font-size: 0.75rem;
+  font-size: 0.68rem;
   font-weight: 500;
   color: var(--text-muted);
 }
@@ -105,14 +109,14 @@ textarea {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 0.8rem;
+  font-size: 0.68rem;
   font-weight: 400;
   color: var(--text-muted);
   margin: 4px 0 8px;
 }
 
 .status-dot {
-  font-size: 0.8rem;
+  font-size: 0.68rem;
   font-weight: 600;
   color: var(--success);
 }
@@ -125,7 +129,7 @@ textarea {
 .folder-toggle {
   background: none;
   border: none;
-  font-size: 0.85rem;
+  font-size: 0.76rem;
   font-weight: 600;
   cursor: pointer;
   padding: 4px 0;
@@ -158,7 +162,7 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  font-size: 0.85rem;
+  font-size: 0.76rem;
   padding-left: 14px;
 }
 
@@ -176,7 +180,7 @@ textarea {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.8rem;
+  font-size: 0.73rem;
   font-weight: 500;
   color: var(--text-body);
 }

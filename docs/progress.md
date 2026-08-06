@@ -131,3 +131,61 @@ QA 엔진(검토 에이전트) 핵심 로직 설계가 막혀있는 동안 우�
 - **마스코트 이미지 에셋 대기 중** — 사용자가 `extension/public/mascot/idle.png`(로딩), `extension/public/mascot/walk.gif`(진행) 파일을 주면 그대로 붙는 구조로 미리 만들어둠, 도착하면 바로 확인.
 - "(서비스명)으로 210건의 문서가 검토됐어요" 같은 누적 통계는 저장할 곳이 없어서 스코프 제외.
 - QA 엔진 핵심 로직 — 계속 최우선 순위. 이게 생겨야 진짜 카테고리별 실시간 진행률, 진짜 재검증(수정이 실제로 규칙을 해소했는지), AI 제안 vs 사용자 수정 유사도 비교까지 이어짐.
+
+## 2026-08-06 — 목 컨플루언스 서버 + 본문 인라인 수정 오버레이
+
+실제 회사 컨플루언스 계정 없이도 확장 프로그램을 로컬에서 왕복 테스트할 수 있게 하고, Figma UI 목업
+(SCREEN 03/04)에 있던 "본문 위에 직접 뜨는 하이라이트 + AI 제안 툴팁"을 실제로 구현했다.
+
+- **`backend/src/sunnic_backend/api/mock_confluence.py`(신규)**: 컨플루언스 REST API 응답 형태(`GET
+  /wiki/rest/api/content/{id}?expand=body.storage|ancestors`, `GET /wiki/rest/api/content/{id}/child/page`)를
+  그대로 흉내내는 목 엔드포인트 + `GET /mock-confluence/pages/{id}`(브라우저로 직접 여는 목 컨플루언스
+  페이지 HTML). 문서 내용은 Figma 목업의 "결제 시스템 개선 기획서(PRD)"를 그대로 재사용 — 실제 화면에
+  나왔던 이슈(간편결제 3사 vs 4장 요구사항의 페이코·삼성페이 불일치 등)와 텍스트가 정확히 맞아떨어지게.
+  `main.py`에 라우터 등록, 테스트 4개(`tests/test_mock_confluence.py`) 추가.
+- **`extension/src/content/issueOverlay.ts`(신규 content script)**: 사이드패널이 아니라 **문서 본문 위에
+  직접** 이슈 텍스트를 하이라이트하고, 클릭하면 검증기준/검증이유/대치제안 + "오류 수정하기" 버튼이 담긴
+  툴팁이 뜬다. 백엔드 파서 오프셋이 아니라 `TreeWalker`로 라이브 DOM 텍스트를 직접 검색해 `Range.
+  surroundContents`로 `<mark>` 래핑 — 화면에 보이는 그대로를 기준으로 매칭한다. "오류 수정하기"를 누르면
+  해당 구간 텍스트를 대치제안으로 바꾸고 초록색 "수정완료" 스타일로 전환, `chrome.runtime.sendMessage`로
+  사이드패널에 결과를 통지(받는 쪽이 없어도 문서 위 수정 자체는 유효하므로 무시하고 진행).
+  단위테스트 4개(`issueOverlay.test.ts`, happy-dom) 추가 — 매칭/비매칭/클릭→수정/초기화 전부 검증.
+- **`extension/src/hooks/useIssueOverlaySync.ts`(신규)**: `issues` 화면(`issues`/`edit`)이 떠 있는 동안
+  현재 탭에 `SHOW_ISSUE_OVERLAY`를 보내고, 화면을 벗어나면 `CLEAR_ISSUE_OVERLAY`로 정리. 본문에서 발생한
+  `ISSUE_OVERLAY_RESOLVED` 메시지를 받으면 기존 `STAGE_ISSUE_EDIT` 액션으로 사이드패널 상태(`issueEdits`)에
+  반영해서, 사이드패널의 "✓ 수정완료" 배지와 문서 위 표시가 같은 소스를 공유하게 함. `App.tsx`에 마운트.
+- **`manifest.config.ts`**: `content_scripts.matches`/`host_permissions`에 `http://localhost:8000/*`,
+  `http://127.0.0.1:8000/*`를 개발용으로 추가(주석으로 dev-only, 실배포 시 제거 대상 명시), `js` 배열에
+  `issueOverlay.ts` 추가.
+- **`extension/src/api/fixtures.ts`**: 기존 "동해의 바다" 데모 이슈 3개를 목 컨플루언스 문서와 텍스트가
+  정확히 일치하는 "결제 시스템 개선 기획서" 이슈 3개로 교체(QA 엔진이 아직 없어 fixture로만 흐름 검증 중).
+- 검증: 백엔드 `uv run pytest` 29개, 확장 `typecheck`/`lint`/`build`/`vitest` 38개 전부 통과. 빌드된
+  `dist/manifest.json`에 두 content script와 로컬호스트 origin 정상 반영 확인. `/mock-confluence/pages/482910`,
+  `/wiki/rest/api/content/482910?expand=body.storage` curl 응답 수동 확인.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 Chrome에 언팩 리로드 후 `http://localhost:8000/mock-confluence/pages/482910`을
+  열고 사이드패널에서 QA 시작(폴백 fixture로 동작) → 이슈 리뷰 화면 진입 시 본문에 하이라이트 3개가 실제로
+  뜨는지, 클릭 → 툴팁 → "오류 수정하기" → 사이드패널 "✓ 수정완료" 배지 동기화까지 왕복 확인 필요.
+  `backend/`는 `uv run uvicorn sunnic_backend.main:app --port 8000`으로 기동해야 확장의 `VITE_API_BASE_URL`
+  기본값(`http://localhost:8000`)과 맞음.
+- 오버레이는 문서당 **첫 매칭 1건만** 하이라이트한다(동일 문구가 여러 곳에 있으면 두 번째 이후는 무시) —
+  지금 데모 문서는 문제 없지만, 실제 컨플루언스 문서에서 중복 표현이 흔하면 위치(`location`) 정보까지
+  활용한 정밀 매칭이 필요할 수 있음.
+- QA 엔진 핵심 로직 — 여전히 최우선 순위. 지금 오버레이는 fixture 데이터로만 동작하고, 실제 이슈가
+  생기면 `input_text`가 라이브 DOM과 정확히 일치한다는 보장이 없어(백엔드는 마크다운 오프셋 기준) 매칭
+  실패 케이스에 대한 처리(부분 매칭/공백 정규화 등)를 더 다듬어야 할 수 있음.
+
+### 후속 수정 (같은 날, 실제 언팩 로드 테스트에서 발견된 버그 2건)
+
+- **`sidePanel.open() may only be called in response to a user gesture`**: 아이콘 클릭 → `chrome.windows.
+  create()` await → `sidePanel.open()` 순서로 짰더니, await를 한 번이라도 거치면 제스처 컨텍스트가
+  소실돼 에러가 났다. `service-worker.ts`를 클릭한 탭의 `windowId`로 **await 없이 즉시** `sidePanel.
+  open()`부터 호출하고, 목 문서 로딩(새 탭 열기/기존 탭 포커스)은 별도 비동기 함수로 분리하는 구조로
+  변경 — 새 OS 창 대신 같은 창에 새 탭으로 열리지만 "왼쪽 문서 + 오른쪽 패널" 레이아웃은 동일하게 나옴.
+- **CORS 차단(`No 'Access-Control-Allow-Origin' header`)**: 코드 문제가 아니라 **서버 실행 위치** 문제였음
+  — `config.py`의 `env_file=".env"`가 CWD 기준 상대경로라, `backend/`가 아닌 다른 위치(레포 루트 등)에서
+  `uv run uvicorn ...`을 실행하면 `.env`를 못 찾아 `ALLOWED_ORIGINS`가 빈 배열이 되고 모든 origin이
+  차단됨. `.env`의 값 자체(`chrome-extension://lakdhpgnlleljlkkfobckijbnojlplcf`)는 처음부터 맞았음 —
+  반드시 `cd backend && uv run uvicorn sunnic_backend.main:app --port 8000`으로 실행해야 함.

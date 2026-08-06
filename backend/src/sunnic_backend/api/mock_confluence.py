@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 
 router = APIRouter(tags=["mock-confluence"])
 
@@ -40,6 +41,75 @@ BODY_STORAGE_HTML = """
 <p>기획 확정 8월 3주차, 개발 착수 9월 1주차, QA 및 배포 10월 2주차를 목표로 진행한다.</p>
 """.strip()
 
+# References 섹션의 "컨플루언스 형제 문서 자동감지"가 실제로 뭔가 보여줄 수 있도록, 목 문서에도
+# 상위 폴더 + 형제 문서 4개를 채워둔다. 각 형제 문서를 체크하면 실제로 이 본문이 그대로 fetch된다.
+PARENT_ID = "482900"
+PARENT_TITLE = "결제 시스템 개선"
+
+_SIBLING_BODIES: dict[str, dict[str, str]] = {
+    "482911": {
+        "title": "결제 요구사항 정의서",
+        "body": """
+<h2>결제수단별 요구사항</h2>
+<table>
+<tbody>
+<tr><th>결제수단</th><th>지원 여부</th><th>비고</th></tr>
+<tr><td>카카오페이</td><td>지원</td><td>기존 연동</td></tr>
+<tr><td>네이버페이</td><td>지원</td><td>기존 연동</td></tr>
+<tr><td>토스</td><td>지원</td><td>기존 연동</td></tr>
+<tr><td>페이코</td><td>미지원</td><td>이번 분기 신규 연동 검토</td></tr>
+<tr><td>삼성페이</td><td>미지원</td><td>이번 분기 신규 연동 검토</td></tr>
+</tbody>
+</table>
+<p>총 5종 중 3종만 지원 중이며, 페이코·삼성페이 추가 연동 시 5종 전체 지원이 완료된다.</p>
+""".strip(),
+    },
+    "482912": {
+        "title": "기획 회의록 (0728)",
+        "body": """
+<h2>참석자</h2>
+<p>김지현, 이도영, 박서준</p>
+<h2>논의 내용</h2>
+<ul>
+<li>결제 실패율 개선 목표치를 2.0%로 합의</li>
+<li>페이코·삼성페이 연동 우선순위 High로 조정</li>
+<li>QA 및 배포 일정은 10월 2주차 유지</li>
+</ul>
+""".strip(),
+    },
+    "482913": {
+        "title": "결제 API 명세서",
+        "body": """
+<h2>결제 요청 API</h2>
+<p>POST /api/v2/payments — 결제수단(method), 금액(amount), 주문번호(orderId)를 받아 결제를 요청한다.</p>
+<h2>결제 상태 조회 API</h2>
+<p>GET /api/v2/payments/{paymentId} — 결제 상태(성공/실패/타임아웃)를 조회한다.</p>
+""".strip(),
+    },
+    "482914": {
+        "title": "용어집",
+        "body": """
+<table>
+<tbody>
+<tr><th>용어</th><th>정의</th></tr>
+<tr><td>PG사</td><td>결제 대행사(Payment Gateway)</td></tr>
+<tr><td>간편결제</td><td>카드 정보를 매번 입력하지 않고 등록된 수단으로 결제하는 방식</td></tr>
+<tr><td>타임아웃</td><td>PG사 응답이 일정 시간 내 오지 않아 요청이 실패 처리되는 상황</td></tr>
+</tbody>
+</table>
+""".strip(),
+    },
+}
+
+# 실제 컨플루언스처럼 PUT으로 본문을 갱신할 수 있어야 해서(인라인 오버레이의 "오류 수정하기"가 진짜
+# 원문에 반영되는지 로컬에서 검증하려고) 각 페이지에 version을 붙인 뮤터블 상태로 관리한다.
+# 서버 프로세스가 살아있는 동안만 유지되고, 재시작하면 원본 데모 내용으로 리셋된다.
+_PAGES: dict[str, dict[str, object]] = {
+    PAGE_ID: {"title": PAGE_TITLE, "body": BODY_STORAGE_HTML, "version": 4},
+    **{page_id: {**page, "version": 1} for page_id, page in _SIBLING_BODIES.items()},
+}
+_CHILD_PAGE_IDS = [PAGE_ID, *_SIBLING_BODIES.keys()]
+
 _PAGE_TEMPLATE = """<!doctype html>
 <html lang="ko">
 <head>
@@ -65,9 +135,9 @@ _PAGE_TEMPLATE = """<!doctype html>
 <div class="banner">써니C 로컬 목 서버 — 실제 컨플루언스가 아닙니다. 확장 프로그램 개발/테스트 전용.</div>
 <header><span class="logo">Confluence</span><input placeholder="검색" disabled /></header>
 <main>
-  <div class="breadcrumb">PROJ 스페이스 / 기획 문서 / 결제 시스템 개선</div>
+  <div class="breadcrumb">PROJ 스페이스 / 기획 문서 / {parent_title}</div>
   <h1>{title}</h1>
-  <div class="byline">김지현 작성 · 3일 전 수정됨 · v4</div>
+  <div class="byline">김지현 작성 · 방금 수정됨 · v{version}</div>
   {body}
 </main>
 </body>
@@ -76,16 +146,66 @@ _PAGE_TEMPLATE = """<!doctype html>
 
 @router.get("/mock-confluence/pages/{page_id}", response_class=HTMLResponse)
 async def get_mock_confluence_page(page_id: str) -> str:
-    return _PAGE_TEMPLATE.format(title=PAGE_TITLE, body=BODY_STORAGE_HTML)
+    page = _PAGES.get(page_id, _PAGES[PAGE_ID])
+    return _PAGE_TEMPLATE.format(
+        title=page["title"], parent_title=PARENT_TITLE, body=page["body"], version=page["version"]
+    )
 
 
 @router.get("/wiki/rest/api/content/{page_id}")
 async def get_content(page_id: str, expand: str = Query(default="")) -> dict:
+    page = _PAGES.get(page_id, _PAGES[PAGE_ID])
+    result: dict = {"id": page_id, "title": page["title"]}
     if "ancestors" in expand:
-        return {"id": page_id, "title": PAGE_TITLE, "ancestors": []}
-    return {"id": page_id, "title": PAGE_TITLE, "body": {"storage": {"value": BODY_STORAGE_HTML}}}
+        result["ancestors"] = [{"id": PARENT_ID, "title": PARENT_TITLE}]
+    if "version" in expand:
+        result["version"] = {"number": page["version"]}
+    if "body.storage" in expand or not expand:
+        result["body"] = {"storage": {"value": page["body"]}}
+    return result
 
 
 @router.get("/wiki/rest/api/content/{parent_id}/child/page")
 async def get_child_pages(parent_id: str) -> dict:
-    return {"results": []}
+    if parent_id != PARENT_ID:
+        return {"results": []}
+    return {"results": [{"id": page_id, "title": _PAGES[page_id]["title"]} for page_id in _CHILD_PAGE_IDS]}
+
+
+class _UpdateVersion(BaseModel):
+    number: int
+
+
+class _UpdateStorage(BaseModel):
+    value: str
+    representation: str = "storage"
+
+
+class _UpdateBody(BaseModel):
+    storage: _UpdateStorage
+
+
+class UpdatePageRequest(BaseModel):
+    version: _UpdateVersion
+    title: str
+    type: str = "page"
+    body: _UpdateBody
+
+
+@router.put("/wiki/rest/api/content/{page_id}")
+async def update_content(page_id: str, request: UpdatePageRequest) -> dict:
+    page = _PAGES.get(page_id)
+    if page is None:
+        raise HTTPException(status_code=404, detail="page not found")
+    if request.version.number != int(page["version"]) + 1:
+        raise HTTPException(status_code=409, detail="version conflict — someone else edited this page first")
+
+    page["title"] = request.title
+    page["body"] = request.body.storage.value
+    page["version"] = request.version.number
+    return {
+        "id": page_id,
+        "title": page["title"],
+        "version": {"number": page["version"]},
+        "body": {"storage": {"value": page["body"]}},
+    }

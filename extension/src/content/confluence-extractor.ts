@@ -1,4 +1,5 @@
 import { htmlToChapterMarkdown } from './confluenceParser'
+import { hideLoadingOverlay, showLoadingOverlay } from './loadingOverlay'
 import type {
   ExtractConfluenceContentRequest,
   ExtractConfluenceContentResponse,
@@ -57,12 +58,15 @@ async function extractCurrentPage(): Promise<ExtractConfluenceContentResponse> {
   const pageId = extractPageId(location.href)
   if (!pageId) return { ok: false, error: 'NOT_A_CONFLUENCE_PAGE' }
 
+  showLoadingOverlay()
   try {
     const page = await fetchPageMarkdown(pageId)
     if (!page) return { ok: false, error: 'FETCH_FAILED' }
     return { ok: true, markdown: page.markdown, title: page.title }
   } catch (err) {
     return { ok: false, error: 'FETCH_FAILED', detail: String(err) }
+  } finally {
+    hideLoadingOverlay()
   }
 }
 

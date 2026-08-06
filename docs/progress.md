@@ -281,3 +281,30 @@ AI 제안을 원클릭 적용하는 게 아니라 **본문 위에서 사람이 �
 - 세션이 탭 새로고침에 묶여 있어서, 리뷰 도중 새로고침하면 다음 적용에서 복제본이 또 하나 생김 —
   필요하면 `chrome.storage.session`으로 pageId를 영속화하는 걸 고려할 수 있음(지금은 스코프 아님).
 - QA 엔진 핵심 로직 — 여전히 최우선 순위.
+
+## 2026-08-06 — 본문 가져오는 동안 그라데이션 오버레이 애니메이션
+
+Figma SCREEN 00("문서 파싱") 노드를 `get_design_context`로 다시 확인해보니, 문서 카드 위에 실제로
+`mix-blend-mode: lighten` 그라데이션 레이어(`154:219`, 보라↔핑크 대각선)가 겹쳐 있었음 — 정적
+스크린샷이라 안 보였을 뿐, 로딩 중 문서 위로 은은하게 도는 효과를 의도한 게 맞았다.
+
+- **`extension/src/content/loadingOverlay.ts`(신규)**: Figma와 동일한 그라데이션(`#f7c4eb ↔ #d1aefb`,
+  -47deg)을 `mix-blend-lighten`으로 얹는 `position: fixed` 오버레이. `background-position`을
+  애니메이션시켜 실제로 화면을 스캔하듯 흐르게 함(`pointer-events: none`이라 클릭은 그대로 통과).
+  `showLoadingOverlay()`/`hideLoadingOverlay()` 두 함수만 export.
+- **`extension/src/content/confluence-extractor.ts`**: `extractCurrentPage()`(사이드패널이 열리며 본문을
+  자동으로 가져오는 함수)의 fetch 구간을 `try/finally`로 감싸 시작 시 오버레이를 띄우고 끝나면(성공/
+  실패 무관) 반드시 치움. 별도 메시지 왕복 없이 content script 내부에서 직접 show/hide — 이미 본문
+  fetch 자체가 그 스크립트 안에서 일어나므로 사이드패널을 거칠 필요가 없었음. `manifest.config.ts`
+  변경 없음(같은 content script 번들에 묶여 들어감).
+- 검증: 확장 `typecheck`/`lint`/`build`/`vitest` 52개(오버레이 생성/중복방지/제거/빈 상태 제거 각각
+  테스트) 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 DOC-001을 처음 여는 순간(사이드패널이 자동으로 본문을 감지하는
+  구간)에 그라데이션이 실제로 화면 위에 흐르는지, 로딩 끝나면 깔끔히 사라지는지 확인.
+- 지금은 뷰포트 전체를 덮는 방식(`position: fixed; inset:0`) — Figma는 문서 카드 영역에만 덮여 있는데,
+  실제 컨플루언스 DOM 구조가 테마/버전마다 달라 "본문 카드"만 안정적으로 특정하기 어려워서 낸 절충안.
+  필요하면 나중에 컨플루언스의 본문 컨테이너 셀렉터를 찾아 범위를 좁힐 수 있음.
+- QA 엔진 핵심 로직 — 여전히 최우선 순위.

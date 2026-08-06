@@ -359,3 +359,22 @@ Figma SCREEN 01(References) 목업을 다시 보니 "리뷰 대상: {제목}" �
   화면(03/04/05)의 정확한 색상·버튼 스타일을 아직 안 맞춰봄 — 필요하면 각 화면별로 같은 방식(
   `get_design_context`로 실측 후 토큰화)으로 이어서 할 수 있음.
 - QA 엔진 핵심 로직 — 여전히 최우선 순위.
+
+## 2026-08-06 — 다크모드 고정 해제 + 디테일(정렬/글자 크기) 보정
+
+사용자가 패널이 까맣게 보인다고 해서 확인해보니, `color-scheme: light dark`만 있고 배경/텍스트를
+명시적으로 안 정해둬서 OS 다크모드를 따라 브라우저가 배경을 검게 자동 전환하고 있었음 — Figma가
+라이트 전용 디자인이라 시스템 설정과 무관하게 항상 라이트로 고정해야 했다.
+
+- **`extension/src/styles/global.css`**: `color-scheme: light`로 고정(`light dark` → `light`),
+  `body`에 `background:#fff; color:var(--text-body)` 명시 — 이제 시스템이 다크모드여도 패널은 항상
+  Figma와 같은 흰 배경으로 렌더링됨.
+- **`.panel-title`**: `text-align: center` → `left` — Figma 노드가 `items-start`(왼쪽 정렬)였음.
+- **References 주변 글자 크기 축소**: `.references-count`/`.confluence-db-status`/`.status-dot`
+  0.75~0.8rem → 0.68rem, `.folder-toggle`/`.reference-file-row` 0.85rem → 0.76rem,
+  `.reference-file-row label` 0.8rem → 0.73rem — 보조 정보들이 제목보다 확실히 작아 보이도록.
+- 검증: `typecheck`/`lint`/`build`/`vitest` 52개 전부 통과(스타일 변경이라 신규 테스트 없음).
+
+### Next
+
+- QA 엔진 핵심 로직 — 여전히 최우선 순위.

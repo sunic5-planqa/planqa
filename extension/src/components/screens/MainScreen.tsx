@@ -8,7 +8,7 @@ import { ErrorBanner } from '../common/ErrorBanner'
 import { ReferencesSection } from '../main/ReferencesSection'
 
 export function MainScreen() {
-  const { confluenceStatus, confluencePageTitle, confluenceMarkdown, error } = useAppState()
+  const { confluenceStatus, confluenceMarkdown, error } = useAppState()
   const dispatch = useAppDispatch()
   const { detect } = useConfluenceAutoDetect()
   const [submitting, setSubmitting] = useState(false)
@@ -43,22 +43,43 @@ export function MainScreen() {
     }
   }
 
+  // Figma SCREEN 00("문서 파싱")과 동일하게, 본문을 가져오는 동안은 "리뷰 대상"/"다시 확인" 같은
+  // 상태 문구 없이 마스코트 + 로딩바만 보여준다 — 그 문구들은 원래 목업에 없었음.
+  if (confluenceStatus === 'idle' || confluenceStatus === 'detecting') {
+    return (
+      <div className="screen main-screen">
+        <h1 className="panel-title">AI QA Service</h1>
+        <hr className="panel-divider" />
+        <div className="loading-screen">
+          <div className="mascot mascot-walk">
+            <img src="/mascot/walk.png" alt="" />
+          </div>
+          <p className="loading-label">본문 가져오는 중...</p>
+          <div className="progress-bar-thin">
+            <div className="progress-bar-thin-fill" />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="screen main-screen">
       <h1 className="panel-title">AI QA Service</h1>
       <hr className="panel-divider" />
 
-      <div className="confluence-status">
-        {confluenceStatus === 'detecting' && <p className="hint">리뷰 대상 확인 중...</p>}
-        {confluenceStatus === 'detected' && <p className="hint">리뷰 대상: {confluencePageTitle}</p>}
-        {confluenceStatus === 'not_confluence' && (
-          <p className="hint">컨플루언스 페이지가 아닙니다. 컨플루언스 페이지를 열고 다시 확인해주세요.</p>
-        )}
-        {confluenceStatus === 'error' && <p className="hint">문서를 불러오지 못했습니다.</p>}
-        <Button variant="secondary" onClick={detect} disabled={confluenceStatus === 'detecting'}>
-          다시 확인
-        </Button>
-      </div>
+      {(confluenceStatus === 'not_confluence' || confluenceStatus === 'error') && (
+        <div className="confluence-status">
+          <p className="hint">
+            {confluenceStatus === 'not_confluence'
+              ? '컨플루언스 페이지가 아닙니다. 컨플루언스 페이지를 열고 다시 확인해주세요.'
+              : '문서를 불러오지 못했습니다.'}
+          </p>
+          <Button variant="secondary" onClick={detect}>
+            다시 확인
+          </Button>
+        </div>
+      )}
 
       <ReferencesSection />
 

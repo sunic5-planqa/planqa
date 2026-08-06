@@ -89,8 +89,8 @@ export function MainScreen() {
           "(서비스명)으로 N건의 문서가 검토됐어요" 문구를 여기에 추가한다. */}
 
       <div className="qa-start-row">
-        <Button className="btn-bracket" onClick={() => void handleStart()} disabled={submitting || confluenceStatus !== 'detected'}>
-          {submitting ? '처리 중...' : 'QA 시작 ▶'}
+        <Button className="btn-cta" onClick={() => void handleStart()} disabled={submitting || confluenceStatus !== 'detected'}>
+          {submitting ? '처리 중...' : 'QA 시작'}
         </Button>
       </div>
     </div>

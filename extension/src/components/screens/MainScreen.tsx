@@ -65,30 +65,32 @@ export function MainScreen() {
 
   return (
     <div className="screen main-screen">
-      <h1 className="panel-title">AI QA Service</h1>
-      <hr className="panel-divider" />
+      <div className="main-screen-scroll">
+        <h1 className="panel-title">AI QA Service</h1>
+        <hr className="panel-divider" />
 
-      {(confluenceStatus === 'not_confluence' || confluenceStatus === 'error') && (
-        <div className="confluence-status">
-          <p className="hint">
-            {confluenceStatus === 'not_confluence'
-              ? '컨플루언스 페이지가 아닙니다. 컨플루언스 페이지를 열고 다시 확인해주세요.'
-              : '문서를 불러오지 못했습니다.'}
-          </p>
-          <Button variant="secondary" onClick={detect}>
-            다시 확인
-          </Button>
-        </div>
-      )}
+        {(confluenceStatus === 'not_confluence' || confluenceStatus === 'error') && (
+          <div className="confluence-status">
+            <p className="hint">
+              {confluenceStatus === 'not_confluence'
+                ? '컨플루언스 페이지가 아닙니다. 컨플루언스 페이지를 열고 다시 확인해주세요.'
+                : '문서를 불러오지 못했습니다.'}
+            </p>
+            <Button variant="secondary" onClick={detect}>
+              다시 확인
+            </Button>
+          </div>
+        )}
 
-      <ReferencesSection />
+        <ReferencesSection />
 
-      {error && <ErrorBanner message={error} />}
+        {error && <ErrorBanner message={error} />}
+      </div>
 
       {/* TODO(stats-api): 백엔드에 검토 문서 수 통계 엔드포인트가 생기면
           "(서비스명)으로 N건의 문서가 검토됐어요" 문구를 여기에 추가한다. */}
 
-      <div className="qa-start-row">
+      <div className="main-screen-footer">
         <Button className="btn-cta" onClick={() => void handleStart()} disabled={submitting || confluenceStatus !== 'detected'}>
           {submitting ? '처리 중...' : 'QA 시작'}
         </Button>

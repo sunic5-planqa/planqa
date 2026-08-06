@@ -28,6 +28,7 @@ body {
 }
 
 .app {
+  min-height: 100vh;
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -249,6 +250,33 @@ textarea {
 .qa-start-row {
   display: flex;
   justify-content: center;
+}
+
+/* MainScreen 전용 — Figma의 "Overlay+Shadow" 푸터처럼 QA 시작 버튼을 패널 하단에 고정한다.
+   .screen.main-screen이 .app(min-height:100vh) 안에서 flex:1로 남는 높이를 차지하고,
+   그 안의 스크롤 영역과 푸터를 분리해서 내용이 길어져도 버튼은 항상 하단에 보이게 한다. */
+.screen.main-screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.main-screen-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.main-screen-footer {
+  flex-shrink: 0;
+  margin: 16px -16px -16px;
+  padding: 16px 16px 16px;
+  background: #fff;
+  box-shadow: 0 -8px 20px rgba(0, 0, 0, 0.03);
 }
 
 .btn-cta {

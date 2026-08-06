@@ -333,3 +333,29 @@ Figma SCREEN 01(References) 목업을 다시 보니 "리뷰 대상: {제목}" �
 - **Claude가 검증 불가능한 것**: 실제 DOC-001을 열 때 "본문 가져오는 중..." 로딩 화면이 뜨고, 끝나면
   "리뷰 대상" 문구 없이 바로 References 화면으로 자연스럽게 넘어가는지 확인.
 - QA 엔진 핵심 로직 — 여전히 최우선 순위.
+
+## 2026-08-06 — SCREEN 01(QA 준비) 색상/버튼을 Figma 토큰에 맞춤
+
+`get_design_context`로 SCREEN 01 노드를 다시 뜯어봐서 실제 색상 값을 뽑아냈다. 기존 `--accent`가
+목업과 무관한 주황(`#ffb020`)이었던 것부터 시작해 전반적으로 브랜드 컬러가 안 맞았음.
+
+- **`extension/src/styles/global.css`**: `:root`에 Figma 실측값 기반 토큰 추가 —
+  `--accent: #8b5fd9`(Medium Purple), `--accent-gradient`(보라→핑크 135deg, 버튼용),
+  `--accent-contrast: #2e1750`(그라데이션 위 텍스트), `--success: #2e9e5b`, `--text-heading:
+  #1a1a1e`, `--text-muted: #8a8a93`, `--text-body: #3c3c43`. `.panel-title`/`.references-heading`/
+  `.references-count`/`.confluence-db-status`/`.status-dot`/`.resolved-badge`에 반영.
+- **`.btn-cta`(신규)**: Figma의 "QA 시작" 버튼 그대로 — 전체 너비, `height:50px`, `border-radius:25px`,
+  보라→핑크 그라데이션 배경, `#2e1750` ExtraBold 텍스트, `box-shadow: 0 6px 8px rgba(201,169,255,.45)`.
+  기존 `.btn-bracket`(`[ QA 시작 ▶ ]`) 대신 이걸 씀 — 다른 화면의 bracket 버튼(QA 중지, QA 완료 등)은
+  Figma에 이 필 버튼 스타일이 없어서 안 건드림. 버튼 텍스트도 Figma대로 "QA 시작"(화살표 제거).
+- **체크박스**: `ConfluenceSiblingRow.tsx`의 네이티브 체크박스를 커스텀 스타일로 — 미체크 시 회색 테두리
+  사각형, 체크 시 그라데이션 배경 + 흰 체크마크(`::after`). `input`은 시각적으로 숨기되 클릭/키보드
+  접근성은 그대로 유지(`opacity:0`로 겹쳐놓는 방식, `display:none` 아님).
+- 검증: `typecheck`/`lint`/`build`/`vitest` 52개 전부 통과(색상/마크업 변경이라 신규 테스트 없음).
+
+### Next
+
+- 다른 화면(IssueListScreen의 적용/스킵, HistoryExportScreen의 문서 복사 등)도 각자 대응하는 Figma
+  화면(03/04/05)의 정확한 색상·버튼 스타일을 아직 안 맞춰봄 — 필요하면 각 화면별로 같은 방식(
+  `get_design_context`로 실측 후 토큰화)으로 이어서 할 수 있음.
+- QA 엔진 핵심 로직 — 여전히 최우선 순위.

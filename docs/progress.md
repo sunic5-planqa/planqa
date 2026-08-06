@@ -378,3 +378,25 @@ Figma SCREEN 01(References) 목업을 다시 보니 "리뷰 대상: {제목}" �
 ### Next
 
 - QA 엔진 핵심 로직 — 여전히 최우선 순위.
+
+## 2026-08-06 — QA 시작 버튼을 패널 하단에 고정
+
+Figma의 "Overlay+Shadow" 푸터(References 목록은 `overflow-auto`로 스크롤되고, 버튼은 그 아래 별도
+영역에 그림자와 함께 고정)를 그대로 재현 — 지금까지는 버튼이 References 목록 다음에 그냥 이어져서
+내용이 길어지면 스크롤해야 보였음.
+
+- **`extension/src/styles/global.css`**: `.app`에 `min-height:100vh` 추가(내용이 짧아도 패널 높이를
+  꽉 채워야 버튼이 맨 아래에 붙음). `.screen.main-screen`을 `flex:1; min-height:0`으로 만들어 `.app`
+  안에서 남는 높이를 차지하게 하고, 내부를 `.main-screen-scroll`(제목/References, `overflow-y:auto`)과
+  `.main-screen-footer`(버튼, `flex-shrink:0`, 위쪽 그림자 `0 -8px 20px rgba(0,0,0,.03)`, `.app`의
+  16px 패딩을 음수 마진으로 상쇄해서 패널 가장자리까지 꽉 채움)로 분리.
+  다른 화면(IssueListScreen 등)의 `.qa-start-row`는 그대로 둬서 영향 없음 — 이번 요청은 MainScreen
+  한정이라 새 클래스로 분리해 블라스트 레디어스를 좁힘.
+- **`MainScreen.tsx`**: 반환 JSX를 위 두 영역으로 감싸도록 재구성. 로딩 상태(SCREEN 00) 분기는 그대로.
+- 검증: `typecheck`/`lint`/`build`/`vitest` 52개 전부 통과.
+
+### Next
+
+- 같은 패턴(스크롤 영역 + 하단 고정 푸터)이 다른 화면(IssueListScreen/HistoryExportScreen)에도
+  필요한지는 아직 안 물어봤음 — 필요하면 이어서 적용 가능.
+- QA 엔진 핵심 로직 — 여전히 최우선 순위.

@@ -10,6 +10,7 @@ router = APIRouter(tags=["mock-confluence"])
 # 인라인 수정 오버레이가 하이라이트할 이슈 텍스트가 실제 렌더링된 문서와 그대로 맞아떨어지게 한다.
 PAGE_ID = "482910"
 PAGE_TITLE = "결제 시스템 개선 기획서 (PRD)"
+SPACE_KEY = "MFS"
 
 BODY_STORAGE_HTML = """
 <h2>1. 개요</h2>
@@ -110,6 +111,10 @@ _PAGES: dict[str, dict[str, object]] = {
 }
 _CHILD_PAGE_IDS = [PAGE_ID, *_SIBLING_BODIES.keys()]
 
+# QA 리뷰 중 만들어지는 복제본(원본은 안 건드리고 수정본만 별도 페이지로 쌓는 방식)에 쓸 id 카운터.
+# 기존 데모 페이지 id(48291x)와 안 겹치게 별도 대역에서 시작한다.
+_next_created_id = 900000
+
 _PAGE_TEMPLATE = """<!doctype html>
 <html lang="ko">
 <head>
@@ -160,6 +165,8 @@ async def get_content(page_id: str, expand: str = Query(default="")) -> dict:
         result["ancestors"] = [{"id": PARENT_ID, "title": PARENT_TITLE}]
     if "version" in expand:
         result["version"] = {"number": page["version"]}
+    if "space" in expand:
+        result["space"] = {"key": SPACE_KEY}
     if "body.storage" in expand or not expand:
         result["body"] = {"storage": {"value": page["body"]}}
     return result
@@ -190,6 +197,37 @@ class UpdatePageRequest(BaseModel):
     title: str
     type: str = "page"
     body: _UpdateBody
+
+
+class _Space(BaseModel):
+    key: str
+
+
+class _Ancestor(BaseModel):
+    id: str
+
+
+class CreatePageRequest(BaseModel):
+    type: str = "page"
+    title: str
+    space: _Space
+    ancestors: list[_Ancestor] | None = None
+    body: _UpdateBody
+
+
+@router.post("/wiki/rest/api/content")
+async def create_content(request: CreatePageRequest) -> dict:
+    global _next_created_id
+    page_id = str(_next_created_id)
+    _next_created_id += 1
+
+    _PAGES[page_id] = {"title": request.title, "body": request.body.storage.value, "version": 1}
+    return {
+        "id": page_id,
+        "title": request.title,
+        "version": {"number": 1},
+        "body": {"storage": {"value": request.body.storage.value}},
+    }
 
 
 @router.put("/wiki/rest/api/content/{page_id}")

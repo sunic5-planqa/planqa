@@ -9,9 +9,12 @@ import type {
 
 // 사이드패널 이슈 목록과 별개로, 문서 본문 위에 직접 하이라이트 박스 + "AI 제안" 툴팁을 그려주고,
 // "오류 수정하기"를 누르면 그 자리에서 직접 타이핑해 고칠 수 있는 편집 모드로 들어간 뒤, "적용"을 눌러야
-// 컨플루언스 REST API로 실제 원문(body.storage)에 반영한다 — 사이드패널이 아니라 본문에서 바로 고치는
-// 흐름. Figma SCREEN 03/04 목업(본문 위 하이라이트 + 제안)에서 한 단계 더 나가, AI 제안을 그대로 적용할
-// 수도 있고 편집 모드에서 직접 다듬어 적용할 수도 있게 한다.
+// 컨플루언스에 반영한다 — 사이드패널이 아니라 본문에서 바로 고치는 흐름. Figma SCREEN 03/04 목업(본문 위
+// 하이라이트 + 제안)에서 한 단계 더 나가, AI 제안을 그대로 적용할 수도 있고 편집 모드에서 직접 다듬어
+// 적용할 수도 있게 한다.
+//
+// 원본은 절대 건드리지 않는다 — 첫 "적용" 시 원본을 복제한 새 페이지를 하나 만들고(QA 리뷰 세션당 1개,
+// 원본의 하위 페이지로 생성), 이후의 모든 적용은 그 복제본에만 누적 반영된다.
 const HIGHLIGHT_CLASS = 'sunnic-issue-highlight'
 const RESOLVED_CLASS = 'sunnic-issue-resolved'
 const EDITING_CLASS = 'sunnic-issue-editing'
@@ -310,10 +313,10 @@ function extractPageId(url: string): string | null {
 
 type ApplyResult = { ok: true } | { ok: false; error: string }
 
-// 실제 컨플루언스 반영: 최신 본문+버전을 받아 oldText → newText로 문자열 치환한 뒤 PUT으로 저장한다.
-// 표/목록처럼 렌더링 시 텍스트가 변형되는 구간은 원본 storage HTML에 그대로 없을 수 있어 실패 처리하고,
+// pageId가 가리키는 페이지의 body.storage에서 oldText → newText로 문자열 치환한 뒤 PUT으로 저장한다.
+// 표/목록처럼 렌더링 시 텍스트가 변형되는 구간은 storage HTML에 그대로 없을 수 있어 실패 처리하고,
 // 문서를 깨뜨리느니 아무것도 안 하는 쪽을 택한다.
-async function updatePageContent(pageId: string, oldText: string, newText: string): Promise<ApplyResult> {
+async function replaceTextAndSave(pageId: string, oldText: string, newText: string): Promise<ApplyResult> {
   const getRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=body.storage,version`, {
     credentials: 'include',
   })
@@ -342,14 +345,64 @@ async function updatePageContent(pageId: string, oldText: string, newText: strin
   return { ok: true }
 }
 
+// QA 리뷰 세션당 복제본 1개 — 원본은 절대 쓰지 않고, 첫 적용에서 이 복제본을 만들어 이후 모든 적용을
+// 여기에 누적한다. 페이지를 새로고침하면 초기화되고 다음 적용에서 새 복제본이 다시 만들어진다.
+let duplicateSession: { pageId: string; title: string } | null = null
+
+// 테스트 전용 — 모듈이 파일 내 여러 테스트에 걸쳐 싱글턴으로 유지되므로, 세션이 없는 상태(첫 적용)를
+// 매 테스트마다 재현하려면 이걸로 초기화해야 한다.
+export function __resetDuplicateSessionForTests(): void {
+  duplicateSession = null
+}
+
+async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: true; pageId: string } | { ok: false; error: string }> {
+  if (duplicateSession) return { ok: true, pageId: duplicateSession.pageId }
+
+  const originalRes = await fetch(`${location.origin}/wiki/rest/api/content/${originalPageId}?expand=body.storage,space`, {
+    credentials: 'include',
+  })
+  if (!originalRes.ok) return { ok: false, error: `원본을 불러오지 못했습니다 (${originalRes.status})` }
+
+  const original = (await originalRes.json()) as {
+    title: string
+    space?: { key: string }
+    body: { storage: { value: string } }
+  }
+  if (!original.space?.key) return { ok: false, error: '스페이스 정보를 확인하지 못했습니다.' }
+
+  const title = `${original.title} (QA 검토 수정본 ${new Date().toLocaleString('ko-KR')})`
+  const createRes = await fetch(`${location.origin}/wiki/rest/api/content`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', 'X-Atlassian-Token': 'no-check' },
+    body: JSON.stringify({
+      type: 'page',
+      title,
+      space: { key: original.space.key },
+      ancestors: [{ id: originalPageId }],
+      body: { storage: { value: original.body.storage.value, representation: 'storage' } },
+    }),
+  })
+  if (!createRes.ok) return { ok: false, error: `복제본 생성에 실패했습니다 (${createRes.status})` }
+
+  const created = (await createRes.json()) as { id: string }
+  duplicateSession = { pageId: created.id, title }
+  return { ok: true, pageId: created.id }
+}
+
 async function applyEdit(mark: HTMLElement, issue: OverlayIssue, oldText: string, newText: string): Promise<void> {
   mark.textContent = newText
-  const status = showStatus(mark, '적용 중...', false)
+  const wasFirstEdit = duplicateSession === null
+  const status = showStatus(mark, wasFirstEdit ? '복제본 생성 중...' : '복제본에 저장 중...', false)
 
-  const pageId = extractPageId(location.href)
-  const result = pageId
-    ? await updatePageContent(pageId, oldText, newText)
-    : ({ ok: false, error: '컨플루언스 문서 URL이 아니라 원문에 반영할 수 없습니다.' } as const)
+  const originalPageId = extractPageId(location.href)
+  const result = originalPageId
+    ? await (async (): Promise<ApplyResult> => {
+        const session = await ensureDuplicateSession(originalPageId)
+        if (!session.ok) return session
+        return replaceTextAndSave(session.pageId, oldText, newText)
+      })()
+    : { ok: false, error: '컨플루언스 문서 URL이 아니라 복제본을 만들 수 없습니다.' }
 
   if (status.isConnected) status.remove()
   if (activeFloating === status) activeFloating = null
@@ -361,10 +414,16 @@ async function applyEdit(mark: HTMLElement, issue: OverlayIssue, oldText: string
   }
 
   mark.classList.add(RESOLVED_CLASS)
+  const savedStatus = showStatus(mark, wasFirstEdit ? `복제본 생성됨: ${duplicateSession?.title ?? ''}` : '복제본에 저장됨', false)
+  setTimeout(() => {
+    if (activeFloating === savedStatus) closeFloating()
+    else savedStatus.remove()
+  }, 2200)
+
   chrome.runtime
     .sendMessage<IssueOverlayResolvedMessage>({ type: 'ISSUE_OVERLAY_RESOLVED', issueId: issue.id, editedText: newText })
     .catch(() => {
-      // 사이드패널이 닫혀있어 받는 쪽이 없어도 원문 저장 자체는 이미 끝났으니 무시한다.
+      // 사이드패널이 닫혀있어 받는 쪽이 없어도 복제본 저장 자체는 이미 끝났으니 무시한다.
     })
 }
 

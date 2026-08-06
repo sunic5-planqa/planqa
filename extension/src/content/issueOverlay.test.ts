@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { applyIssueOverlay, clearIssueOverlay } from './issueOverlay'
+import { __resetDuplicateSessionForTests, applyIssueOverlay, clearIssueOverlay } from './issueOverlay'
 import type { OverlayIssue } from './messages'
 
 const ISSUE: OverlayIssue = {
@@ -10,20 +10,38 @@ const ISSUE: OverlayIssue = {
   suggestion: '4사만 지원, 페이코 미지원',
 }
 
+const ORIGINAL_PAGE_ID = '482910'
+const DUPLICATE_PAGE_ID = '900001'
 const PAGE_HTML = '<p>간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원 안내.</p>'
 
-function stubConfluenceFetch(overrides?: { getBody?: string; getOk?: boolean; putOk?: boolean }): ReturnType<typeof vi.fn> {
-  const getOk = overrides?.getOk ?? true
+// GET/POST/PUT을 흉내내는 목 fetch. 첫 적용은 원본 GET(expand=space 포함) → 복제본 POST → 복제본
+// GET/PUT 순으로 나가고, 두 번째 적용부터는 복제본 GET/PUT만 나간다 — 실제 backend/mock_confluence.py의
+// 동작과 같은 순서.
+function stubConfluenceFetch(overrides?: { duplicateBody?: string; createOk?: boolean; putOk?: boolean }): ReturnType<typeof vi.fn> {
+  const createOk = overrides?.createOk ?? true
   const putOk = overrides?.putOk ?? true
-  const body = overrides?.getBody ?? PAGE_HTML
+  const duplicateBody = overrides?.duplicateBody ?? PAGE_HTML
 
-  const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+  const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === 'PUT') {
       return new Response(JSON.stringify({ ok: true }), { status: putOk ? 200 : 500 })
     }
+    if (init?.method === undefined && url.endsWith('/wiki/rest/api/content')) {
+      // shouldn't happen for GET — guard against a mis-stubbed call
+    }
+    if (init?.method === 'POST') {
+      return new Response(JSON.stringify({ id: DUPLICATE_PAGE_ID, title: 'duplicate' }), { status: createOk ? 200 : 500 })
+    }
+    if (url.includes(`/wiki/rest/api/content/${ORIGINAL_PAGE_ID}`)) {
+      return new Response(
+        JSON.stringify({ title: 'PRD', space: { key: 'MFS' }, body: { storage: { value: PAGE_HTML } } }),
+        { status: 200 },
+      )
+    }
+    // duplicate page GET
     return new Response(
-      JSON.stringify({ title: 'PRD', version: { number: 4 }, body: { storage: { value: body } } }),
-      { status: getOk ? 200 : 500 },
+      JSON.stringify({ title: 'duplicate', version: { number: 1 }, body: { storage: { value: duplicateBody } } }),
+      { status: 200 },
     )
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -46,7 +64,8 @@ function openEditMode(): { mark: HTMLElement | null } {
 
 beforeEach(() => {
   document.body.innerHTML = `<main>${PAGE_HTML}</main>`
-  ;(window as unknown as HappyDomWindow).happyDOM.setURL('http://localhost:8000/mock-confluence/pages/482910')
+  ;(window as unknown as HappyDomWindow).happyDOM.setURL(`http://localhost:8000/mock-confluence/pages/${ORIGINAL_PAGE_ID}`)
+  __resetDuplicateSessionForTests()
   // test-setup.ts 전역 chrome 스텁엔 sendMessage가 없어 이 테스트에서만 보강한다.
   chrome.runtime.sendMessage = vi.fn().mockResolvedValue(undefined)
 })
@@ -88,29 +107,55 @@ describe('applyIssueOverlay', () => {
     expect(document.querySelector('.sunnic-issue-edit-controls')).toBeNull()
   })
 
-  it('clicking apply saves the (possibly hand-edited) text to Confluence and marks it resolved', async () => {
+  it('the first apply creates a duplicate page instead of touching the original', async () => {
     const fetchMock = stubConfluenceFetch()
     const { mark } = openEditMode()
 
-    if (mark) mark.textContent = '사람이 직접 고친 문구'
     document.querySelector<HTMLButtonElement>('[data-role="apply"]')?.click()
-
     await vi.waitFor(() => expect(mark?.classList.contains('sunnic-issue-resolved')).toBe(true))
 
-    expect(mark?.isContentEditable).toBe(false)
-    expect(mark?.textContent).toBe('사람이 직접 고친 문구')
+    const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    expect((putCall?.[0] as string)).toContain(DUPLICATE_PAGE_ID)
+    const originalPut = fetchMock.mock.calls.find(
+      ([url, init]) => (init as RequestInit | undefined)?.method === 'PUT' && (url as string).includes(ORIGINAL_PAGE_ID),
+    )
+    expect(originalPut).toBeUndefined()
+
+    const postCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+    expect(postCall).toBeDefined()
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
       type: 'ISSUE_OVERLAY_RESOLVED',
       issueId: ISSUE.id,
-      editedText: '사람이 직접 고친 문구',
+      editedText: ISSUE.suggestion,
     })
-
-    const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
-    const putBody = JSON.parse((putCall?.[1] as RequestInit).body as string) as { body: { storage: { value: string } } }
-    expect(putBody.body.storage.value).toContain('사람이 직접 고친 문구')
   })
 
-  it('pressing Enter applies and Escape cancels', async () => {
+  it('a second apply reuses the same duplicate page instead of creating another one', async () => {
+    // 두 번째 이슈의 원문이 복제본 GET 응답에도 있어야 replaceTextAndSave가 매칭에 성공한다 —
+    // 실제로는 복제본이 원본 본문을 그대로 복사해서 시작하므로 이 문구도 원본에 있었다는 셈.
+    const fetchMock = stubConfluenceFetch({ duplicateBody: `${PAGE_HTML}<p>결제 실패 원인에 대한 안내가 필요하다.</p>` })
+
+    const first = openEditMode()
+    document.querySelector<HTMLButtonElement>('[data-role="apply"]')?.click()
+    await vi.waitFor(() => expect(first.mark?.classList.contains('sunnic-issue-resolved')).toBe(true))
+
+    const issue2: OverlayIssue = { ...ISSUE, id: 'issue-2', input_text: '결제 실패 원인' }
+    document.querySelector('main')!.innerHTML += '<p>결제 실패 원인에 대한 안내가 필요하다.</p>'
+    applyIssueOverlay([issue2])
+    document.querySelector<HTMLElement>(`[data-sunnic-issue-id="issue-2"]`)?.click()
+    document.querySelector<HTMLButtonElement>('.sunnic-issue-tooltip button')?.click()
+    document.querySelector<HTMLButtonElement>('[data-role="apply"]')?.click()
+
+    await vi.waitFor(() => {
+      const puts = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+      expect(puts.length).toBe(2)
+    })
+
+    const postCalls = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+    expect(postCalls).toHaveLength(1)
+  })
+
+  it('pressing Escape cancels without saving', () => {
     stubConfluenceFetch()
     const { mark } = openEditMode()
     mark?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
@@ -119,8 +164,8 @@ describe('applyIssueOverlay', () => {
     expect(mark?.textContent).toBe(ISSUE.input_text)
   })
 
-  it('reverts the text and shows an inline error when saving fails', async () => {
-    stubConfluenceFetch({ getBody: '<p>완전히 다른 본문</p>' })
+  it('reverts the text and shows an inline error when the duplicate cannot be created', async () => {
+    stubConfluenceFetch({ createOk: false })
     const { mark } = openEditMode()
 
     document.querySelector<HTMLButtonElement>('[data-role="apply"]')?.click()

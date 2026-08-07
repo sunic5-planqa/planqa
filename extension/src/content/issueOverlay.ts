@@ -21,17 +21,18 @@ const RESOLVED_CLASS = 'sunnic-issue-resolved'
 const TOOLTIP_CLASS = 'sunnic-issue-tooltip'
 const STYLE_ID = 'sunnic-issue-overlay-style'
 
+// Figma SCREEN 03/04의 하이라이트 박스 실측값 — 배경 채움 없이 solid 2px 보라 테두리(#b583ef)만,
+// 둥근 모서리 10px. 그라데이션이 아니다.
 const STYLE = `
 .${HIGHLIGHT_CLASS} {
-  background: rgba(124, 92, 255, 0.14);
-  outline: 2px solid #7c5cff;
-  outline-offset: 1px;
-  border-radius: 3px;
+  background: transparent;
+  border: 2px solid #b583ef;
+  border-radius: 10px;
+  padding: 1px 3px;
   cursor: pointer;
 }
 .${HIGHLIGHT_CLASS}.${RESOLVED_CLASS} {
-  background: rgba(46, 160, 67, 0.12);
-  outline-color: #2ea043;
+  border-color: #2ea043;
 }
 .${TOOLTIP_CLASS} {
   position: fixed;
@@ -74,12 +75,17 @@ function buildLooseTextRegex(input: string): RegExp {
   return new RegExp(escaped.replace(/\s+/g, '\\s+'))
 }
 
-// TreeWalker로 본문 텍스트 노드를 훑어 issue.input_text와 일치하는 첫 구간을 찾는다.
-// 백엔드 파서 오프셋(마크다운 기준)이 아니라 실제 렌더링된 DOM 텍스트를 직접 검색 — 오버레이는
-// 사용자가 보는 화면 위에 그려야 하므로 라이브 DOM 기준이 맞다. 표/목록처럼 렌더링 시 여러 요소로
-// 쪼개지는 구간(한 문단·한 텍스트 노드 안에 있지 않은 경우)은 이 방식으로 못 찾는다 — 알려진 한계.
-function findMatch(input: string): { node: Text; offset: number; length: number } | null {
-  const regex = buildLooseTextRegex(input)
+interface TextSpan {
+  node: Text
+  start: number
+  end: number
+}
+
+// body 안의(오버레이 자기 자신은 제외) 모든 텍스트 노드를 이어붙인 문자열 하나로 만들고, 각 노드가
+// 그 문자열의 어느 구간을 차지하는지 기록한다. "상태: " 라벨과 그 옆의 뱃지 컴포넌트처럼, 사람 눈엔
+// 한 줄이지만 실제로는 서로 다른 엘리먼트(=다른 텍스트 노드)에 걸쳐 있는 문구를 찾으려면 노드 하나씩
+// 따로 검색해서는 안 되고 이렇게 이어붙인 전체 텍스트 기준으로 검색해야 한다.
+function collectTextSpans(): { fullText: string; spans: TextSpan[] } {
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
     acceptNode: (node) => {
       if (isInsideOverlayNode(node)) return NodeFilter.FILTER_REJECT
@@ -89,35 +95,57 @@ function findMatch(input: string): { node: Text; offset: number; length: number 
     },
   })
 
+  let fullText = ''
+  const spans: TextSpan[] = []
   for (let current = walker.nextNode(); current; current = walker.nextNode()) {
-    const match = regex.exec(current.textContent ?? '')
-    if (match) return { node: current as Text, offset: match.index, length: match[0].length }
+    const text = current.textContent ?? ''
+    if (!text) continue
+    spans.push({ node: current as Text, start: fullText.length, end: fullText.length + text.length })
+    fullText += text
   }
-  return null
+  return { fullText, spans }
 }
 
-const marksByIssueId = new Map<string, HTMLElement>()
+const marksByIssueId = new Map<string, HTMLElement[]>()
 
+// issue.input_text와 일치하는 구간을 찾아 하이라이트한다. 매치가 텍스트 노드 하나에 다 들어있으면
+// <mark> 하나로 감싸고, 라벨+뱃지처럼 여러 노드에 걸쳐 있으면 겹치는 구간마다 각각 <mark>로 감싸서
+// (같은 issue id를 공유) 이어 붙은 것처럼 보이게 한다 — Range.surroundContents는 엘리먼트 경계를
+// 넘나드는 단일 범위를 감쌀 수 없어서, 노드별로 쪼개 감싸는 쪽을 택했다.
 function wrapIssue(issue: OverlayIssue): boolean {
-  const match = findMatch(issue.input_text)
+  const { fullText, spans } = collectTextSpans()
+  const match = buildLooseTextRegex(issue.input_text).exec(fullText)
   if (!match) return false
 
-  const range = document.createRange()
-  range.setStart(match.node, match.offset)
-  range.setEnd(match.node, match.offset + match.length)
+  const matchStart = match.index
+  const matchEnd = match.index + match[0].length
+  const marks: HTMLElement[] = []
 
-  const mark = document.createElement('mark')
-  mark.className = HIGHLIGHT_CLASS
-  mark.dataset.sunnicIssueId = issue.id
-  range.surroundContents(mark)
-  mark.addEventListener('click', (event) => {
-    event.stopPropagation()
-    toggleTooltip(mark, issue)
-    chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
-      // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
+  for (const span of spans) {
+    const overlapStart = Math.max(matchStart, span.start)
+    const overlapEnd = Math.min(matchEnd, span.end)
+    if (overlapStart >= overlapEnd) continue
+
+    const range = document.createRange()
+    range.setStart(span.node, overlapStart - span.start)
+    range.setEnd(span.node, overlapEnd - span.start)
+
+    const mark = document.createElement('mark')
+    mark.className = HIGHLIGHT_CLASS
+    mark.dataset.sunnicIssueId = issue.id
+    range.surroundContents(mark)
+    mark.addEventListener('click', (event) => {
+      event.stopPropagation()
+      toggleTooltip(mark, issue)
+      chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
+        // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
+      })
     })
-  })
-  marksByIssueId.set(issue.id, mark)
+    marks.push(mark)
+  }
+
+  if (marks.length === 0) return false
+  marksByIssueId.set(issue.id, marks)
   return true
 }
 
@@ -154,7 +182,10 @@ function toggleTooltip(mark: HTMLElement, issue: OverlayIssue): void {
     <div>${issue.suggestion}</div>
   `
   positionNear(tooltip, mark)
-  document.body.appendChild(tooltip)
+  // body가 아니라 html에 직접 붙인다 — 실제 컨플루언스 페이지의 body(또는 그 사이 어딘가)에
+  // transform/filter가 걸려 있으면 그게 fixed 요소의 containing block이 돼버려서 위치가 또
+  // 틀어질 수 있는데, html까지 그런 경우는 사실상 없다.
+  document.documentElement.appendChild(tooltip)
   activeTooltip = tooltip
 }
 
@@ -282,13 +313,13 @@ export async function applyIssueEdit(issueId: string, oldText: string, newText: 
   const result = await replaceTextAndSave(session.pageId, oldText, newText)
   if (!result.ok) return result
 
-  marksByIssueId.get(issueId)?.classList.add(RESOLVED_CLASS)
+  for (const mark of marksByIssueId.get(issueId) ?? []) mark.classList.add(RESOLVED_CLASS)
   closeTooltip()
   return { ok: true }
 }
 
 export function scrollToIssue(issueId: string): boolean {
-  const mark = marksByIssueId.get(issueId)
+  const mark = marksByIssueId.get(issueId)?.[0]
   if (!mark) return false
   mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
   return true

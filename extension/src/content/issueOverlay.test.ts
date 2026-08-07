@@ -97,6 +97,34 @@ describe('applyIssueOverlay', () => {
     expect(document.querySelectorAll('.sunnic-issue-highlight')).toHaveLength(2)
   })
 
+  it('matches text that spans a label and a separate badge element (e.g. a status lozenge)', () => {
+    // 실제 컨플루언스에서 "상태: 검토 중" 같은 문구는 라벨 텍스트 노드와 별도 뱃지 엘리먼트로 쪼개져
+    // 렌더링되는 경우가 흔함 — 한 텍스트 노드 안에서만 찾던 예전 방식은 이런 경우를 놓쳤다.
+    document.body.innerHTML = '<p>상태: <span class="lozenge">검토 중</span> 입니다.</p>'
+    const issue: OverlayIssue = { ...ISSUE, input_text: '상태: 검토 중' }
+
+    const result = applyIssueOverlay([issue])
+
+    expect(result).toEqual({ matched: 1, total: 1 })
+    const marks = document.querySelectorAll('.sunnic-issue-highlight')
+    expect(marks.length).toBeGreaterThanOrEqual(2)
+    expect(Array.from(marks).every((m) => m.getAttribute('data-sunnic-issue-id') === issue.id)).toBe(true)
+    expect(Array.from(marks).map((m) => m.textContent).join('')).toBe('상태: 검토 중')
+  })
+
+  it('resolves every mark of a multi-element match together', async () => {
+    stubConfluenceFetch({ duplicateBody: '<p>상태: 검토 중</p>' })
+    document.body.innerHTML = '<p>상태: <span class="lozenge">검토 중</span></p>'
+    const issue: OverlayIssue = { ...ISSUE, input_text: '상태: 검토 중' }
+    applyIssueOverlay([issue])
+
+    await applyIssueEdit(issue.id, issue.input_text, '검토 완료')
+
+    const marks = document.querySelectorAll('.sunnic-issue-highlight')
+    expect(marks.length).toBeGreaterThanOrEqual(2)
+    expect(Array.from(marks).every((m) => m.classList.contains('sunnic-issue-resolved'))).toBe(true)
+  })
+
   it('clicking a highlight shows a read-only AI 제안 bubble and focuses the sidepanel on it', () => {
     applyIssueOverlay([ISSUE])
     const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')

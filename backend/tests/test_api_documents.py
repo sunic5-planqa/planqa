@@ -44,3 +44,14 @@ async def test_export_returns_404_for_unknown_document() -> None:
         response = await client.get("/documents/does-not-exist/export")
 
     assert response.status_code == 404
+
+
+async def test_count_documents_increases_after_creating_one() -> None:
+    # store가 프로세스/테스트 세션 전체에 공유되는 싱글턴이라 절대값 대신 증가분으로 검증한다.
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        before = (await client.get("/documents/count")).json()["count"]
+        await client.post("/documents", json={"raw_text": "통계 테스트용"})
+        after = (await client.get("/documents/count")).json()["count"]
+
+    assert after == before + 1

@@ -1,6 +1,4 @@
 import { OverviewPanel } from '../issues/OverviewPanel'
-import { api } from '../../api/client'
-import { NotImplementedError } from '../../api/errors'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { Button } from '../common/Button'
 
@@ -24,87 +22,75 @@ export function IssueListScreen() {
   }
 
   const isResolved = RESOLVED_ACTIONS.has(issueEdits[issue.id]?.action ?? '')
-
-  const stageDecision = async (action: 'apply' | 'skip') => {
-    dispatch({ type: 'STAGE_ISSUE_EDIT', issueId: issue.id, action })
-    try {
-      await api.updateIssue(issue.id, { action })
-    } catch (err) {
-      if (!(err instanceof NotImplementedError)) {
-        dispatch({ type: 'SET_ERROR', error: err instanceof Error ? err.message : String(err) })
-      }
-    }
-  }
+  const suggestion = issueEdits[issue.id]?.editedText ?? issue.suggestion
 
   return (
     <div className="screen issue-list-screen">
-      <h1 className="panel-title">AI QA Service</h1>
-      <hr className="panel-divider" />
+      <div className="screen-scroll">
+        <h1 className="panel-title">AI QA Service</h1>
+        <hr className="panel-divider" />
 
-      <OverviewPanel issues={issues} />
+        <OverviewPanel issues={issues} currentIssueId={issue.id} />
 
-      <p className="issue-error-count">
-        문서 오류 <strong>{remainingCount}</strong>개
-      </p>
-      <p className="hint">
-        {currentIssueIndex + 1} / {issues.length}
-      </p>
+        <p className="issue-error-count">
+          문서 오류 <strong>{remainingCount}</strong>개
+        </p>
 
-      <dl className="issue-details">
-        <dt>위치</dt>
-        <dd>{issue.location}</dd>
-        <dt>입력 내용</dt>
-        <dd>{issue.input_text}</dd>
-        <dt>검증 기준</dt>
-        <dd>{issue.criteria}</dd>
-        <dt>검증 이유</dt>
-        <dd>{issue.reason}</dd>
-        <dt>대치 제안</dt>
-        <dd>
-          {issueEdits[issue.id]?.editedText ?? issue.suggestion}
-          {isResolved && <span className="resolved-badge">✓ 수정완료</span>}
-        </dd>
-      </dl>
+        <div className="issue-detail-card">
+          <div className="issue-detail-block">
+            <span className="issue-detail-label">입력내용</span>
+            <p className="issue-detail-value">{issue.input_text}</p>
+          </div>
 
-      <div className="issue-actions">
-        <Button variant="primary" onClick={() => void stageDecision('apply')}>
-          적용
-        </Button>
-        <Button variant="secondary" onClick={() => void stageDecision('skip')}>
-          스킵
-        </Button>
-        <Button variant="secondary" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'edit' })}>
-          수정하기
-        </Button>
-      </div>
+          <div className="issue-detail-block">
+            <div className="issue-suggestion-row">
+              <span className="issue-detail-label">수정제안</span>
+              {isResolved ? (
+                <span className="resolved-badge">✓ 수정완료</span>
+              ) : (
+                <button type="button" className="issue-fix-link" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'edit' })}>
+                  오류 수정하기 ✏️
+                </button>
+              )}
+            </div>
+            <p className="issue-suggestion-text">{suggestion}</p>
+          </div>
 
-      <div className="issue-nav">
-        <Button
-          variant="secondary"
-          className="btn-link"
-          disabled={currentIssueIndex === 0}
-          onClick={() => dispatch({ type: 'NAVIGATE_ISSUE', direction: 'prev' })}
-        >
-          {'<'}이전
-        </Button>
-        {currentIssueIndex < issues.length - 1 && (
-          <Button
-            variant="secondary"
-            className="btn-link"
-            onClick={() => dispatch({ type: 'NAVIGATE_ISSUE', direction: 'next' })}
-          >
-            다음{'>'}
-          </Button>
-        )}
-      </div>
+          <hr className="issue-detail-divider" />
 
-      {currentIssueIndex === issues.length - 1 && (
-        <div className="qa-start-row">
-          <Button className="btn-bracket" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'history' })}>
-            QA 완료 ▶
-          </Button>
+          <div className="issue-detail-block">
+            <span className="issue-detail-label">검증기준</span>
+            <span className="issue-criteria-badge">{issue.criteria}</span>
+          </div>
+
+          <div className="issue-detail-block">
+            <span className="issue-detail-label">검증이유</span>
+            <p className="issue-reason-text">{issue.reason}</p>
+          </div>
         </div>
-      )}
+
+        <div className="issue-nav">
+          <button
+            type="button"
+            className="issue-nav-prev"
+            disabled={currentIssueIndex === 0}
+            onClick={() => dispatch({ type: 'NAVIGATE_ISSUE', direction: 'prev' })}
+          >
+            {'< 이전'}
+          </button>
+          {currentIssueIndex < issues.length - 1 && (
+            <button type="button" className="issue-nav-next" onClick={() => dispatch({ type: 'NAVIGATE_ISSUE', direction: 'next' })}>
+              {'다음 >'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="screen-footer">
+        <Button className="btn-cta" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'history' })}>
+          QA 완료
+        </Button>
+      </div>
     </div>
   )
 }

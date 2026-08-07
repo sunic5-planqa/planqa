@@ -641,3 +641,100 @@ Overview 카드로 이슈를 옮겨다닐 때도 자동으로 뜨도록 확장 �
   원문만 보여줄지 원문+수정본을 같이 보여줄지"로 스코프를 좁혀 구현함 — 다른 의도(예: 원본 컨플루언스
   페이지로 직접 이동)였다면 다시 조정 필요.
 - QA 엔진 핵심 로직 — 여전히 최우선 순위.
+
+## 2026-08-08 — QA 엔진 코어 연결 (`sunic5-planqa/planqa-agent` review-agent 도입)
+
+여러 세션째 "최우선 순위"로 밀려 있던 QA 엔진 코어를 드디어 붙였다. 자체 구현 대신, 별도 저장소
+(`planqa-agent`, `feature/review-agent` 브랜치)에서 이미 완성돼 테스트까지 붙어있던 룰북 기반 검토
+파이프라인을 가져와 벤더링했다 — 처음부터 다시 짜는 대신 검증된 걸 재사용하는 쪽으로 판단.
+
+- **벤더링 범위**: `planqa-agent`의 `review-agent/src/planqa_review/`에서 실행 경로에 필요한 것만
+  골라 `backend/src/sunnic_backend/qa_engine/review_agent/`로 복사 — `schema`/`document`/`rulebook`/
+  `tiers`/`dedupe`/`instrumentation`/`verifier`/`pipeline`/`llm/{base,gemini}`/
+  `models/gemini_lite/*`. CLI(`cli.py`)와 벤치마크/실험/스코어링 도구(`benchmark.py`, `experiment.py`,
+  `diff_report.py`, `run_stats.py`, `scoring.py`, `llm/{factory,ollama}.py`, `openpyxl`/`python-dotenv`
+  의존성)는 이 백엔드가 서빙 전용이라 제외 — 그 결과 새 의존성 추가가 하나도 필요 없었음(이미 있던
+  `google-genai`로 충분). 룰북 원본(`rulebook_v1.0.md`)도 패키지 안에 함께 복사해 cwd에 의존하지
+  않게 함(`Path(__file__)` 기준 경로).
+  같이 딸려온 테스트 8개(`test_dedupe`/`document`/`instrumentation`/`llm_base`/`pipeline`/`screener`/
+  `confirmer`/`tiers`) + trimmed `conftest.py`도 `backend/tests/qa_engine/review_agent/`로 이식,
+  `document.py`의 실제 문서 회귀 테스트가 쓰는 `DOC-001` 샘플 하나만 `fixtures/`에 별도로 챙김(전체
+  40개 벤치마크 문서셋은 원본 저장소에만 있음).
+- **기존 반쪽짜리 `qa_engine/llm/{base,gemini}.py` 삭제**: 예전에 async `google-genai` 클라이언트로
+  시작했다가 스크리너/컨펌어/파이프라인 없이 멈춰 있던 코드 — 아무 데서도 안 쓰이던 죽은 코드였고,
+  review-agent 쪽 동기 클라이언트가 스크리닝→검증 로직과 이미 세트로 맞물려 있어서 그대로 대체.
+- **`qa_jobs.py`**: 3개 501 스텁을 실구현으로 교체.
+  - `POST /documents/{id}/qa-jobs`: `QAJob(status=running)` 저장 후 `BackgroundTasks`로 실제 검토를
+    백그라운드에 태움, 응답은 즉시 `job_id`만 반환.
+  - review-agent의 `GeminiClient`는 동기/블로킹(429 재시도에 `time.sleep` 사용)이라, FastAPI 이벤트
+    루프를 막지 않도록 `review_document(...)` 호출 전체를 `asyncio.to_thread`로 감쌈 — review-agent
+    코드 자체는 손대지 않고 격리.
+  - `review_document`의 `ReviewIssue`(`rule_id`/`original_text`/`rationale`/`fix_direction` 등)를
+    백엔드 `Issue` 모델(`criteria`/`input_text`/`reason`/`suggestion`)로 매핑: `criteria`는 룰북에서
+    `rule_id`로 찾은 카테고리 라벨("용어 및 단어의 일관성" 등, Figma SCREEN 04 목업의 "검증기준"
+    문구와 같은 형태), `reason`은 `rationale`(없으면 `description`), `suggestion`은 `fix_direction`.
+    `start`/`end`는 원문에서 `input_text` 위치를 best-effort로 찾아 채움(API 응답엔 노출 안 되지만
+    내부 모델 필드라 채워둠).
+  - 진행률/카테고리는 이번 스코프에서 단순화 — `review_document`가 전체를 한 번에 돌려주는 구조라
+    타이어별 콜백이 없음. `RUNNING(0%)` → `DONE(100%)`/`FAILED(100%)`만 보고, `current_category`는
+    계속 `null`. 타이어별 실시간 진행률을 보여주려면 파이프라인 내부에 콜백 훅을 추가해야 하는데,
+    이번엔 벤더링한 코드를 upstream과 최대한 diffable하게 유지하는 쪽을 택해 보류.
+  - `PATCH /issues/{id}`, `GET /documents/{id}/export`는 이번 스코프 밖 — 지금 실제 편집 흐름은
+    `issueOverlay.ts`가 컨플루언스 API로 직접 처리하는 복제본 저장 방식이라 이 두 엔드포인트는 애초에
+    쓰이지 않음(구 "복붙 export" 시절 잔재), 그대로 501 유지.
+- **`config.py`**: `qa_screen_model`/`qa_confirm_model`(둘 다 기본값 빈 문자열 → review-agent의
+  `DEFAULT_MODEL`, 현재 `gemini-2.5-flash`) 추가 — 스크리닝/정밀검증에 다른 모델을 쓰고 싶을 때
+  `.env`로 오버라이드 가능.
+- **`pyproject.toml`**: 벤더링한 코드는 upstream과 diff 가능하게 그대로 두기 위해
+  `[tool.ruff.lint.per-file-ignores]`로 `qa_engine/review_agent/**`만 `B023`/`UP047` 무시(둘 다
+  `record_call`이 같은 루프 반복 안에서 람다를 즉시 실행해서 실제로는 안전한 false positive).
+- **검증**: 벤더링한 39개 + 기존 17개, 백엔드 `uv run pytest` 총 56개 전부 통과. `ruff check` 클린.
+  `uv run uvicorn`으로 실제 기동해 `POST /documents` → `POST .../qa-jobs` → `GET .../status` →
+  `GET .../issues` 전체 왕복 수동 확인(로컬에 Gemini 키가 없어 파이프라인 자체는 곧바로
+  `RuntimeError`로 실패하지만, `FAILED`/`progress:100`으로 정상 종결되고 404 케이스도 올바르게 처리되는
+  것까지 확인 — 잡(job) 생명주기 배선 자체는 검증됨).
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 `GEMINI_API_KEYS`로 `.env`를 채우고 실제 컨플루언스 문서로 전체
+  파이프라인이 끝까지 도는지(스크리닝→정밀검증→이슈 반환), 그리고 익스텐션 쪽 폴백 로직(`NotImplementedError`
+  잡히면 fixture로 대체)이 더 이상 안 타고 실제 이슈가 표시되는지 확인 필요.
+- 타이어별(문서/논리단위/문단/문장) 실시간 진행률·카테고리 — 지금은 처음부터 끝까지 `running`뿐이라
+  `ProgressScreen`의 `CategoryTree`는 계속 안 뜸(옵셔널이라 깨지진 않음). 필요해지면
+  `pipeline.review_document` 내부에 타이어 완료 콜백을 추가하는 방향으로 확장 가능.
+  이 review-agent 코드는 별도 저장소(`planqa-agent`)에서 관리되므로, 두 저장소가 갈라지지 않게
+  주기적으로 다시 동기화(재벤더링)할 필요가 있음 — 지금은 수동 재복사 방식.
+- `PATCH /issues/{id}`, `GET /documents/{id}/export` — 여전히 501. 지금 실제 편집은 익스텐션이
+  컨플루언스에 직접 쓰는 방식이라 당장 급하지 않지만, 이 두 엔드포인트를 아예 없앨지 다른 용도로
+  바꿀지는 다음에 정리 필요.
+- **QA job 엔드포인트 통합 테스트 추가(`backend/tests/test_api_qa_jobs.py`)**: `qa_jobs.GeminiClient`를
+  스크립트된 페이크로 바꿔치기해서, 진짜 API 키 없이도 엔드포인트 → 백그라운드 태스크 → 실제
+  review-agent 파이프라인 → `_to_issue_record` 매핑 → 저장소까지 전체 경로를 실제 코드로 검증. 이
+  과정에서 `review_document`가 단계별 에러를 내부에서 흡수해 항상 `done`으로 끝난다는 걸 확인 —
+  "failed"가 뜨는 유일한 경로는 파이프라인 진입 전(예: `GeminiClient` 생성 자체가 실패, API 키 없음)
+  뿐이라 그 케이스로 테스트를 다시 맞춤. `criteria`가 원시 rule_id가 아니라 룰북 카테고리 라벨로 잘
+  매핑되는지도 같이 검증. 4개 전부 통과, 백엔드 전체 60개로 증가.
+- **실제 Gemini 키로 라이브 검증**: 사용자가 `.env`에 키 3개를 채운 뒤 직접 `review_document`를
+  돌려봄 — 인증/연결 자체는 정상(에러가 401/403이 아니라 429), 다만 무료 티어 일일 한도(모델당
+  하루 20건)를 세 키 다 이미 소진해 이슈가 0건으로 나옴. 문서 1건 검토에 호출이 5~9번(컨텍스트 1 +
+  위계 4개 × 스크리닝/정밀검증) 들어가서 무료 키 하나로 하루 2~4건이 실질 한계 — 배선 자체는
+  검증됐고 순수 쿼터 문제라 다음 UTC 리셋 이후나 새 키 추가 시 재확인.
+
+## 2026-08-08 — 확장 아이콘 교체
+
+기존 플레이스홀더(단색 원)를 실제 마스코트 기반 아이콘으로 교체.
+
+- Figma에서 "Mascot icon" 라벨 아래에 있던 56×56 아이콘(보라→핑크 그라데이션 rounded square +
+  흰 얼굴판 + 보라 점 눈)을 찾아 처음 적용했으나, 코너에 불투명 흰 배경이 남아있어(Figma 캔버스
+  배경이 그대로 노출) 브라우저 툴바에서 흰 사각형처럼 보이는 문제가 있었음 — 이후 사용자가 코너가
+  이미 투명 처리된 자체 에셋(`Desktop/Background.png`, 112×112, alpha 채널 있음)을 직접 제공해 그걸로
+  최종 교체.
+- `extension/public/icons/icon{16,48,128}.png`를 `sips -z`로 리사이즈해 교체. `manifest.config.ts`의
+  경로 참조는 기존 그대로(변경 없음). `npm run build`로 `dist/manifest.json`과 리사이즈된 PNG들이
+  정상 반영되는 것 확인.
+
+### Next
+
+- 실제 Chrome에 리로드해서 툴바 아이콘이 반투명 배경으로 잘 보이는지(다크 툴바 테마 포함) 확인 필요.
+- QA 엔진 핵심 로직은 이제 배선/검증까지 끝났으니, 다음 최우선순위는 "여전히 최우선"에서 내려와도 됨 —
+  남은 건 위 QA 엔진 섹션의 `### Next`(타이어별 진행률, 재동기화, 무료 쿼터로 인한 실사용 테스트 대기).

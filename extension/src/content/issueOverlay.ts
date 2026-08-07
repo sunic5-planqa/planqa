@@ -1,26 +1,22 @@
 import type {
+  ApplyIssueEditRequest,
+  ApplyIssueEditResponse,
   ClearIssueOverlayRequest,
   ClearIssueOverlayResponse,
-  IssueOverlayResolvedMessage,
+  IssueOverlayFocusMessage,
   OverlayIssue,
   ShowIssueOverlayRequest,
   ShowIssueOverlayResponse,
 } from './messages'
 
-// 사이드패널 이슈 목록과 별개로, 문서 본문 위에 직접 하이라이트 박스 + "AI 제안" 툴팁을 그려주고,
-// "오류 수정하기"를 누르면 그 자리에서 직접 타이핑해 고칠 수 있는 편집 모드로 들어간 뒤, "적용"을 눌러야
-// 컨플루언스에 반영한다 — 사이드패널이 아니라 본문에서 바로 고치는 흐름. Figma SCREEN 03/04 목업(본문 위
-// 하이라이트 + 제안)에서 한 단계 더 나가, AI 제안을 그대로 적용할 수도 있고 편집 모드에서 직접 다듬어
-// 적용할 수도 있게 한다.
-//
-// 원본은 절대 건드리지 않는다 — 첫 "적용" 시 원본을 복제한 새 페이지를 하나 만들고(QA 리뷰 세션당 1개,
-// 원본의 하위 페이지로 생성), 이후의 모든 적용은 그 복제본에만 누적 반영된다.
+// 문서 본문 위에 모든 이슈를 한 번에 하이라이트 박스로 표시하고, 클릭하면 통일된 "AI 제안" 말풍선(읽기
+// 전용)을 보여준다. 실제 수정/저장은 여기서 하지 않고 사이드패널(오른쪽 패널)에서 하도록 포커스만
+// 넘긴다 — Figma SCREEN 04: 본문 위 말풍선은 안내만, 편집은 오른쪽 "수정 진행 중..." 카드에서.
+// 컨플루언스에 실제로 쓰는 fetch만 이 컨텐츠 스크립트가 대신 수행한다(세션 쿠키가 페이지와 동일 출처
+// 여야 붙어서 나가므로) — 사이드패널이 APPLY_ISSUE_EDIT 요청을 보내면 여기서 처리해 응답한다.
 const HIGHLIGHT_CLASS = 'sunnic-issue-highlight'
 const RESOLVED_CLASS = 'sunnic-issue-resolved'
-const EDITING_CLASS = 'sunnic-issue-editing'
 const TOOLTIP_CLASS = 'sunnic-issue-tooltip'
-const EDIT_CONTROLS_CLASS = 'sunnic-issue-edit-controls'
-const STATUS_CLASS = 'sunnic-issue-status'
 const STYLE_ID = 'sunnic-issue-overlay-style'
 
 const STYLE = `
@@ -34,90 +30,24 @@ const STYLE = `
 .${HIGHLIGHT_CLASS}.${RESOLVED_CLASS} {
   background: rgba(46, 160, 67, 0.12);
   outline-color: #2ea043;
-  cursor: default;
-}
-.${HIGHLIGHT_CLASS}.${EDITING_CLASS} {
-  background: #fff;
-  outline: 2px dashed #7c5cff;
-  cursor: text;
 }
 .${TOOLTIP_CLASS} {
   position: absolute;
   z-index: 2147483647;
-  max-width: 320px;
+  max-width: 280px;
   background: #fff;
   color: #172b4d;
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(9, 30, 66, 0.25);
-  padding: 12px 14px;
+  padding: 10px 12px;
   font-family: -apple-system, "Apple SD Gothic Neo", sans-serif;
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.5;
 }
-.${TOOLTIP_CLASS} h4 {
-  margin: 0 0 6px;
-  font-size: 12px;
-  color: #7c5cff;
-}
-.${TOOLTIP_CLASS} .sunnic-tooltip-label {
+.${TOOLTIP_CLASS} .sunnic-tooltip-heading {
   font-weight: 700;
-  margin-top: 6px;
-}
-.${TOOLTIP_CLASS} button {
-  margin-top: 10px;
-  width: 100%;
-  padding: 6px 10px;
-  border: none;
-  border-radius: 6px;
-  background: #7c5cff;
-  color: #fff;
-  font-weight: 600;
-  font-size: 12px;
-  cursor: pointer;
-}
-.${EDIT_CONTROLS_CLASS} {
-  position: absolute;
-  z-index: 2147483647;
-  display: flex;
-  gap: 6px;
-  background: #fff;
-  border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(9, 30, 66, 0.25);
-  padding: 6px;
-  font-family: -apple-system, "Apple SD Gothic Neo", sans-serif;
-}
-.${EDIT_CONTROLS_CLASS} button {
-  border: none;
-  border-radius: 6px;
-  padding: 5px 10px;
-  font-weight: 600;
-  font-size: 12px;
-  cursor: pointer;
-}
-.${EDIT_CONTROLS_CLASS} button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-.${EDIT_CONTROLS_CLASS} [data-role="apply"] {
-  background: #7c5cff;
-  color: #fff;
-}
-.${EDIT_CONTROLS_CLASS} [data-role="cancel"] {
-  background: #f4f5f7;
-  color: #172b4d;
-}
-.${STATUS_CLASS} {
-  position: absolute;
-  z-index: 2147483647;
-  background: #172b4d;
-  color: #fff;
-  border-radius: 6px;
-  padding: 5px 10px;
-  font-size: 12px;
-  font-family: -apple-system, "Apple SD Gothic Neo", sans-serif;
-}
-.${STATUS_CLASS}[data-error="true"] {
-  background: #a52020;
+  color: #7c5cff;
+  margin-bottom: 2px;
 }
 `
 
@@ -154,6 +84,8 @@ function findMatch(input: string): { node: Text; offset: number } | null {
   return null
 }
 
+const marksByIssueId = new Map<string, HTMLElement>()
+
 function wrapIssue(issue: OverlayIssue): boolean {
   const match = findMatch(issue.input_text)
   if (!match) return false
@@ -168,23 +100,20 @@ function wrapIssue(issue: OverlayIssue): boolean {
   range.surroundContents(mark)
   mark.addEventListener('click', (event) => {
     event.stopPropagation()
-    if (mark.classList.contains(EDITING_CLASS)) return
     toggleTooltip(mark, issue)
+    chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
+      // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
+    })
   })
+  marksByIssueId.set(issue.id, mark)
   return true
 }
 
 let activeTooltip: HTMLElement | null = null
-let activeFloating: HTMLElement | null = null
 
 function closeTooltip(): void {
   activeTooltip?.remove()
   activeTooltip = null
-}
-
-function closeFloating(): void {
-  activeFloating?.remove()
-  activeFloating = null
 }
 
 function positionNear(el: HTMLElement, anchor: HTMLElement): void {
@@ -193,6 +122,8 @@ function positionNear(el: HTMLElement, anchor: HTMLElement): void {
   el.style.left = `${window.scrollX + rect.left}px`
 }
 
+// 통일된 읽기 전용 "AI 제안" 말풍선 — 어떤 이슈든 항상 같은 모양(제목 + 제안 한 줄)이고 버튼이 없다.
+// 실제 수정은 오른쪽 패널에서 하므로 여기서는 안내만 한다.
 function toggleTooltip(mark: HTMLElement, issue: OverlayIssue): void {
   if (activeTooltip?.dataset.sunnicForIssue === issue.id) {
     closeTooltip()
@@ -200,106 +131,42 @@ function toggleTooltip(mark: HTMLElement, issue: OverlayIssue): void {
   }
   closeTooltip()
 
-  const resolved = mark.classList.contains(RESOLVED_CLASS)
   const tooltip = document.createElement('div')
   tooltip.className = TOOLTIP_CLASS
   tooltip.dataset.sunnicForIssue = issue.id
   tooltip.innerHTML = `
-    <h4>AI QA Service · ${issue.criteria}</h4>
-    <div class="sunnic-tooltip-label">검증 이유</div>
-    <div>${issue.reason}</div>
-    <div class="sunnic-tooltip-label">대치 제안</div>
+    <div class="sunnic-tooltip-heading">AI 제안</div>
     <div>${issue.suggestion}</div>
-    ${resolved ? '' : '<button type="button">오류 수정하기</button>'}
   `
   positionNear(tooltip, mark)
-
-  tooltip.querySelector('button')?.addEventListener('click', (event) => {
-    event.stopPropagation()
-    closeTooltip()
-    enterEditMode(mark, issue)
-  })
   document.body.appendChild(tooltip)
   activeTooltip = tooltip
 }
 
-// "오류 수정하기"를 누르면 바로 저장하지 않고, AI 제안을 미리 채운 채로 본문 자리에서 직접 타이핑해
-// 고칠 수 있는 편집 모드로 들어간다 — 사람이 본문에서 직접 눌러 고치고, "적용"을 눌렀을 때만 원문이
-// 바뀌어야 한다는 요구사항 그대로. Enter로 적용, Esc로 취소도 가능하게 해서 사이드패널 없이 완결된다.
-function enterEditMode(mark: HTMLElement, issue: OverlayIssue): void {
-  const originalText = issue.input_text
-  mark.textContent = issue.suggestion
-  mark.contentEditable = 'true'
-  mark.classList.add(EDITING_CLASS)
-  mark.focus()
-
-  const selection = window.getSelection()
-  const range = document.createRange()
-  range.selectNodeContents(mark)
-  selection?.removeAllRanges()
-  selection?.addRange(range)
-
-  const controls = document.createElement('div')
-  controls.className = EDIT_CONTROLS_CLASS
-  controls.innerHTML = `<button type="button" data-role="apply">적용</button><button type="button" data-role="cancel">취소</button>`
-  positionNear(controls, mark)
-  document.body.appendChild(controls)
-  activeFloating = controls
-
-  const exitEditMode = () => {
-    mark.contentEditable = 'false'
-    mark.classList.remove(EDITING_CLASS)
-    mark.removeEventListener('keydown', onKeydown)
-    closeFloating()
-  }
-
-  const cancel = () => {
-    mark.textContent = originalText
-    exitEditMode()
-  }
-
-  const apply = () => {
-    const newText = (mark.textContent ?? '').trim()
-    exitEditMode()
-    if (!newText || newText === originalText) {
-      mark.textContent = originalText
-      return
-    }
-    void applyEdit(mark, issue, originalText, newText)
-  }
-
-  const onKeydown = (event: KeyboardEvent) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault()
-      apply()
-    } else if (event.key === 'Escape') {
-      event.preventDefault()
-      cancel()
-    }
-  }
-  mark.addEventListener('keydown', onKeydown)
-
-  controls.querySelector('[data-role="apply"]')?.addEventListener('click', (event) => {
-    event.stopPropagation()
-    apply()
-  })
-  controls.querySelector('[data-role="cancel"]')?.addEventListener('click', (event) => {
-    event.stopPropagation()
-    cancel()
-  })
+export function applyIssueOverlay(issues: OverlayIssue[]): { matched: number; total: number } {
+  ensureStyleInjected()
+  clearIssueOverlay()
+  const matched = issues.filter(wrapIssue).length
+  return { matched, total: issues.length }
 }
 
-function showStatus(anchor: HTMLElement, message: string, isError: boolean): HTMLElement {
-  closeFloating()
-  const status = document.createElement('div')
-  status.className = STATUS_CLASS
-  status.dataset.error = String(isError)
-  status.textContent = message
-  positionNear(status, anchor)
-  document.body.appendChild(status)
-  activeFloating = status
-  return status
+export function clearIssueOverlay(): void {
+  closeTooltip()
+  marksByIssueId.clear()
+  for (const mark of Array.from(document.querySelectorAll(`.${HIGHLIGHT_CLASS}`))) {
+    const parent = mark.parentNode
+    if (!parent) continue
+    parent.replaceChild(document.createTextNode(mark.textContent ?? ''), mark)
+    parent.normalize()
+  }
 }
+
+document.addEventListener('click', (event) => {
+  const target = event.target as Element | null
+  if (activeTooltip && !target?.closest(`.${TOOLTIP_CLASS}, .${HIGHLIGHT_CLASS}`)) {
+    closeTooltip()
+  }
+})
 
 // 컨플루언스 URL(/pages/{id}/... 또는 ?pageId=)에서 페이지 id를 뽑는다.
 // confluence-extractor.ts와 동일 로직 — content script 진입점끼리 import로 얽히면 각자 번들에
@@ -390,73 +257,23 @@ async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: tru
   return { ok: true, pageId: created.id }
 }
 
-async function applyEdit(mark: HTMLElement, issue: OverlayIssue, oldText: string, newText: string): Promise<void> {
-  mark.textContent = newText
-  const wasFirstEdit = duplicateSession === null
-  const status = showStatus(mark, wasFirstEdit ? '복제본 생성 중...' : '복제본에 저장 중...', false)
-
+export async function applyIssueEdit(issueId: string, oldText: string, newText: string): Promise<ApplyIssueEditResponse> {
   const originalPageId = extractPageId(location.href)
-  const result = originalPageId
-    ? await (async (): Promise<ApplyResult> => {
-        const session = await ensureDuplicateSession(originalPageId)
-        if (!session.ok) return session
-        return replaceTextAndSave(session.pageId, oldText, newText)
-      })()
-    : { ok: false, error: '컨플루언스 문서 URL이 아니라 복제본을 만들 수 없습니다.' }
+  if (!originalPageId) return { ok: false, error: '컨플루언스 문서 URL이 아니라 복제본을 만들 수 없습니다.' }
 
-  if (status.isConnected) status.remove()
-  if (activeFloating === status) activeFloating = null
+  const session = await ensureDuplicateSession(originalPageId)
+  if (!session.ok) return session
 
-  if (!result.ok) {
-    mark.textContent = oldText
-    showStatus(mark, result.error, true)
-    return
-  }
+  const result = await replaceTextAndSave(session.pageId, oldText, newText)
+  if (!result.ok) return result
 
-  mark.classList.add(RESOLVED_CLASS)
-  const savedStatus = showStatus(mark, wasFirstEdit ? `복제본 생성됨: ${duplicateSession?.title ?? ''}` : '복제본에 저장됨', false)
-  setTimeout(() => {
-    if (activeFloating === savedStatus) closeFloating()
-    else savedStatus.remove()
-  }, 2200)
-
-  chrome.runtime
-    .sendMessage<IssueOverlayResolvedMessage>({ type: 'ISSUE_OVERLAY_RESOLVED', issueId: issue.id, editedText: newText })
-    .catch(() => {
-      // 사이드패널이 닫혀있어 받는 쪽이 없어도 복제본 저장 자체는 이미 끝났으니 무시한다.
-    })
-}
-
-export function applyIssueOverlay(issues: OverlayIssue[]): { matched: number; total: number } {
-  ensureStyleInjected()
-  clearIssueOverlay()
-  const matched = issues.filter(wrapIssue).length
-  return { matched, total: issues.length }
-}
-
-export function clearIssueOverlay(): void {
+  marksByIssueId.get(issueId)?.classList.add(RESOLVED_CLASS)
   closeTooltip()
-  closeFloating()
-  for (const mark of Array.from(document.querySelectorAll(`.${HIGHLIGHT_CLASS}`))) {
-    const parent = mark.parentNode
-    if (!parent) continue
-    parent.replaceChild(document.createTextNode(mark.textContent ?? ''), mark)
-    parent.normalize()
-  }
+  return { ok: true }
 }
 
-document.addEventListener('click', (event) => {
-  const target = event.target as Element | null
-  if (activeTooltip && !target?.closest(`.${TOOLTIP_CLASS}, .${HIGHLIGHT_CLASS}`)) {
-    closeTooltip()
-  }
-  if (activeFloating && !target?.closest(`.${EDIT_CONTROLS_CLASS}, .${STATUS_CLASS}, .${HIGHLIGHT_CLASS}`)) {
-    closeFloating()
-  }
-})
-
-type OverlayRequest = ShowIssueOverlayRequest | ClearIssueOverlayRequest
-type OverlayResponse = ShowIssueOverlayResponse | ClearIssueOverlayResponse
+type OverlayRequest = ShowIssueOverlayRequest | ClearIssueOverlayRequest | ApplyIssueEditRequest
+type OverlayResponse = ShowIssueOverlayResponse | ClearIssueOverlayResponse | ApplyIssueEditResponse
 
 chrome.runtime.onMessage.addListener(
   (message: OverlayRequest, _sender, sendResponse: (response: OverlayResponse) => void) => {
@@ -467,6 +284,10 @@ chrome.runtime.onMessage.addListener(
     if (message.type === 'CLEAR_ISSUE_OVERLAY') {
       clearIssueOverlay()
       sendResponse({ ok: true })
+      return true
+    }
+    if (message.type === 'APPLY_ISSUE_EDIT') {
+      void applyIssueEdit(message.issueId, message.oldText, message.newText).then(sendResponse)
       return true
     }
     return undefined

@@ -52,10 +52,22 @@ export interface ClearIssueOverlayResponse {
   ok: true
 }
 
-// content script → 사이드패널: 문서 위에서 직접 "오류 수정하기"를 눌렀을 때 로컬 상태를 동기화하기 위한 푸시.
-// 요청/응답이 아니라 chrome.runtime.sendMessage로 발사(fire-and-forget)한다.
-export interface IssueOverlayResolvedMessage {
-  type: 'ISSUE_OVERLAY_RESOLVED'
+// content script → 사이드패널: 문서 위 하이라이트(또는 그 AI 제안 말풍선)를 클릭했을 때, 실제 편집은
+// 오른쪽 패널에서 하도록 그 이슈로 포커스를 옮기라고 알리는 푸시. 요청/응답이 아니라
+// chrome.runtime.sendMessage로 발사(fire-and-forget)한다.
+export interface IssueOverlayFocusMessage {
+  type: 'ISSUE_OVERLAY_FOCUS'
   issueId: string
-  editedText: string
 }
+
+// 사이드패널 → content script: 오른쪽 패널에서 "수정 저장"을 눌렀을 때 실제 컨플루언스 반영을 요청한다.
+// 컨텐츠 스크립트가 페이지와 동일 출처라 세션 쿠키로 컨플루언스 REST API를 호출할 수 있어서, 실제
+// fetch는 여기서 수행하고 결과만 응답으로 돌려준다.
+export interface ApplyIssueEditRequest {
+  type: 'APPLY_ISSUE_EDIT'
+  issueId: string
+  oldText: string
+  newText: string
+}
+
+export type ApplyIssueEditResponse = { ok: true } | { ok: false; error: string }

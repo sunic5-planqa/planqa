@@ -120,4 +120,27 @@ describe('appReducer', () => {
 
     expect(state.currentIssueIndex).toBe(1)
   })
+
+  it('START_EDIT_ISSUE and STOP_EDIT_ISSUE toggle editingIssueId', () => {
+    const editing = appReducer(initialAppState, { type: 'START_EDIT_ISSUE', issueId: 'a' })
+    expect(editing.editingIssueId).toBe('a')
+
+    const stopped = appReducer(editing, { type: 'STOP_EDIT_ISSUE' })
+    expect(stopped.editingIssueId).toBeNull()
+  })
+
+  it('NAVIGATE_ISSUE and SELECT_ISSUE_BY_ID clear an in-progress edit', () => {
+    const withIssues = {
+      ...initialAppState,
+      issues: [{ id: 'a' }, { id: 'b' }] as IssueResponse[],
+      currentIssueIndex: 0,
+      editingIssueId: 'a',
+    }
+
+    const afterNav = appReducer(withIssues, { type: 'NAVIGATE_ISSUE', direction: 'next' })
+    expect(afterNav.editingIssueId).toBeNull()
+
+    const afterSelect = appReducer({ ...withIssues, editingIssueId: 'a' }, { type: 'SELECT_ISSUE_BY_ID', issueId: 'b' })
+    expect(afterSelect.editingIssueId).toBeNull()
+  })
 })

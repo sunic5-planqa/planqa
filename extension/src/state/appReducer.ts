@@ -10,6 +10,8 @@ export type Action =
   | { type: 'NAVIGATE'; screen: Screen }
   | { type: 'NAVIGATE_ISSUE'; direction: 'prev' | 'next' }
   | { type: 'SELECT_ISSUE_BY_ID'; issueId: string }
+  | { type: 'START_EDIT_ISSUE'; issueId: string }
+  | { type: 'STOP_EDIT_ISSUE' }
   | { type: 'STAGE_ISSUE_EDIT'; issueId: string; action: IssueAction; editedText?: string }
   | { type: 'SET_ERROR'; error: string | null }
   | { type: 'CONFLUENCE_DETECT_START' }
@@ -35,7 +37,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       return { ...state, jobStatus: action.status }
 
     case 'ISSUES_LOADED':
-      return { ...state, issues: action.issues, currentIssueIndex: 0, screen: 'issues' }
+      return { ...state, issues: action.issues, currentIssueIndex: 0, editingIssueId: null, screen: 'issues' }
 
     case 'QA_ENGINE_UNAVAILABLE':
       return { ...state, qaEngineUnavailable: true }
@@ -46,13 +48,21 @@ export function appReducer(state: AppState, action: Action): AppState {
     case 'NAVIGATE_ISSUE': {
       const delta = action.direction === 'next' ? 1 : -1
       const nextIndex = Math.min(Math.max(state.currentIssueIndex + delta, 0), Math.max(state.issues.length - 1, 0))
-      return { ...state, currentIssueIndex: nextIndex }
+      // 다른 이슈로 넘어가면 진행 중이던 편집은 취소된 것으로 본다 — 저장 안 된 초안을 들고 있다가
+      // 나중에 같은 이슈로 돌아왔을 때 예상 못하게 다시 편집 모드로 뜨는 걸 막는다.
+      return { ...state, currentIssueIndex: nextIndex, editingIssueId: null }
     }
 
     case 'SELECT_ISSUE_BY_ID': {
       const index = state.issues.findIndex((issue) => issue.id === action.issueId)
-      return index === -1 ? state : { ...state, currentIssueIndex: index }
+      return index === -1 ? state : { ...state, currentIssueIndex: index, editingIssueId: null }
     }
+
+    case 'START_EDIT_ISSUE':
+      return { ...state, editingIssueId: action.issueId }
+
+    case 'STOP_EDIT_ISSUE':
+      return { ...state, editingIssueId: null }
 
     case 'STAGE_ISSUE_EDIT':
       return {

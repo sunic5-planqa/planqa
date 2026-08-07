@@ -71,3 +71,14 @@ export interface ApplyIssueEditRequest {
 }
 
 export type ApplyIssueEditResponse = { ok: true } | { ok: false; error: string }
+
+// 사이드패널 → content script: 오른쪽 패널에서 보고 있는 이슈가 바뀔 때마다(이전/다음, Overview 카드
+// 클릭 등) 문서 본문의 해당 하이라이트가 보이는 위치로 자동 스크롤해달라는 요청.
+export interface ScrollToIssueRequest {
+  type: 'SCROLL_TO_ISSUE'
+  issueId: string
+}
+
+export interface ScrollToIssueResponse {
+  ok: boolean
+}

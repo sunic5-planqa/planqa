@@ -5,6 +5,8 @@ import type {
   ClearIssueOverlayResponse,
   IssueOverlayFocusMessage,
   OverlayIssue,
+  ScrollToIssueRequest,
+  ScrollToIssueResponse,
   ShowIssueOverlayRequest,
   ShowIssueOverlayResponse,
 } from './messages'
@@ -32,7 +34,7 @@ const STYLE = `
   outline-color: #2ea043;
 }
 .${TOOLTIP_CLASS} {
-  position: absolute;
+  position: fixed;
   z-index: 2147483647;
   max-width: 280px;
   background: #fff;
@@ -64,10 +66,20 @@ function isInsideOverlayNode(node: Node): boolean {
   return !!element?.closest(`.${HIGHLIGHT_CLASS}, .${TOOLTIP_CLASS}`)
 }
 
-// TreeWalker로 본문 텍스트 노드를 훑어 issue.input_text와 정확히 일치하는 첫 구간을 찾는다.
+// input_text의 공백/줄바꿈을 \s+로 느슨하게 치환한 정규식을 만든다 — 백엔드가 마크다운으로 평탄화하며
+// 공백을 한 칸으로 접었던 것과 실제 렌더링된 HTML의 공백(여러 칸, 줄바꿈 등)이 완전히 같지 않아도
+// 매칭되게 하기 위함. 이게 없으면 문단 텍스트조차 사소한 공백 차이로 못 찾는 경우가 많았다.
+function buildLooseTextRegex(input: string): RegExp {
+  const escaped = input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(escaped.replace(/\s+/g, '\\s+'))
+}
+
+// TreeWalker로 본문 텍스트 노드를 훑어 issue.input_text와 일치하는 첫 구간을 찾는다.
 // 백엔드 파서 오프셋(마크다운 기준)이 아니라 실제 렌더링된 DOM 텍스트를 직접 검색 — 오버레이는
-// 사용자가 보는 화면 위에 그려야 하므로 라이브 DOM 기준이 맞다.
-function findMatch(input: string): { node: Text; offset: number } | null {
+// 사용자가 보는 화면 위에 그려야 하므로 라이브 DOM 기준이 맞다. 표/목록처럼 렌더링 시 여러 요소로
+// 쪼개지는 구간(한 문단·한 텍스트 노드 안에 있지 않은 경우)은 이 방식으로 못 찾는다 — 알려진 한계.
+function findMatch(input: string): { node: Text; offset: number; length: number } | null {
+  const regex = buildLooseTextRegex(input)
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
     acceptNode: (node) => {
       if (isInsideOverlayNode(node)) return NodeFilter.FILTER_REJECT
@@ -78,8 +90,8 @@ function findMatch(input: string): { node: Text; offset: number } | null {
   })
 
   for (let current = walker.nextNode(); current; current = walker.nextNode()) {
-    const offset = current.textContent?.indexOf(input) ?? -1
-    if (offset !== -1) return { node: current as Text, offset }
+    const match = regex.exec(current.textContent ?? '')
+    if (match) return { node: current as Text, offset: match.index, length: match[0].length }
   }
   return null
 }
@@ -92,7 +104,7 @@ function wrapIssue(issue: OverlayIssue): boolean {
 
   const range = document.createRange()
   range.setStart(match.node, match.offset)
-  range.setEnd(match.node, match.offset + issue.input_text.length)
+  range.setEnd(match.node, match.offset + match.length)
 
   const mark = document.createElement('mark')
   mark.className = HIGHLIGHT_CLASS
@@ -116,10 +128,13 @@ function closeTooltip(): void {
   activeTooltip = null
 }
 
+// position:fixed 기준이라 스크롤 오프셋을 더하면 안 된다 — viewport 좌표 그대로 쓴다.
+// body/상위 요소에 position:relative 같은 게 있는 실제 컨플루언스 페이지에서도(대부분의 경우) 정확한
+// 위치에 뜨게 하려고 absolute 대신 fixed를 쓴다(transform/filter가 걸린 조상만 예외).
 function positionNear(el: HTMLElement, anchor: HTMLElement): void {
   const rect = anchor.getBoundingClientRect()
-  el.style.top = `${window.scrollY + rect.bottom + 6}px`
-  el.style.left = `${window.scrollX + rect.left}px`
+  el.style.top = `${rect.bottom + 6}px`
+  el.style.left = `${rect.left}px`
 }
 
 // 통일된 읽기 전용 "AI 제안" 말풍선 — 어떤 이슈든 항상 같은 모양(제목 + 제안 한 줄)이고 버튼이 없다.
@@ -272,8 +287,15 @@ export async function applyIssueEdit(issueId: string, oldText: string, newText: 
   return { ok: true }
 }
 
-type OverlayRequest = ShowIssueOverlayRequest | ClearIssueOverlayRequest | ApplyIssueEditRequest
-type OverlayResponse = ShowIssueOverlayResponse | ClearIssueOverlayResponse | ApplyIssueEditResponse
+export function scrollToIssue(issueId: string): boolean {
+  const mark = marksByIssueId.get(issueId)
+  if (!mark) return false
+  mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  return true
+}
+
+type OverlayRequest = ShowIssueOverlayRequest | ClearIssueOverlayRequest | ApplyIssueEditRequest | ScrollToIssueRequest
+type OverlayResponse = ShowIssueOverlayResponse | ClearIssueOverlayResponse | ApplyIssueEditResponse | ScrollToIssueResponse
 
 chrome.runtime.onMessage.addListener(
   (message: OverlayRequest, _sender, sendResponse: (response: OverlayResponse) => void) => {
@@ -284,6 +306,10 @@ chrome.runtime.onMessage.addListener(
     if (message.type === 'CLEAR_ISSUE_OVERLAY') {
       clearIssueOverlay()
       sendResponse({ ok: true })
+      return true
+    }
+    if (message.type === 'SCROLL_TO_ISSUE') {
+      sendResponse({ ok: scrollToIssue(message.issueId) })
       return true
     }
     if (message.type === 'APPLY_ISSUE_EDIT') {

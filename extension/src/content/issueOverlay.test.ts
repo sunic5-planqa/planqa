@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { __resetDuplicateSessionForTests, applyIssueEdit, applyIssueOverlay, clearIssueOverlay } from './issueOverlay'
+import { __resetDuplicateSessionForTests, applyIssueEdit, applyIssueOverlay, clearIssueOverlay, scrollToIssue } from './issueOverlay'
 import type { OverlayIssue } from './messages'
 
 const ISSUE: OverlayIssue = {
@@ -74,6 +74,27 @@ describe('applyIssueOverlay', () => {
 
     expect(result).toEqual({ matched: 0, total: 1 })
     expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
+  })
+
+  it('matches even when the live DOM has different whitespace than input_text', () => {
+    document.body.innerHTML = '<main><p>간편결제(카카오페이,   네이버페이,\n토스) 3사만 지원, 페이코 미지원 안내.</p></main>'
+
+    const result = applyIssueOverlay([ISSUE])
+
+    expect(result).toEqual({ matched: 1, total: 1 })
+    expect(document.querySelector('.sunnic-issue-highlight')?.textContent).toBe('3사만 지원, 페이코 미지원')
+  })
+
+  it('wraps every matching issue at once, not just one', () => {
+    document.body.innerHTML =
+      '<main><p>간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원 안내.</p>' +
+      '<p>PG사 응답 지연 시 타임아웃 처리 로직 부재</p></main>'
+    const issue2: OverlayIssue = { ...ISSUE, id: 'issue-2', input_text: 'PG사 응답 지연 시 타임아웃 처리 로직 부재' }
+
+    const result = applyIssueOverlay([ISSUE, issue2])
+
+    expect(result).toEqual({ matched: 2, total: 2 })
+    expect(document.querySelectorAll('.sunnic-issue-highlight')).toHaveLength(2)
   })
 
   it('clicking a highlight shows a read-only AI 제안 bubble and focuses the sidepanel on it', () => {
@@ -174,5 +195,25 @@ describe('applyIssueEdit', () => {
     const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
 
     expect(result).toEqual({ ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' })
+  })
+})
+
+describe('scrollToIssue', () => {
+  it('scrolls the matching highlight into view and returns true', () => {
+    applyIssueOverlay([ISSUE])
+    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
+    const scrollSpy = vi.fn()
+    if (mark) mark.scrollIntoView = scrollSpy
+
+    const result = scrollToIssue(ISSUE.id)
+
+    expect(result).toBe(true)
+    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
+  })
+
+  it('returns false for an issue that was never wrapped', () => {
+    applyIssueOverlay([ISSUE])
+
+    expect(scrollToIssue('no-such-issue')).toBe(false)
   })
 })

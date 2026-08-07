@@ -455,3 +455,45 @@ MainScreen에 남겨뒀던 TODO(stats-api)를 실제로 채웠다 — 가짜 숫
 
 - QA 엔진이 생기면 "리뷰 시작 수"가 아니라 "완료된 검토 수" 기준으로 바꾸는 게 더 정확함(주석에 남김).
 - QA 엔진 핵심 로직 — 여전히 최우선 순위.
+
+## 2026-08-07 — 편집을 문서 대신 오른쪽 패널로 이동 (SCREEN 04 재확인)
+
+SCREEN 04를 다시 자세히 보니, 본문 위 "AI 제안" 말풍선은 항상 같은 모양의 읽기 전용 안내이고, 실제
+편집("수정 진행 중...", 수정 복구/수정 저장)은 **오른쪽 패널의 이슈 카드 안에서** 일어나는 구조였다
+(별도 화면 전환도 아니고, Overview/문서오류N개는 그대로 보이는 채로 카드만 편집 모드로 바뀜). 지난번엔
+본문에서 직접 contenteditable로 고치게 만들었는데, 그건 이번에 다시 보니 Figma 원안과 달랐다 — 확인
+후 오른쪽 패널 인라인 편집으로 전면 교체.
+
+- **`extension/src/content/issueOverlay.ts`**: contentEditable 편집 모드(`enterEditMode`, 적용/취소
+  플로팅 버튼, "적용 중..." 상태 라벨)를 전부 제거. 하이라이트 클릭 시 이제 **통일된 읽기 전용
+  "AI 제안" 말풍선**(제목 + `issue.suggestion` 한 줄, 버튼 없음)만 뜨고, 동시에
+  `chrome.runtime.sendMessage({type:'ISSUE_OVERLAY_FOCUS', issueId})`로 사이드패널에 포커스 이동을
+  요청한다. 컨플루언스 쓰기(복제본 생성/저장) 로직은 그대로 남기되, DOM 편집 흐름이 아니라 사이드패널이
+  보내는 `APPLY_ISSUE_EDIT` 요청에 응답하는 형태로 전환(`applyIssueEdit` 함수, 테스트용으로 export).
+  성공하면 해당 하이라이트만 `resolved` 스타일로 바뀜(실제 라이브 페이지 텍스트는 안 바뀌므로 표시
+  텍스트는 그대로 둠 — 원본을 안 건드린다는 원칙 유지).
+- **`messages.ts`**: `IssueOverlayResolvedMessage` 제거, `IssueOverlayFocusMessage`(content→사이드패널,
+  fire-and-forget)와 `ApplyIssueEditRequest/Response`(사이드패널→content, 요청/응답) 추가.
+- **`useIssueOverlaySync.ts`**: 오버레이 활성 조건을 `screen === 'issues'`만으로 단순화(더 이상 별도
+  'edit' 화면이 없음). `ISSUE_OVERLAY_FOCUS` 수신 시 `SELECT_ISSUE_BY_ID` + `START_EDIT_ISSUE` 디스패치.
+- **상태(`appReducer.ts`/`types.ts`)**: `editingIssueId: string | null` 추가, `START_EDIT_ISSUE`/
+  `STOP_EDIT_ISSUE` 액션 신규. 이슈를 이동(`NAVIGATE_ISSUE`/`SELECT_ISSUE_BY_ID`)하면 편집 중이던 것도
+  자동 취소되도록 `editingIssueId`를 같이 초기화 — 저장 안 한 초안을 들고 있다가 나중에 엉뚱하게 다시
+  편집 모드로 뜨는 걸 방지.
+- **`IssueListScreen.tsx`**: "오류 수정하기" 클릭(또는 문서 위 말풍선 클릭으로 포커스 이동)하면 같은
+  카드 안에서 "수정제안" 자리가 textarea로 바뀌고 라벨이 "수정 진행 중..."으로 바뀜(검증기준/검증이유는
+  그대로 보임). 카드 하단에 "수정 복구 ✕"(회색 텍스트, 초안을 버리고 취소) / "수정 저장 ✓"(보라 볼드,
+  `APPLY_ISSUE_EDIT` 전송)이 뜸 — Figma와 동일 위치. `IssueEditScreen.tsx`(별도 화면)는 이제 아무도
+  안 써서 삭제, `Screen` 타입에서 `'edit'`도 제거.
+  - React 훅 안티패턴 회피: "편집 모드 진입 시 AI 제안으로 초안을 채운다"를 `useEffect` + `setState`로
+    하면 eslint `react-hooks/set-state-in-effect`에 걸려서, 대신 `draft: {issueId, text} | null` 상태를
+    렌더 중에 파생시키는 패턴으로 바꿈(`draft.issueId`가 지금 이슈와 다르면 AI 제안으로 폴백) — effect
+    없이 항상 올바른 초안이 나옴.
+- 검증: 확장 `typecheck`/`lint`/`build`/`vitest` 57개(읽기전용 말풍선/포커스 알림/복제본 생성-재사용-
+  실패 각 케이스/리듀서 신규 액션 2개 포함) 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 DOC-001에서 본문 하이라이트 클릭 → 오른쪽 패널이 그 이슈의 편집
+  모드로 바로 전환되는지, "수정 저장" 후 본문의 해당 박스가 초록(resolved)으로 바뀌는지 확인.
+- QA 엔진 핵심 로직 — 여전히 최우선 순위.

@@ -4,6 +4,23 @@ import { appReducer } from './appReducer'
 import { initialAppState } from './types'
 
 describe('appReducer', () => {
+  it('ISSUES_LOADED resets index, editing state, and stale edits from a previous review', () => {
+    const stale = {
+      ...initialAppState,
+      currentIssueIndex: 2,
+      editingIssueId: 'old-issue',
+      issueEdits: { 'old-issue': { action: 'edit' as const, editedText: '이전 리뷰의 수정' } },
+    }
+
+    const state = appReducer(stale, { type: 'ISSUES_LOADED', issues: [{ id: 'a' }, { id: 'b' }] as IssueResponse[] })
+
+    expect(state.currentIssueIndex).toBe(0)
+    expect(state.editingIssueId).toBeNull()
+    expect(state.issueEdits).toEqual({})
+    expect(state.screen).toBe('issues')
+  })
+
+
   it('CONFLUENCE_DETECTED sets title, markdown, and status', () => {
     const state = appReducer(initialAppState, {
       type: 'CONFLUENCE_DETECTED',

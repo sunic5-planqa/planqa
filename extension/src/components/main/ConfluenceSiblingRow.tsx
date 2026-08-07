@@ -42,6 +42,7 @@ export function ConfluenceSiblingRow({ doc }: { doc: ConfluenceSiblingDoc }) {
     <div className="reference-file-row">
       <label>
         <input type="checkbox" checked={checked} disabled={fetching} onChange={() => void handleCheck()} />
+        <span className="reference-checkbox-box" aria-hidden="true" />
         {doc.title}
       </label>
       {fetching && <span className="hint">불러오는 중...</span>}

@@ -4,6 +4,23 @@ import { appReducer } from './appReducer'
 import { initialAppState } from './types'
 
 describe('appReducer', () => {
+  it('ISSUES_LOADED resets index, editing state, and stale edits from a previous review', () => {
+    const stale = {
+      ...initialAppState,
+      currentIssueIndex: 2,
+      editingIssueId: 'old-issue',
+      issueEdits: { 'old-issue': { action: 'edit' as const, editedText: '이전 리뷰의 수정' } },
+    }
+
+    const state = appReducer(stale, { type: 'ISSUES_LOADED', issues: [{ id: 'a' }, { id: 'b' }] as IssueResponse[] })
+
+    expect(state.currentIssueIndex).toBe(0)
+    expect(state.editingIssueId).toBeNull()
+    expect(state.issueEdits).toEqual({})
+    expect(state.screen).toBe('issues')
+  })
+
+
   it('CONFLUENCE_DETECTED sets title, markdown, and status', () => {
     const state = appReducer(initialAppState, {
       type: 'CONFLUENCE_DETECTED',
@@ -95,5 +112,52 @@ describe('appReducer', () => {
     const state = appReducer(withIssues, { type: 'NAVIGATE_ISSUE', direction: 'next' })
 
     expect(state.currentIssueIndex).toBe(1)
+  })
+
+  it('SELECT_ISSUE_BY_ID jumps to the matching issue', () => {
+    const withIssues = {
+      ...initialAppState,
+      issues: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] as IssueResponse[],
+      currentIssueIndex: 0,
+    }
+
+    const state = appReducer(withIssues, { type: 'SELECT_ISSUE_BY_ID', issueId: 'c' })
+
+    expect(state.currentIssueIndex).toBe(2)
+  })
+
+  it('SELECT_ISSUE_BY_ID is a no-op for an unknown id', () => {
+    const withIssues = {
+      ...initialAppState,
+      issues: [{ id: 'a' }, { id: 'b' }] as IssueResponse[],
+      currentIssueIndex: 1,
+    }
+
+    const state = appReducer(withIssues, { type: 'SELECT_ISSUE_BY_ID', issueId: 'does-not-exist' })
+
+    expect(state.currentIssueIndex).toBe(1)
+  })
+
+  it('START_EDIT_ISSUE and STOP_EDIT_ISSUE toggle editingIssueId', () => {
+    const editing = appReducer(initialAppState, { type: 'START_EDIT_ISSUE', issueId: 'a' })
+    expect(editing.editingIssueId).toBe('a')
+
+    const stopped = appReducer(editing, { type: 'STOP_EDIT_ISSUE' })
+    expect(stopped.editingIssueId).toBeNull()
+  })
+
+  it('NAVIGATE_ISSUE and SELECT_ISSUE_BY_ID clear an in-progress edit', () => {
+    const withIssues = {
+      ...initialAppState,
+      issues: [{ id: 'a' }, { id: 'b' }] as IssueResponse[],
+      currentIssueIndex: 0,
+      editingIssueId: 'a',
+    }
+
+    const afterNav = appReducer(withIssues, { type: 'NAVIGATE_ISSUE', direction: 'next' })
+    expect(afterNav.editingIssueId).toBeNull()
+
+    const afterSelect = appReducer({ ...withIssues, editingIssueId: 'a' }, { type: 'SELECT_ISSUE_BY_ID', issueId: 'b' })
+    expect(afterSelect.editingIssueId).toBeNull()
   })
 })

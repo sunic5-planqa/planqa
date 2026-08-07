@@ -1,7 +1,6 @@
-import { useMemo, useState } from 'react'
-import { api } from '../../api/client'
-import { NotImplementedError } from '../../api/errors'
+import { useState } from 'react'
 import type { IssueResponse } from '../../api/types'
+import type { ScrollToIssueRequest, ScrollToIssueResponse } from '../../content/messages'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import type { IssueEdit } from '../../state/types'
 import { Button } from '../common/Button'
@@ -11,91 +10,95 @@ function resolveReplacement(issue: IssueResponse, edit: IssueEdit | undefined): 
   return edit.action === 'edit' ? (edit.editedText ?? issue.input_text) : issue.suggestion
 }
 
-// 백엔드 export(GET /documents/{id}/export)가 준비될 때까지, 적용/수정된 이슈를 원본 텍스트에
-// 문자열 치환으로 반영한 로컬 미리보기. Issue 응답에 오프셋(start/end)이 없어 offset splicing
-// 대신 input_text 기반 치환을 쓴다 — 정밀하지 않지만 데모/검토 목적으로는 충분.
-function buildWorkingTextPreview(sourceText: string, issues: IssueResponse[], issueEdits: Record<string, IssueEdit>) {
-  let workingText = sourceText
-  for (const issue of issues) {
-    const replacement = resolveReplacement(issue, issueEdits[issue.id])
-    if (replacement === null) continue
-    workingText = workingText.replace(issue.input_text, replacement)
-  }
-  return workingText
-}
+type ViewMode = 'original' | 'revised'
 
 export function HistoryExportScreen() {
-  const { confluenceMarkdown, issues, issueEdits, documentId } = useAppState()
+  const { issues, issueEdits } = useAppState()
   const dispatch = useAppDispatch()
-  const sourceText = confluenceMarkdown ?? ''
-  const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'preview'>('idle')
+  const [viewMode, setViewMode] = useState<ViewMode>('revised')
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null)
-
-  const workingTextPreview = useMemo(
-    () => buildWorkingTextPreview(sourceText, issues, issueEdits),
-    [sourceText, issues, issueEdits],
-  )
 
   const resolvedIssues = issues
     .map((issue) => ({ issue, replacement: resolveReplacement(issue, issueEdits[issue.id]) }))
     .filter((entry): entry is { issue: IssueResponse; replacement: string } => entry.replacement !== null)
 
-  const handleExport = async () => {
-    let exportText = workingTextPreview
-    let usedFallback = true
-
-    if (documentId) {
-      try {
-        const result = await api.exportDocument(documentId)
-        exportText = result.export_text
-        usedFallback = false
-      } catch (err) {
-        if (!(err instanceof NotImplementedError)) throw err
-      }
+  const goToIssue = async (issueId: string) => {
+    setSelectedIssueId(issueId)
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!tab.id) return
+    try {
+      await chrome.tabs.sendMessage<ScrollToIssueRequest, ScrollToIssueResponse>(tab.id, { type: 'SCROLL_TO_ISSUE', issueId })
+    } catch {
+      // 콘텐츠 스크립트가 없는 탭이면 조용히 무시 — 목록 선택 표시 자체는 그대로 유효하다.
     }
+  }
 
-    await navigator.clipboard.writeText(exportText)
-    setCopyStatus(usedFallback ? 'preview' : 'copied')
+  // "적용 및 종료"라는 문구는 이슈별로 이미 개별 저장(수정 저장)이 끝난 뒤라 이 시점엔 새로 "적용"할
+  // 게 없어서 정확하지 않다고 판단 — 여기서 하는 일은 검토를 마치고 처음 화면으로 돌아가는 것뿐이라
+  // "검토 종료"로 바꿨다. 원본은 이 리뷰 내내 한 번도 덮어써지지 않았고(전부 복제본에 저장됨), 이
+  // 버튼도 원본과는 무관하다.
+  const finishReview = () => {
+    dispatch({ type: 'NAVIGATE', screen: 'main' })
   }
 
   return (
     <div className="screen history-export-screen">
-      <h1 className="panel-title">AI QA Service</h1>
-      <hr className="panel-divider" />
-      <h2>QA 검토</h2>
+      <div className="screen-scroll">
+        <h1 className="panel-title">AI QA Service</h1>
+        <hr className="panel-divider" />
 
-      {resolvedIssues.length === 0 ? (
-        <p className="hint">적용되거나 수정된 항목이 없습니다.</p>
-      ) : (
-        <div className="diff-list">
-          {resolvedIssues.map(({ issue, replacement }) => (
+        <div className="history-header-row">
+          <h2 className="history-heading">QA 검토</h2>
+          <div className="view-toggle" role="tablist">
             <button
-              key={issue.id}
               type="button"
-              className={`diff-item ${selectedIssueId === issue.id ? 'selected' : ''}`}
-              onClick={() => setSelectedIssueId(issue.id)}
+              role="tab"
+              aria-selected={viewMode === 'original'}
+              className={`view-toggle-option ${viewMode === 'original' ? 'view-toggle-option-active' : ''}`.trim()}
+              onClick={() => setViewMode('original')}
             >
-              <span className="diff-original">{issue.input_text}</span>
-              <span className="diff-revised">{replacement}</span>
+              원본
             </button>
-          ))}
+            <button
+              type="button"
+              role="tab"
+              aria-selected={viewMode === 'revised'}
+              className={`view-toggle-option ${viewMode === 'revised' ? 'view-toggle-option-active' : ''}`.trim()}
+              onClick={() => setViewMode('revised')}
+            >
+              수정본
+            </button>
+          </div>
         </div>
-      )}
 
-      <div className="qa-start-row">
-        <Button className="btn-bracket" onClick={() => void handleExport()}>
-          문서 복사
-        </Button>
+        {resolvedIssues.length === 0 ? (
+          <p className="hint">적용되거나 수정된 항목이 없습니다.</p>
+        ) : (
+          <div className="diff-list">
+            {resolvedIssues.map(({ issue, replacement }) => (
+              <button
+                key={issue.id}
+                type="button"
+                className={`diff-item ${selectedIssueId === issue.id ? 'diff-item-selected' : ''}`.trim()}
+                onClick={() => void goToIssue(issue.id)}
+              >
+                <span className="diff-original">{issue.input_text}</span>
+                {viewMode === 'revised' && (
+                  <span className="diff-revised">
+                    <span className="diff-revised-check">✓</span> {replacement}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      <div className="issue-actions">
-        <Button variant="secondary" className="btn-link" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'main' })}>
-          종료
+      <div className="screen-footer">
+        <Button className="btn-cta" onClick={finishReview}>
+          검토 종료
         </Button>
       </div>
-
-      {copyStatus === 'copied' && <p className="notice">클립보드에 복사했습니다.</p>}
-      {copyStatus === 'preview' && <p className="notice">export API 준비중 — 로컬 미리보기를 복사했습니다.</p>}
     </div>
   )
 }

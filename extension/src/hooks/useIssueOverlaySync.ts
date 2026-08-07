@@ -1,10 +1,8 @@
 import { useEffect } from 'react'
-import { api } from '../api/client'
-import { NotImplementedError } from '../api/errors'
 import type {
   ClearIssueOverlayRequest,
   ClearIssueOverlayResponse,
-  IssueOverlayResolvedMessage,
+  IssueOverlayFocusMessage,
   OverlayIssue,
   ShowIssueOverlayRequest,
   ShowIssueOverlayResponse,
@@ -22,12 +20,13 @@ async function sendToActiveTab<Req, Res>(message: Req): Promise<Res | null> {
   }
 }
 
-// 이슈 목록/수정 화면이 떠 있는 동안 문서 본문에 하이라이트 오버레이를 얹고, 본문에서 직접
-// "오류 수정하기"를 눌렀을 때의 결과를 사이드패널 상태(issueEdits)로 반영한다.
+// 이슈 목록 화면이 떠 있는 동안 문서 본문에 하이라이트 오버레이를 얹고, 본문의 하이라이트(또는 그
+// 말풍선)를 클릭했을 때 오른쪽 패널이 해당 이슈의 편집 모드로 바로 전환되도록 포커스를 맞춘다 —
+// 실제 수정/저장 자체는 IssueListScreen이 APPLY_ISSUE_EDIT 요청으로 직접 처리한다.
 export function useIssueOverlaySync(): void {
   const { screen, issues } = useAppState()
   const dispatch = useAppDispatch()
-  const overlayActive = (screen === 'issues' || screen === 'edit') && issues.length > 0
+  const overlayActive = screen === 'issues' && issues.length > 0
 
   useEffect(() => {
     if (!overlayActive) return
@@ -51,14 +50,10 @@ export function useIssueOverlaySync(): void {
   }, [overlayActive, issues])
 
   useEffect(() => {
-    const listener = (message: IssueOverlayResolvedMessage) => {
-      if (message.type !== 'ISSUE_OVERLAY_RESOLVED') return
-      dispatch({ type: 'STAGE_ISSUE_EDIT', issueId: message.issueId, action: 'edit', editedText: message.editedText })
-      api.updateIssue(message.issueId, { action: 'edit', edited_text: message.editedText }).catch((err: unknown) => {
-        if (!(err instanceof NotImplementedError)) {
-          dispatch({ type: 'SET_ERROR', error: err instanceof Error ? err.message : String(err) })
-        }
-      })
+    const listener = (message: IssueOverlayFocusMessage) => {
+      if (message.type !== 'ISSUE_OVERLAY_FOCUS') return
+      dispatch({ type: 'SELECT_ISSUE_BY_ID', issueId: message.issueId })
+      dispatch({ type: 'START_EDIT_ISSUE', issueId: message.issueId })
     }
     chrome.runtime.onMessage.addListener(listener)
     return () => chrome.runtime.onMessage.removeListener(listener)

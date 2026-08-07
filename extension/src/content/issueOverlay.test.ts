@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { __resetDuplicateSessionForTests, applyIssueOverlay, clearIssueOverlay } from './issueOverlay'
+import { __resetDuplicateSessionForTests, applyIssueEdit, applyIssueOverlay, clearIssueOverlay } from './issueOverlay'
 import type { OverlayIssue } from './messages'
 
 const ISSUE: OverlayIssue = {
@@ -26,9 +26,6 @@ function stubConfluenceFetch(overrides?: { duplicateBody?: string; createOk?: bo
     if (init?.method === 'PUT') {
       return new Response(JSON.stringify({ ok: true }), { status: putOk ? 200 : 500 })
     }
-    if (init?.method === undefined && url.endsWith('/wiki/rest/api/content')) {
-      // shouldn't happen for GET — guard against a mis-stubbed call
-    }
     if (init?.method === 'POST') {
       return new Response(JSON.stringify({ id: DUPLICATE_PAGE_ID, title: 'duplicate' }), { status: createOk ? 200 : 500 })
     }
@@ -52,14 +49,6 @@ function stubConfluenceFetch(overrides?: { duplicateBody?: string; createOk?: bo
 // checks against) don't know about it — happy-dom's own types aren't wired into this project's tsconfig.
 interface HappyDomWindow {
   happyDOM: { setURL: (url: string) => void }
-}
-
-function openEditMode(): { mark: HTMLElement | null } {
-  applyIssueOverlay([ISSUE])
-  const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
-  mark?.click()
-  document.querySelector<HTMLButtonElement>('.sunnic-issue-tooltip button')?.click()
-  return { mark }
 }
 
 beforeEach(() => {
@@ -87,94 +76,26 @@ describe('applyIssueOverlay', () => {
     expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
   })
 
-  it('clicking "오류 수정하기" enters an editable mode pre-filled with the AI suggestion', () => {
-    const { mark } = openEditMode()
+  it('clicking a highlight shows a read-only AI 제안 bubble and focuses the sidepanel on it', () => {
+    applyIssueOverlay([ISSUE])
+    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
+    mark?.click()
 
-    expect(mark?.isContentEditable).toBe(true)
-    expect(mark?.textContent).toBe(ISSUE.suggestion)
-    expect(document.querySelector('.sunnic-issue-edit-controls')).not.toBeNull()
+    const tooltip = document.querySelector('.sunnic-issue-tooltip')
+    expect(tooltip?.textContent).toContain('AI 제안')
+    expect(tooltip?.textContent).toContain(ISSUE.suggestion)
+    expect(tooltip?.querySelector('button')).toBeNull()
+
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ type: 'ISSUE_OVERLAY_FOCUS', issueId: ISSUE.id })
+  })
+
+  it('clicking the same highlight again closes the bubble', () => {
+    applyIssueOverlay([ISSUE])
+    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
+    mark?.click()
+    mark?.click()
+
     expect(document.querySelector('.sunnic-issue-tooltip')).toBeNull()
-  })
-
-  it('cancel restores the original text and exits edit mode without saving', () => {
-    stubConfluenceFetch()
-    const { mark } = openEditMode()
-
-    document.querySelector<HTMLButtonElement>('[data-role="cancel"]')?.click()
-
-    expect(mark?.isContentEditable).toBe(false)
-    expect(mark?.textContent).toBe(ISSUE.input_text)
-    expect(document.querySelector('.sunnic-issue-edit-controls')).toBeNull()
-  })
-
-  it('the first apply creates a duplicate page instead of touching the original', async () => {
-    const fetchMock = stubConfluenceFetch()
-    const { mark } = openEditMode()
-
-    document.querySelector<HTMLButtonElement>('[data-role="apply"]')?.click()
-    await vi.waitFor(() => expect(mark?.classList.contains('sunnic-issue-resolved')).toBe(true))
-
-    const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
-    expect((putCall?.[0] as string)).toContain(DUPLICATE_PAGE_ID)
-    const originalPut = fetchMock.mock.calls.find(
-      ([url, init]) => (init as RequestInit | undefined)?.method === 'PUT' && (url as string).includes(ORIGINAL_PAGE_ID),
-    )
-    expect(originalPut).toBeUndefined()
-
-    const postCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
-    expect(postCall).toBeDefined()
-    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
-      type: 'ISSUE_OVERLAY_RESOLVED',
-      issueId: ISSUE.id,
-      editedText: ISSUE.suggestion,
-    })
-  })
-
-  it('a second apply reuses the same duplicate page instead of creating another one', async () => {
-    // 두 번째 이슈의 원문이 복제본 GET 응답에도 있어야 replaceTextAndSave가 매칭에 성공한다 —
-    // 실제로는 복제본이 원본 본문을 그대로 복사해서 시작하므로 이 문구도 원본에 있었다는 셈.
-    const fetchMock = stubConfluenceFetch({ duplicateBody: `${PAGE_HTML}<p>결제 실패 원인에 대한 안내가 필요하다.</p>` })
-
-    const first = openEditMode()
-    document.querySelector<HTMLButtonElement>('[data-role="apply"]')?.click()
-    await vi.waitFor(() => expect(first.mark?.classList.contains('sunnic-issue-resolved')).toBe(true))
-
-    const issue2: OverlayIssue = { ...ISSUE, id: 'issue-2', input_text: '결제 실패 원인' }
-    document.querySelector('main')!.innerHTML += '<p>결제 실패 원인에 대한 안내가 필요하다.</p>'
-    applyIssueOverlay([issue2])
-    document.querySelector<HTMLElement>(`[data-sunnic-issue-id="issue-2"]`)?.click()
-    document.querySelector<HTMLButtonElement>('.sunnic-issue-tooltip button')?.click()
-    document.querySelector<HTMLButtonElement>('[data-role="apply"]')?.click()
-
-    await vi.waitFor(() => {
-      const puts = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
-      expect(puts.length).toBe(2)
-    })
-
-    const postCalls = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
-    expect(postCalls).toHaveLength(1)
-  })
-
-  it('pressing Escape cancels without saving', () => {
-    stubConfluenceFetch()
-    const { mark } = openEditMode()
-    mark?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
-
-    expect(mark?.isContentEditable).toBe(false)
-    expect(mark?.textContent).toBe(ISSUE.input_text)
-  })
-
-  it('reverts the text and shows an inline error when the duplicate cannot be created', async () => {
-    stubConfluenceFetch({ createOk: false })
-    const { mark } = openEditMode()
-
-    document.querySelector<HTMLButtonElement>('[data-role="apply"]')?.click()
-
-    await vi.waitFor(() => expect(document.querySelector('[data-error="true"]')).not.toBeNull())
-
-    expect(mark?.textContent).toBe(ISSUE.input_text)
-    expect(mark?.classList.contains('sunnic-issue-resolved')).toBe(false)
-    expect(chrome.runtime.sendMessage).not.toHaveBeenCalled()
   })
 })
 
@@ -185,5 +106,73 @@ describe('clearIssueOverlay', () => {
 
     expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
     expect(document.querySelector('main')?.textContent).toContain(ISSUE.input_text)
+  })
+})
+
+describe('applyIssueEdit', () => {
+  it('the first call creates a duplicate page instead of touching the original, and marks the highlight resolved', async () => {
+    const fetchMock = stubConfluenceFetch()
+    applyIssueOverlay([ISSUE])
+    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
+
+    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+
+    expect(result).toEqual({ ok: true })
+    expect(mark?.classList.contains('sunnic-issue-resolved')).toBe(true)
+
+    const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    expect((putCall?.[0] as string)).toContain(DUPLICATE_PAGE_ID)
+    const originalPut = fetchMock.mock.calls.find(
+      ([url, init]) => (init as RequestInit | undefined)?.method === 'PUT' && (url as string).includes(ORIGINAL_PAGE_ID),
+    )
+    expect(originalPut).toBeUndefined()
+
+    const postCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+    expect(postCall).toBeDefined()
+
+    const putBody = JSON.parse((putCall?.[1] as RequestInit).body as string) as { body: { storage: { value: string } } }
+    expect(putBody.body.storage.value).toContain(ISSUE.suggestion)
+  })
+
+  it('a second call reuses the same duplicate page instead of creating another one', async () => {
+    const fetchMock = stubConfluenceFetch({
+      duplicateBody: `${PAGE_HTML}<p>결제 실패 원인에 대한 안내가 필요하다.</p>`,
+    })
+
+    await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+    await applyIssueEdit('issue-2', '결제 실패 원인', '결제 실패 원인(수정)')
+
+    const puts = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    const posts = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+    expect(puts).toHaveLength(2)
+    expect(posts).toHaveLength(1)
+  })
+
+  it('fails without creating a duplicate when not on a Confluence page URL', async () => {
+    ;(window as unknown as HappyDomWindow).happyDOM.setURL('http://localhost:8000/not-a-confluence-page')
+    stubConfluenceFetch()
+
+    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+
+    expect(result.ok).toBe(false)
+  })
+
+  it('returns an error and does not mark resolved when the duplicate cannot be created', async () => {
+    stubConfluenceFetch({ createOk: false })
+    applyIssueOverlay([ISSUE])
+    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
+
+    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+
+    expect(result.ok).toBe(false)
+    expect(mark?.classList.contains('sunnic-issue-resolved')).toBe(false)
+  })
+
+  it('returns an error when the original text is missing from the duplicate', async () => {
+    stubConfluenceFetch({ duplicateBody: '<p>완전히 다른 본문</p>' })
+
+    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+
+    expect(result).toEqual({ ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' })
   })
 })

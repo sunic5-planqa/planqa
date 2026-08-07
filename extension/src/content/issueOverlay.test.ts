@@ -244,4 +244,15 @@ describe('scrollToIssue', () => {
 
     expect(scrollToIssue('no-such-issue')).toBe(false)
   })
+
+  it('also shows the AI 제안 bubble for the issue being scrolled to, without needing a click', () => {
+    applyIssueOverlay([ISSUE])
+    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
+    if (mark) mark.scrollIntoView = vi.fn()
+
+    scrollToIssue(ISSUE.id)
+
+    const tooltip = document.querySelector('.sunnic-issue-tooltip')
+    expect(tooltip?.textContent).toContain(ISSUE.suggestion)
+  })
 })

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import { NotImplementedError } from '../../api/errors'
 import { useConfluenceAutoDetect } from '../../hooks/useConfluenceAutoDetect'
@@ -12,6 +12,16 @@ export function MainScreen() {
   const dispatch = useAppDispatch()
   const { detect } = useConfluenceAutoDetect()
   const [submitting, setSubmitting] = useState(false)
+  const [documentCount, setDocumentCount] = useState<number | null>(null)
+
+  useEffect(() => {
+    api
+      .getDocumentCount()
+      .then((res) => setDocumentCount(res.count))
+      .catch(() => {
+        // 통계는 부가 정보라 실패해도 그냥 문구를 안 보여줄 뿐, 화면 자체는 그대로 동작해야 한다.
+      })
+  }, [])
 
   // TODO(qa-engine): selectedReferenceFileIds (state/types.ts) is collected but not yet sent to
   // the backend — there's no consumer until the QA engine (feature/qa-engine-llm-client) lands
@@ -87,10 +97,15 @@ export function MainScreen() {
         {error && <ErrorBanner message={error} />}
       </div>
 
-      {/* TODO(stats-api): 백엔드에 검토 문서 수 통계 엔드포인트가 생기면
-          "(서비스명)으로 N건의 문서가 검토됐어요" 문구를 여기에 추가한다. */}
-
       <div className="screen-footer">
+        {documentCount !== null && (
+          <p className="review-stats">
+            <span className="review-stats-brand">AI QA Service</span>
+            <span className="review-stats-muted">으로</span>
+            <br />
+            <span className="review-stats-muted">{documentCount}건의 문서가 검토됐어요</span>
+          </p>
+        )}
         <Button className="btn-cta" onClick={() => void handleStart()} disabled={submitting || confluenceStatus !== 'detected'}>
           {submitting ? '처리 중...' : 'QA 시작'}
         </Button>

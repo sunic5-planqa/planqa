@@ -433,3 +433,25 @@ Figma의 "Overlay+Shadow" 푸터(References 목록은 `overflow-auto`로 스크�
 
 - HistoryExportScreen(SCREEN 05)도 같은 방식으로 아직 안 맞춰봄.
 - QA 엔진 핵심 로직 — 여전히 최우선 순위.
+
+## 2026-08-07 — "N건의 문서가 검토됐어요" 실제 통계로 구현
+
+MainScreen에 남겨뒀던 TODO(stats-api)를 실제로 채웠다 — 가짜 숫자를 보여주기 싫어서 미뤄뒀던 부분이라,
+백엔드에 진짜 카운트를 추적하는 엔드포인트부터 추가했다.
+
+- **`backend`**: `Store.count_documents()`(in-memory 문서 수) + `GET /documents/count` 신규.
+  "검토됐어요"라고 하지만 실제로는 QA 엔진이 없어서 "완료된 검토"가 아니라 `POST /documents`가
+  호출된(리뷰가 시작된) 횟수로 근사 — 주석으로 명시해둠. 서버 재시작하면 0으로 리셋(다른 in-memory
+  데이터와 동일한 한계). 테스트는 절대값이 아니라 호출 전후 증가분(+1)으로 검증 — `store`가 테스트
+  세션 전체에서 공유되는 싱글턴이라 절대 카운트를 단언하면 테스트 순서에 취약해짐.
+- **`extension`**: `api.getDocumentCount()` 추가. `MainScreen`이 마운트 시 한 번 불러와서
+  `.screen-footer` 안 버튼 위에 "**AI QA Service**으로 / {count}건의 문서가 검토됐어요" 표시(Figma와
+  동일한 두 줄 구성, 브랜드명은 보라 강조 나머지는 회색). 통계 호출이 실패해도 조용히 문구만 안
+  보여주고 화면은 정상 동작(부가 정보 취급).
+- 검증: 백엔드 `uv run pytest` 39개, 확장 `typecheck`/`lint`/`build`/`vitest` 54개 전부 통과. 로컬에서
+  `GET /documents/count` → `POST /documents` → 다시 `GET /documents/count`로 0→1 증가 실제 확인.
+
+### Next
+
+- QA 엔진이 생기면 "리뷰 시작 수"가 아니라 "완료된 검토 수" 기준으로 바꾸는 게 더 정확함(주석에 남김).
+- QA 엔진 핵심 로직 — 여전히 최우선 순위.

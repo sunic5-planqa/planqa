@@ -400,3 +400,36 @@ Figma의 "Overlay+Shadow" 푸터(References 목록은 `overflow-auto`로 스크�
 - 같은 패턴(스크롤 영역 + 하단 고정 푸터)이 다른 화면(IssueListScreen/HistoryExportScreen)에도
   필요한지는 아직 안 물어봤음 — 필요하면 이어서 적용 가능.
 - QA 엔진 핵심 로직 — 여전히 최우선 순위.
+
+## 2026-08-06 — SCREEN 03(QA 결과 확인) 프론트 구현
+
+`get_design_context`로 SCREEN 03 노드를 뜯어서 Overview 카드/이슈 상세 카드/하단 고정 버튼까지
+그대로 옮겼다. 진행 전에 확인한 것: Figma엔 "적용"/"스킵" 버튼이 없고 "오류 수정하기"(밑줄 링크) +
+하단 고정 "QA 완료" 버튼만 있어서, 사용자 확인 후 적용/스킵 버튼은 제거하고 "오류 수정하기"만 남김
+(클릭하면 기존 IssueEditScreen으로 이동 — 거기서 AI 제안 그대로 적용하거나 직접 고쳐서 저장 가능).
+
+- **`.screen`/`.screen-scroll`/`.screen-footer`(공용화)**: 지난번 MainScreen 전용으로 만들었던
+  `.screen.main-screen`/`.main-screen-scroll`/`.main-screen-footer`를 `.screen`/`.screen-scroll`/
+  `.screen-footer`로 일반화 — 이제 하단 고정 푸터가 필요한 화면이면 어디서든 재사용 가능. MainScreen도
+  이 이름으로 갈아탐(동작 변화 없음).
+- **`OverviewPanel.tsx`**: 아코디언(펼치기/접기) 방식을 버리고 Figma대로 카드 목록으로 재설계 —
+  카드마다 기준명 + 미리보기 문구(`input_text`, ellipsis로 말줄임) 한 줄. 지금 보고 있는 이슈의
+  기준과 일치하는 카드만 `overview-card-active`(보라 인셋 테두리 1.5px, 진한 텍스트, ▾)로 강조,
+  나머지는 회색 톤 + ▸. 카드를 클릭하면 그 기준의 첫 이슈로 바로 이동(신규 리듀서 액션
+  `SELECT_ISSUE_BY_ID` 추가).
+- **`IssueListScreen.tsx`**: `<dl>` 기반 목록 → Figma 카드 레이아웃(`issue-detail-card`)으로 교체 —
+  입력내용 / 수정제안(+오류 수정하기 링크, 수정완료 시 배지로 대체) / 구분선 / 검증기준(보라 필 배지)
+  / 검증이유. "이전/다음" 텍스트 네비게이션 재스타일링. "QA 완료"는 이제 마지막 이슈에서만 뜨던 것에서
+  **항상 하단에 고정**되도록 변경(Figma가 이슈 1/3 화면에서도 이미 보이고 있었음 — 검토 도중 언제든
+  종료 가능하게).
+  - Figma의 "수정제안" 텍스트는 실제로는 `issue.suggestion`이 아니라 섹션명을 그라데이션으로
+    강조한 별도 설명 문구였음(예: "2. 배경 및 문제 정의의 간편결제 방식과 4. 주요 요구사항의...") —
+    지금 데이터 모델(`Issue`)엔 그런 필드가 없어서 그 그라데이션 텍스트 연출은 재현하지 않고
+    `issue.suggestion`을 평문으로 표시함. 알고 있는 제한사항으로 남겨둠.
+- 검증: `typecheck`/`lint`/`build`/`vitest` 54개(신규 `SELECT_ISSUE_BY_ID` 리듀서 테스트 2개 포함)
+  전부 통과.
+
+### Next
+
+- HistoryExportScreen(SCREEN 05)도 같은 방식으로 아직 안 맞춰봄.
+- QA 엔진 핵심 로직 — 여전히 최우선 순위.

@@ -4,6 +4,8 @@ import type {
   ClearIssueOverlayResponse,
   IssueOverlayFocusMessage,
   OverlayIssue,
+  ScrollToIssueRequest,
+  ScrollToIssueResponse,
   ShowIssueOverlayRequest,
   ShowIssueOverlayResponse,
 } from '../content/messages'
@@ -24,9 +26,10 @@ async function sendToActiveTab<Req, Res>(message: Req): Promise<Res | null> {
 // 말풍선)를 클릭했을 때 오른쪽 패널이 해당 이슈의 편집 모드로 바로 전환되도록 포커스를 맞춘다 —
 // 실제 수정/저장 자체는 IssueListScreen이 APPLY_ISSUE_EDIT 요청으로 직접 처리한다.
 export function useIssueOverlaySync(): void {
-  const { screen, issues } = useAppState()
+  const { screen, issues, currentIssueIndex } = useAppState()
   const dispatch = useAppDispatch()
   const overlayActive = screen === 'issues' && issues.length > 0
+  const currentIssueId = issues[currentIssueIndex]?.id
 
   useEffect(() => {
     if (!overlayActive) return
@@ -48,6 +51,13 @@ export function useIssueOverlaySync(): void {
       void sendToActiveTab<ClearIssueOverlayRequest, ClearIssueOverlayResponse>({ type: 'CLEAR_ISSUE_OVERLAY' })
     }
   }, [overlayActive, issues])
+
+  // 오른쪽 패널에서 보고 있는 이슈가 바뀔 때마다(이전/다음, Overview 카드 클릭, 문서 하이라이트 클릭으로
+  // 포커스 이동 등) 문서 본문도 그 하이라이트가 보이는 위치로 따라 스크롤한다.
+  useEffect(() => {
+    if (!overlayActive || !currentIssueId) return
+    void sendToActiveTab<ScrollToIssueRequest, ScrollToIssueResponse>({ type: 'SCROLL_TO_ISSUE', issueId: currentIssueId })
+  }, [overlayActive, currentIssueId])
 
   useEffect(() => {
     const listener = (message: IssueOverlayFocusMessage) => {

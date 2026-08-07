@@ -280,6 +280,23 @@ textarea {
   box-shadow: 0 -8px 20px rgba(0, 0, 0, 0.03);
 }
 
+.review-stats {
+  margin: 0 0 12px;
+  text-align: center;
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.review-stats-brand {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.review-stats-muted {
+  font-weight: 400;
+  color: #b4b4bc;
+}
+
 .btn-cta {
   display: flex;
   align-items: center;

@@ -35,11 +35,13 @@ export default defineManifest({
   },
   content_scripts: [
     {
-      matches: ['*://*.atlassian.net/*'],
-      js: ['src/content/confluence-extractor.ts'],
+      // localhost/127.0.0.1 항목은 backend의 /mock-confluence 목 서버(회사 컨플루언스 없이
+      // 로컬에서 왕복 테스트하기 위한 용도)에서만 쓰는 개발용 패턴 — 실배포 시 제거 대상.
+      matches: ['*://*.atlassian.net/*', 'http://localhost:8000/*', 'http://127.0.0.1:8000/*'],
+      js: ['src/content/confluence-extractor.ts', 'src/content/issueOverlay.ts'],
     },
   ],
   permissions: ['sidePanel', 'storage'],
-  host_permissions: ['*://*.atlassian.net/*'],
+  host_permissions: ['*://*.atlassian.net/*', 'http://localhost:8000/*', 'http://127.0.0.1:8000/*'],
   ...(devKey ? { key: devKey } : {}),
 })

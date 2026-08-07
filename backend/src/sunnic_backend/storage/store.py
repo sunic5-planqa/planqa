@@ -20,6 +20,10 @@ class Store:
         async with self._lock:
             return self._documents.get(document_id)
 
+    async def count_documents(self) -> int:
+        async with self._lock:
+            return len(self._documents)
+
     async def save_qa_job(self, job: QAJob) -> None:
         async with self._lock:
             self._qa_jobs[job.id] = job

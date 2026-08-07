@@ -1,6 +1,6 @@
 import type { IssueAction, IssueResponse, ParsedStructure, QAJobStatusResponse } from '../api/types'
 
-export type Screen = 'main' | 'loading' | 'progress' | 'issues' | 'edit' | 'history'
+export type Screen = 'main' | 'loading' | 'progress' | 'issues' | 'history'
 
 export type ConfluenceStatus = 'idle' | 'detecting' | 'detected' | 'not_confluence' | 'error'
 
@@ -44,6 +44,7 @@ export interface AppState {
   issues: IssueResponse[]
   currentIssueIndex: number
   issueEdits: Record<string, IssueEdit>
+  editingIssueId: string | null
   qaEngineUnavailable: boolean
   error: string | null
 }
@@ -70,6 +71,7 @@ export const initialAppState: AppState = {
   issues: [],
   currentIssueIndex: 0,
   issueEdits: {},
+  editingIssueId: null,
   qaEngineUnavailable: false,
   error: null,
 }

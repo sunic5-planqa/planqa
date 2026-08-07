@@ -80,3 +80,7 @@ export interface UpdateIssueResponse {
 export interface ExportDocumentResponse {
   export_text: string
 }
+
+export interface DocumentCountResponse {
+  count: number
+}

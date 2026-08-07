@@ -2,6 +2,7 @@ import { ApiError, NotImplementedError } from './errors'
 import type {
   CreateDocumentResponse,
   CreateQAJobResponse,
+  DocumentCountResponse,
   ExportDocumentResponse,
   IssueResponse,
   QAJobStatusResponse,
@@ -47,4 +48,6 @@ export const api = {
     }),
 
   exportDocument: (documentId: string) => request<ExportDocumentResponse>(`/documents/${documentId}/export`),
+
+  getDocumentCount: () => request<DocumentCountResponse>('/documents/count'),
 }

@@ -427,6 +427,48 @@ textarea {
   line-height: 1.6;
 }
 
+.issue-edit-textarea {
+  width: 100%;
+  font-family: inherit;
+  font-size: 0.78rem;
+  color: var(--text-heading);
+  padding: 8px 10px;
+  border: 1px solid #d8d8de;
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.issue-edit-actions-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.issue-edit-cancel,
+.issue-edit-save {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.issue-edit-cancel {
+  color: #b4b4bc;
+}
+
+.issue-edit-save {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.issue-edit-cancel:disabled,
+.issue-edit-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .issue-actions {
   display: flex;
   gap: 8px;

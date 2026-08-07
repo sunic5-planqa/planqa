@@ -18,7 +18,7 @@ AI는 기획서를 임의로 수정하지 않는다. 문제 위치·이유·근�
 
 문서 위 하이라이트를 클릭해 AI 제안을 확인하고, 오른쪽 패널에서 수정 내용을 다듬어 저장하는 화면. 저장은 복제본에만 반영된다.
 
-![SCREEN 04. 문서 인라인 수정 와이어프레임](docs/images/screen04-inline-edit.png)
+![SCREEN 04. 문서 인라인 수정](docs/images/screen04-inline-edit.png)
 
 ## 셋업
 

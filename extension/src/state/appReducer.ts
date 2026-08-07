@@ -9,6 +9,7 @@ export type Action =
   | { type: 'QA_ENGINE_UNAVAILABLE' }
   | { type: 'NAVIGATE'; screen: Screen }
   | { type: 'NAVIGATE_ISSUE'; direction: 'prev' | 'next' }
+  | { type: 'SELECT_ISSUE_BY_ID'; issueId: string }
   | { type: 'STAGE_ISSUE_EDIT'; issueId: string; action: IssueAction; editedText?: string }
   | { type: 'SET_ERROR'; error: string | null }
   | { type: 'CONFLUENCE_DETECT_START' }
@@ -46,6 +47,11 @@ export function appReducer(state: AppState, action: Action): AppState {
       const delta = action.direction === 'next' ? 1 : -1
       const nextIndex = Math.min(Math.max(state.currentIssueIndex + delta, 0), Math.max(state.issues.length - 1, 0))
       return { ...state, currentIssueIndex: nextIndex }
+    }
+
+    case 'SELECT_ISSUE_BY_ID': {
+      const index = state.issues.findIndex((issue) => issue.id === action.issueId)
+      return index === -1 ? state : { ...state, currentIssueIndex: index }
     }
 
     case 'STAGE_ISSUE_EDIT':

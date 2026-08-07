@@ -96,4 +96,28 @@ describe('appReducer', () => {
 
     expect(state.currentIssueIndex).toBe(1)
   })
+
+  it('SELECT_ISSUE_BY_ID jumps to the matching issue', () => {
+    const withIssues = {
+      ...initialAppState,
+      issues: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] as IssueResponse[],
+      currentIssueIndex: 0,
+    }
+
+    const state = appReducer(withIssues, { type: 'SELECT_ISSUE_BY_ID', issueId: 'c' })
+
+    expect(state.currentIssueIndex).toBe(2)
+  })
+
+  it('SELECT_ISSUE_BY_ID is a no-op for an unknown id', () => {
+    const withIssues = {
+      ...initialAppState,
+      issues: [{ id: 'a' }, { id: 'b' }] as IssueResponse[],
+      currentIssueIndex: 1,
+    }
+
+    const state = appReducer(withIssues, { type: 'SELECT_ISSUE_BY_ID', issueId: 'does-not-exist' })
+
+    expect(state.currentIssueIndex).toBe(1)
+  })
 })

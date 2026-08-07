@@ -22,13 +22,15 @@ async function sendToActiveTab<Req, Res>(message: Req): Promise<Res | null> {
   }
 }
 
-// 이슈 목록 화면이 떠 있는 동안 문서 본문에 하이라이트 오버레이를 얹고, 본문의 하이라이트(또는 그
-// 말풍선)를 클릭했을 때 오른쪽 패널이 해당 이슈의 편집 모드로 바로 전환되도록 포커스를 맞춘다 —
-// 실제 수정/저장 자체는 IssueListScreen이 APPLY_ISSUE_EDIT 요청으로 직접 처리한다.
+// 이슈 목록/최종 검토(history) 화면이 떠 있는 동안 문서 본문에 하이라이트 오버레이를 얹고, 본문의
+// 하이라이트(또는 그 말풍선)를 클릭했을 때 오른쪽 패널이 해당 이슈의 편집 모드로 바로 전환되도록
+// 포커스를 맞춘다 — 실제 수정/저장 자체는 IssueListScreen이 APPLY_ISSUE_EDIT 요청으로 직접 처리한다.
+// history 화면에서도 오버레이를 켜 두는 이유: SCREEN 05의 "검토 내역 클릭 → 본문 이동"이 동작하려면
+// 그 시점에도 하이라이트가 문서에 남아있어야 한다.
 export function useIssueOverlaySync(): void {
   const { screen, issues, currentIssueIndex } = useAppState()
   const dispatch = useAppDispatch()
-  const overlayActive = screen === 'issues' && issues.length > 0
+  const overlayActive = (screen === 'issues' || screen === 'history') && issues.length > 0
   const currentIssueId = issues[currentIssueIndex]?.id
 
   useEffect(() => {

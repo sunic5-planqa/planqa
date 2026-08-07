@@ -252,17 +252,18 @@ textarea {
   justify-content: center;
 }
 
-/* MainScreen 전용 — Figma의 "Overlay+Shadow" 푸터처럼 QA 시작 버튼을 패널 하단에 고정한다.
-   .screen.main-screen이 .app(min-height:100vh) 안에서 flex:1로 남는 높이를 차지하고,
-   그 안의 스크롤 영역과 푸터를 분리해서 내용이 길어져도 버튼은 항상 하단에 보이게 한다. */
-.screen.main-screen {
+/* Figma의 "Overlay+Shadow" 푸터처럼 하단 고정 버튼이 필요한 화면(MainScreen, IssueListScreen 등)이
+   공용으로 쓰는 스크롤/푸터 분리 패턴. .screen이 .app(min-height:100vh) 안에서 flex:1로 남는 높이를
+   차지하고, .screen-scroll(내용)과 .screen-footer(버튼)을 나눠서 내용이 길어져도 버튼은 항상 보이게
+   한다. 이 클래스를 안 쓰는 화면은 기존과 동일하게 보임(flex:1이 있어도 내용 흐름 자체는 안 바뀜). */
+.screen {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-.main-screen-scroll {
+.screen-scroll {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -271,7 +272,7 @@ textarea {
   gap: 16px;
 }
 
-.main-screen-footer {
+.screen-footer {
   flex-shrink: 0;
   margin: 16px -16px -16px;
   padding: 16px 16px 16px;
@@ -329,32 +330,120 @@ textarea {
   font-size: 0.85rem;
 }
 
-.issue-details {
+.issue-detail-card {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  font-size: 0.85rem;
-  border: 2px solid var(--border-strong);
-  border-radius: 6px;
-  padding: 12px;
+  gap: 14px;
+  background: #fafafb;
+  border-radius: 14px;
+  padding: 16px;
 }
 
-.issue-details dt {
-  display: inline-block;
+.issue-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.issue-detail-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.issue-detail-value {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-heading);
+  line-height: 1.55;
+}
+
+.issue-suggestion-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.issue-fix-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.7rem;
   font-weight: 600;
-  margin: 0 0 4px;
-  padding-bottom: 2px;
-  border-bottom: 1px solid var(--border);
+  color: #000;
+  text-decoration: underline;
+  cursor: pointer;
 }
 
-.issue-details dd {
+.issue-suggestion-text {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-heading);
+  line-height: 1.55;
+}
+
+.issue-detail-divider {
+  border: none;
+  border-top: 1px solid #ededf0;
   margin: 0;
 }
 
-.issue-actions,
-.issue-nav {
+.issue-criteria-badge {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(201, 169, 255, 0.14);
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.issue-reason-text {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: #5c5c63;
+  line-height: 1.6;
+}
+
+.issue-actions {
   display: flex;
   gap: 8px;
+}
+
+.issue-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.issue-nav-prev,
+.issue-nav-next {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.81rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: #d4d4d9;
+}
+
+.issue-nav-next:not(:disabled) {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.issue-nav-prev:not(:disabled) {
+  color: var(--text-body);
+}
+
+.issue-nav-prev:disabled,
+.issue-nav-next:disabled {
+  cursor: default;
 }
 
 .loading-screen {
@@ -501,35 +590,89 @@ textarea {
 }
 
 .overview-panel {
-  border: 2px solid var(--border-strong);
-  border-radius: 6px;
-  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.overview-heading {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--text-heading);
+  margin: 0;
+}
+
+.overview-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  background: #fafafb;
+  border: none;
+  border-radius: 12px;
+  padding: 12px 14px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
   text-align: left;
 }
 
-.overview-group-toggle {
-  background: none;
-  border: none;
-  font-size: 0.85rem;
+.overview-card-active {
+  box-shadow: inset 0 0 0 1.5px #c9a9ff;
+}
+
+.overview-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.overview-card-title {
+  font-size: 0.8rem;
   font-weight: 600;
-  cursor: pointer;
-  padding: 4px 0;
-  text-align: left;
-  color: inherit;
+  color: var(--text-body);
+}
+
+.overview-card-active .overview-card-title {
+  font-weight: 700;
+  color: var(--text-heading);
+}
+
+.overview-card-chevron {
+  font-size: 0.6rem;
+  color: #b4b4bc;
+}
+
+.overview-card-active .overview-card-chevron {
+  color: var(--accent);
+}
+
+.overview-card-preview {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: #b4b4bc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   width: 100%;
 }
 
-.overview-issue-list {
-  list-style: none;
-  margin: 0;
-  padding-left: 20px;
-  font-size: 0.8rem;
-  opacity: 0.85;
+.overview-card-active .overview-card-preview {
+  color: var(--text-muted);
 }
 
 .issue-error-count {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: var(--text-heading);
   margin: 0;
+}
+
+.issue-error-count strong {
+  color: var(--accent);
+  font-weight: 800;
 }
 
 .resolved-badge {

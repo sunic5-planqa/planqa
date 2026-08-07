@@ -793,38 +793,88 @@ textarea {
   color: var(--success);
 }
 
+/* SCREEN 05 — "QA 검토" 옆 원본/수정본 세그먼트 토글 (Figma 실측: 트랙 #f1f1f3, 선택 탭은
+   그라데이션 배경 + 진보라 텍스트). */
+.history-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.history-heading {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--text-heading);
+  margin: 0;
+}
+
+.view-toggle {
+  display: flex;
+  gap: 2px;
+  background: #f1f1f3;
+  border-radius: 16px;
+  padding: 3px;
+}
+
+.view-toggle-option {
+  border: none;
+  background: none;
+  padding: 5px 10px;
+  border-radius: 13px;
+  font-size: 0.688rem;
+  font-weight: 600;
+  color: #b4b4bc;
+  cursor: pointer;
+}
+
+.view-toggle-option-active {
+  background: var(--accent-gradient);
+  color: var(--accent-contrast);
+  font-weight: 700;
+}
+
 .diff-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .diff-item {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: none;
+  gap: 5px;
+  padding: 12px 14px;
+  border: none;
+  border-radius: 12px;
+  background: #fafafb;
   font: inherit;
   color: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.diff-item.selected {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 15%, transparent);
+.diff-item-selected {
+  background: #faf7ff;
+  box-shadow: inset -3px 0 0 0 #c9a9ff;
 }
 
 .diff-original {
-  font-size: 0.8rem;
-  opacity: 0.6;
+  font-size: 0.72rem;
+  color: #b4b4bc;
   text-decoration: line-through;
 }
 
 .diff-revised {
-  font-size: 0.85rem;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.78rem;
   font-weight: 600;
+  color: var(--text-heading);
+}
+
+.diff-revised-check {
+  color: var(--accent);
+  font-weight: 400;
 }

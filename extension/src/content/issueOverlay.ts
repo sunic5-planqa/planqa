@@ -107,6 +107,7 @@ function collectTextSpans(): { fullText: string; spans: TextSpan[] } {
 }
 
 const marksByIssueId = new Map<string, HTMLElement[]>()
+const issuesById = new Map<string, OverlayIssue>()
 
 // issue.input_text와 일치하는 구간을 찾아 하이라이트한다. 매치가 텍스트 노드 하나에 다 들어있으면
 // <mark> 하나로 감싸고, 라벨+뱃지처럼 여러 노드에 걸쳐 있으면 겹치는 구간마다 각각 <mark>로 감싸서
@@ -136,7 +137,10 @@ function wrapIssue(issue: OverlayIssue): boolean {
     range.surroundContents(mark)
     mark.addEventListener('click', (event) => {
       event.stopPropagation()
-      toggleTooltip(mark, issue)
+      // 이미 이 이슈의 말풍선이 떠 있는 채로 같은 박스를 다시 누르면 닫는다(토글) — 다른 이슈를
+      // 보다가 이 박스를 누른 거면 그냥 새로 연다.
+      if (activeTooltip?.dataset.sunnicForIssue === issue.id) closeTooltip()
+      else showTooltip(mark, issue)
       chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
         // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
       })
@@ -146,6 +150,7 @@ function wrapIssue(issue: OverlayIssue): boolean {
 
   if (marks.length === 0) return false
   marksByIssueId.set(issue.id, marks)
+  issuesById.set(issue.id, issue)
   return true
 }
 
@@ -166,12 +171,9 @@ function positionNear(el: HTMLElement, anchor: HTMLElement): void {
 }
 
 // 통일된 읽기 전용 "AI 제안" 말풍선 — 어떤 이슈든 항상 같은 모양(제목 + 제안 한 줄)이고 버튼이 없다.
-// 실제 수정은 오른쪽 패널에서 하므로 여기서는 안내만 한다.
-function toggleTooltip(mark: HTMLElement, issue: OverlayIssue): void {
-  if (activeTooltip?.dataset.sunnicForIssue === issue.id) {
-    closeTooltip()
-    return
-  }
+// 실제 수정은 오른쪽 패널에서 하므로 여기서는 안내만 한다. 항상 열기만 하고(닫힌 상태 유지는 호출부
+// 책임) — 오른쪽 패널에서 이슈를 옮겨다닐 때도 이 함수로 자동으로 띄운다.
+function showTooltip(mark: HTMLElement, issue: OverlayIssue): void {
   closeTooltip()
 
   const tooltip = document.createElement('div')
@@ -199,6 +201,7 @@ export function applyIssueOverlay(issues: OverlayIssue[]): { matched: number; to
 export function clearIssueOverlay(): void {
   closeTooltip()
   marksByIssueId.clear()
+  issuesById.clear()
   for (const mark of Array.from(document.querySelectorAll(`.${HIGHLIGHT_CLASS}`))) {
     const parent = mark.parentNode
     if (!parent) continue
@@ -318,10 +321,15 @@ export async function applyIssueEdit(issueId: string, oldText: string, newText: 
   return { ok: true }
 }
 
+// 오른쪽 패널에서 이슈가 바뀔 때(이전/다음, Overview 카드 클릭 등) 호출 — 해당 박스로 스크롤하는
+// 동시에 그 이슈의 AI 제안 말풍선도 자동으로 띄운다. 문서에서 직접 클릭해야만 말풍선이 보이던 걸,
+// 오른쪽에서 옮겨다닐 때도 굳이 왼쪽을 따로 클릭할 필요 없게 만든 것.
 export function scrollToIssue(issueId: string): boolean {
   const mark = marksByIssueId.get(issueId)?.[0]
-  if (!mark) return false
+  const issue = issuesById.get(issueId)
+  if (!mark || !issue) return false
   mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  showTooltip(mark, issue)
   return true
 }
 

@@ -376,6 +376,21 @@ textarea {
   line-height: 1.55;
 }
 
+.issue-suggestion-box {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* 편집 중일 때만 흰 카드로 살짝 띄운다(Figma: bg-white + 옅은 그림자) — 평소엔 회색 카드 배경과
+   그냥 같은 높이. */
+.issue-suggestion-box-editing {
+  background: #fff;
+  box-shadow: 0 0 2.5px rgba(0, 0, 0, 0.2);
+  border-radius: 10px;
+  padding: 5px 10px;
+}
+
 .issue-suggestion-row {
   display: flex;
   align-items: center;
@@ -394,12 +409,16 @@ textarea {
   cursor: pointer;
 }
 
+/* Figma 실측 — "수정제안" 값은 보라→핑크 그라데이션 텍스트(플레인 검정이 아님). */
 .issue-suggestion-text {
   margin: 0;
   font-size: 0.78rem;
   font-weight: 700;
-  color: var(--text-heading);
   line-height: 1.55;
+  background: linear-gradient(90deg, #b583f0, #e8639f);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .issue-detail-divider {
@@ -455,7 +474,7 @@ textarea {
 }
 
 .issue-edit-cancel {
-  color: #b4b4bc;
+  color: #939393;
 }
 
 .issue-edit-save {
@@ -467,6 +486,39 @@ textarea {
 .issue-edit-save:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* Figma 실측 — "수정 진행 중..." 라벨도 보라→핑크 그라데이션, 앞에 불릿 점. "문서 오류 N개" 자리를
+   편집 중일 때 대신 차지한다. */
+.issue-editing-status {
+  margin: 0;
+  font-size: 0.94rem;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.issue-editing-status,
+.issue-editing-dot {
+  background: linear-gradient(90deg, #b583ef, #fbc7ea);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.issue-edit-notice {
+  margin: 0;
+  font-size: 0.75rem;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text-body);
+}
+
+.issue-edit-notice-error {
+  background: color-mix(in srgb, var(--danger) 16%, transparent);
+  color: var(--danger);
 }
 
 .issue-actions {

@@ -110,9 +110,15 @@ export function IssueListScreen() {
 
         <OverviewPanel issues={issues} currentIssueId={issue.id} />
 
-        <p className="issue-error-count">
-          문서 오류 <strong>{remainingCount}</strong>개
-        </p>
+        {isEditing ? (
+          <p className="issue-editing-status">
+            <span className="issue-editing-dot">•</span> 수정 진행 중...
+          </p>
+        ) : (
+          <p className="issue-error-count">
+            문서 오류 <strong>{remainingCount}</strong>개
+          </p>
+        )}
 
         <div className="issue-detail-card">
           <div className="issue-detail-block">
@@ -120,9 +126,9 @@ export function IssueListScreen() {
             <p className="issue-detail-value">{issue.input_text}</p>
           </div>
 
-          <div className="issue-detail-block">
+          <div className={`issue-suggestion-box ${isEditing ? 'issue-suggestion-box-editing' : ''}`.trim()}>
             <div className="issue-suggestion-row">
-              <span className="issue-detail-label">{isEditing ? '수정 진행 중...' : '수정제안'}</span>
+              <span className="issue-detail-label">수정제안</span>
               {!isEditing &&
                 (isResolved ? (
                   <span className="resolved-badge">✓ 수정완료</span>
@@ -133,24 +139,16 @@ export function IssueListScreen() {
                 ))}
             </div>
             {isEditing ? (
-              <>
-                <textarea
-                  className="issue-edit-textarea"
-                  value={draftText}
-                  onChange={(e) => {
-                    setDraft({ issueId: issue.id, text: e.target.value })
-                    setWarningAcknowledged(false)
-                  }}
-                  rows={4}
-                />
-                {validation && !validation.issueLikelyResolved && (
-                  <p className="notice">원래 문제였던 표현이 아직 남아있어요. 정말 해결됐는지 다시 확인해주세요.</p>
-                )}
-                {validation && !validation.matchesSuggestionClosely && (
-                  <p className="notice">AI 제안({issue.suggestion})과 많이 달라요. 의도한 수정이 맞는지 확인해주세요.</p>
-                )}
-                {saveError && <p className="notice issue-edit-error">{saveError}</p>}
-              </>
+              <textarea
+                className="issue-edit-textarea"
+                value={draftText}
+                onChange={(e) => {
+                  setDraft({ issueId: issue.id, text: e.target.value })
+                  setWarningAcknowledged(false)
+                }}
+                rows={4}
+                autoFocus
+              />
             ) : (
               <p className="issue-suggestion-text">{suggestion}</p>
             )}
@@ -167,20 +165,18 @@ export function IssueListScreen() {
             <span className="issue-detail-label">검증이유</span>
             <p className="issue-reason-text">{issue.reason}</p>
           </div>
-
-          {isEditing && (
-            <div className="issue-edit-actions-row">
-              <button type="button" className="issue-edit-cancel" onClick={cancelEdit} disabled={saving}>
-                수정 복구 ✕
-              </button>
-              <button type="button" className="issue-edit-save" onClick={handleSaveClick} disabled={saving}>
-                {saving ? '저장 중...' : hasWarning && !warningAcknowledged ? '그래도 저장 ✓' : '수정 저장 ✓'}
-              </button>
-            </div>
-          )}
         </div>
 
-        {!isEditing && (
+        {isEditing ? (
+          <div className="issue-edit-actions-row">
+            <button type="button" className="issue-edit-cancel" onClick={cancelEdit} disabled={saving}>
+              수정 복구 ✕
+            </button>
+            <button type="button" className="issue-edit-save" onClick={handleSaveClick} disabled={saving}>
+              {saving ? '저장 중...' : '수정 저장 ✓'}
+            </button>
+          </div>
+        ) : (
           <div className="issue-nav">
             <button
               type="button"
@@ -197,6 +193,14 @@ export function IssueListScreen() {
             )}
           </div>
         )}
+
+        {isEditing && validation && !validation.issueLikelyResolved && (
+          <p className="issue-edit-notice">원래 문제였던 표현이 아직 남아있어요. 정말 해결됐는지 다시 확인해주세요.</p>
+        )}
+        {isEditing && validation && !validation.matchesSuggestionClosely && (
+          <p className="issue-edit-notice">AI 제안({issue.suggestion})과 많이 달라요. 의도한 수정이 맞는지 확인해주세요.</p>
+        )}
+        {isEditing && saveError && <p className="issue-edit-notice issue-edit-notice-error">{saveError}</p>}
       </div>
 
       <div className="screen-footer">

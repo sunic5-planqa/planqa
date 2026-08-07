@@ -37,7 +37,7 @@ export function appReducer(state: AppState, action: Action): AppState {
       return { ...state, jobStatus: action.status }
 
     case 'ISSUES_LOADED':
-      return { ...state, issues: action.issues, currentIssueIndex: 0, editingIssueId: null, screen: 'issues' }
+      return { ...state, issues: action.issues, currentIssueIndex: 0, editingIssueId: null, issueEdits: {}, screen: 'issues' }
 
     case 'QA_ENGINE_UNAVAILABLE':
       return { ...state, qaEngineUnavailable: true }

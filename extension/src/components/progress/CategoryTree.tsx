@@ -2,10 +2,8 @@ import { useState } from 'react'
 import type { ProgressCategory } from '../../api/types'
 
 export function CategoryTree({ categories }: { categories: ProgressCategory[] }) {
-  const [expanded, setExpanded] = useState<Set<string>>(() => {
-    const started = categories.filter((c) => c.items.some((item) => item.status !== 'pending'))
-    return new Set(started.map((c) => c.key))
-  })
+  // 아직 시작 안 한 위계도 세부 룰 목록이 처음부터 다 펼쳐져 있길 원함 — 전부 기본 확장.
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(categories.map((c) => c.key)))
 
   const toggle = (key: string) => {
     setExpanded((prev) => {

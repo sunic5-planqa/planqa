@@ -738,3 +738,51 @@ Overview 카드로 이슈를 옮겨다닐 때도 자동으로 뜨도록 확장 �
 - 실제 Chrome에 리로드해서 툴바 아이콘이 반투명 배경으로 잘 보이는지(다크 툴바 테마 포함) 확인 필요.
 - QA 엔진 핵심 로직은 이제 배선/검증까지 끝났으니, 다음 최우선순위는 "여전히 최우선"에서 내려와도 됨 —
   남은 건 위 QA 엔진 섹션의 `### Next`(타이어별 진행률, 재동기화, 무료 쿼터로 인한 실사용 테스트 대기).
+
+## 2026-08-08 — SCREEN 02(QA 진행) 실제 반영 + 마스코트가 진행률 바 위를 걷게
+
+사용자가 "진행 경과 시간이 흐르는데 퍼센트가 하나도 안 참"과 "SCREEN 02 UI가 실제에 반영 안 됨(그라데이션
+바, 지금 어느 룰 체크 중인지)"을 각각 지적 — 둘 다 같은 근본 원인: `QAJobStatusResponse`가 처음부터
+`progress=0`/`categories=None`으로 고정이었고, `review_document()`는 타이어별 콜백이 없어 통째로 끝나야만
+결과가 나온다(ADR 0001에서 이미 알려진 한계). 벤더링한 파이프라인은 그대로 두고, 백엔드에서 진행률과
+카테고리 체크리스트를 **경과 시간 기반으로 그럴듯하게 근사**하는 쪽으로 풀었다.
+
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**:
+  - `_tick_progress`(신규): `_execute_qa_job`이 파이프라인을 `asyncio.to_thread`로 돌리는 동안 1.5초마다
+    `job.progress`를 경과 시간 기반 지수함수(`90 * (1 - e^(-elapsed/45))`)로 갱신 — 실제 완료 전엔 90%를
+    절대 못 넘게 해서 "아직 안 끝났는데 100%로 보임" 오인을 방지, 실제 결과가 오면 `_execute_qa_job`이
+    바로 100으로 점프시킴.
+  - `_categories_for_progress`(신규): 룰북의 진짜 카테고리(8개, `rulebook.rules`에서 실제로 파싱된 것)를
+    `tiers.TIER_CATEGORIES`로 4개 위계(Documents/Logical Chapter/Detailed Chapter/Sentence, SCREEN 02
+    그룹명과 1:1)에 묶고, 방금 그 `progress` 값을 다시 활용해 "지금 몇 번째 위계의 몇 번째 카테고리까지
+    끝났다고 보여줄지"를 결정 — 진짜 완료 신호가 아니라 진행률 하나로 파생시킨 연출이라는 점을 코드
+    주석에 명시.
+  - `_korean_label`(신규): 룰북의 카테고리명이 "한글 설명 + 영문 Title Case"로 붙어있어(예: "용어 및
+    단어의 일관성 Terminology Consistency") 정규식으로 영문 접미사를 잘라 한글만 노출 — SCREEN 02
+    목업도, 기존 이슈의 `criteria` 필드도 한글만 보여주는 게 맞아서 둘 다 이걸 쓰도록 통일(이슈
+    `criteria`가 지금까지 영문까지 붙어 나오던 걸 같이 고침).
+  - `GET /qa-jobs/{id}/status`가 이제 `categories`/`current_category`를 실제로 채워서 반환.
+- **`extension/src/components/screens/ProgressScreen.tsx`**: 진행률 바를 Figma 실측(얇은 8px 그라데이션
+  필 바 + 오른쪽에 별도 `%` 라벨, 기존처럼 바 안에 텍스트 겹쳐 넣지 않음)대로 재구성. 마스코트를
+  `.progress-track` 안에 절대배치해서 `left`를 `(트랙 폭 - 마스코트 폭) × progress/100`으로 계산 —
+  진행률이 오를 때마다 마스코트가 바를 따라 오른쪽으로 걸어가고(`transition: left 1.4s linear`), 100%를
+  넘어 트랙 밖으로 튀어나가지 않게 폭을 고정.
+- **`extension/src/components/progress/CategoryTree.tsx`**: Figma 실측 반영 — `done` 항목도 라벨은
+  회색(포커스는 지금 처리 중인 항목에만), `pending` 항목은 아이콘 없이 회색 텍스트만(기존엔 `○`를
+  그렸었음), `in_progress` 항목만 보라 그라데이션 필(`rgba(201,169,255,.18)→rgba(255,201,232,.18)`) +
+  진보라 ExtraBold 텍스트로 강조. 그룹 헤더도 지금 처리 중인 위계만 진하게, 나머지는 회색.
+- **`extension/src/styles/global.css`**: `.progress-track`/`.mascot-on-track`/`.progress-bar-track`
+  신규, `.progress-bar`/`.progress-bar-fill`/`.progress-bar-label`/`.category-tree`/`.category-group-
+  toggle`/`.category-item*` 전면 재작성(색상·반경·패딩 전부 Figma 실측값).
+- 검증: 백엔드 `_categories_for_progress`를 progress 0/10/30/50/89/100으로 수동 실행해 위계가 순서대로
+  넘어가는지, `_korean_label`이 8개 카테고리 전부에서 정규식으로 올바르게 잘리는지 확인(첫 시도는
+  그리디 정규식이라 영문 마지막 단어까지 남는 버그가 있었음 — non-greedy로 수정). 백엔드 60개, 확장
+  `typecheck`/`lint`/`build`/`vitest` 65개 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 Chrome에서 QA 진행 화면을 열어 마스코트가 실제로 바를 따라
+  걷는지, 카테고리 체크리스트가 Figma와 시각적으로 맞아떨어지는지 확인 필요.
+- 카테고리 체크 진행은 여전히 "진짜 신호"가 아니라 progress 값에서 파생된 연출 — 실제 문서마다 위계별
+  소요 시간이 다르면(문장 위계가 챕터 수만큼 커지는 등) 근사가 어긋날 수 있음. 진짜 타이어별 콜백을
+  넣으려면 결국 벤더링한 `pipeline.py`를 건드려야 해서(ADR 0001의 diffable-copy 트레이드오프) 보류.

@@ -18,11 +18,15 @@ import type {
 // 여야 붙어서 나가므로) — 사이드패널이 APPLY_ISSUE_EDIT 요청을 보내면 여기서 처리해 응답한다.
 const HIGHLIGHT_CLASS = 'sunnic-issue-highlight'
 const RESOLVED_CLASS = 'sunnic-issue-resolved'
+const ACTIVE_CLASS = 'sunnic-issue-active'
 const TOOLTIP_CLASS = 'sunnic-issue-tooltip'
 const STYLE_ID = 'sunnic-issue-overlay-style'
 
 // Figma SCREEN 03/04의 하이라이트 박스 실측값 — 배경 채움 없이 solid 2px 보라 테두리(#b583ef)만,
-// 둥근 모서리 10px. 그라데이션이 아니다.
+// 둥근 모서리 10px. 그라데이션이 아니다. 단, "지금 오른쪽 패널에서 보고 있는 이슈"(active)만 예외로
+// 그라데이션 테두리를 줘서 여러 박스 중 어디를 보고 있는지 한눈에 띄게 한다 — border-image는
+// border-radius를 무시하는 CSS 한계가 있어서, padding-box/border-box 이중 background로 우회한다
+// (내부는 여전히 투명 — Figma 스펙 그대로 유지).
 const STYLE = `
 .${HIGHLIGHT_CLASS} {
   background: transparent;
@@ -33,6 +37,10 @@ const STYLE = `
 }
 .${HIGHLIGHT_CLASS}.${RESOLVED_CLASS} {
   border-color: #2ea043;
+}
+.${HIGHLIGHT_CLASS}.${ACTIVE_CLASS} {
+  border: 2.5px solid transparent;
+  background: linear-gradient(transparent, transparent) padding-box, linear-gradient(135deg, #c9a9ff, #ffc9e8) border-box;
 }
 .${TOOLTIP_CLASS} {
   position: fixed;
@@ -109,6 +117,18 @@ function collectTextSpans(): { fullText: string; spans: TextSpan[] } {
 const marksByIssueId = new Map<string, HTMLElement[]>()
 const issuesById = new Map<string, OverlayIssue>()
 
+let activeIssueId: string | null = null
+
+// "지금 보고 있는" 박스 하나에만 그라데이션 테두리(ACTIVE_CLASS)를 준다 — 클릭이든 오른쪽 패널
+// 네비게이션(scrollToIssue)이든 이슈 포커스가 바뀌는 모든 경로가 이걸 거친다.
+function setActiveMark(issueId: string): void {
+  if (activeIssueId && activeIssueId !== issueId) {
+    for (const mark of marksByIssueId.get(activeIssueId) ?? []) mark.classList.remove(ACTIVE_CLASS)
+  }
+  for (const mark of marksByIssueId.get(issueId) ?? []) mark.classList.add(ACTIVE_CLASS)
+  activeIssueId = issueId
+}
+
 // issue.input_text와 일치하는 구간을 찾아 하이라이트한다. 매치가 텍스트 노드 하나에 다 들어있으면
 // <mark> 하나로 감싸고, 라벨+뱃지처럼 여러 노드에 걸쳐 있으면 겹치는 구간마다 각각 <mark>로 감싸서
 // (같은 issue id를 공유) 이어 붙은 것처럼 보이게 한다 — Range.surroundContents는 엘리먼트 경계를
@@ -141,6 +161,7 @@ function wrapIssue(issue: OverlayIssue): boolean {
       // 보다가 이 박스를 누른 거면 그냥 새로 연다.
       if (activeTooltip?.dataset.sunnicForIssue === issue.id) closeTooltip()
       else showTooltip(mark, issue)
+      setActiveMark(issue.id)
       chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
         // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
       })
@@ -155,10 +176,24 @@ function wrapIssue(issue: OverlayIssue): boolean {
 }
 
 let activeTooltip: HTMLElement | null = null
+let activeAnchorMark: HTMLElement | null = null
 
 function closeTooltip(): void {
   activeTooltip?.remove()
   activeTooltip = null
+  activeAnchorMark = null
+  window.removeEventListener('scroll', repositionActiveTooltip, true)
+  window.removeEventListener('resize', repositionActiveTooltip)
+}
+
+// scrollToIssue()가 scrollIntoView({behavior:'smooth'})로 스크롤을 걸어 놓고 바로 이어서 말풍선을
+// 띄우면, 그 시점의 mark 위치는 아직 스크롤 애니메이션이 끝나기 전(도착지가 아닌) 값이라 말풍선이
+// 엉뚱한 곳에 자리잡는다 — "어떤 이슈는 말풍선이 뜨는데 어떤 건 안 뜨는" 것처럼 보였던 원인. 스크롤
+// 애니메이션이 끝날 때까지 기다리는 대신, 열려 있는 동안 스크롤/리사이즈마다 위치를 계속 다시 계산해서
+// 애니메이션이 어떻게 끝나든 최종적으로는 항상 mark 바로 아래에 오도록 한다. capture:true라 컨플루언스
+// 내부의 어떤 스크롤 컨테이너(꼭 window가 아니어도)에서 스크롤이 나도 잡아낸다.
+function repositionActiveTooltip(): void {
+  if (activeTooltip && activeAnchorMark) positionNear(activeTooltip, activeAnchorMark)
 }
 
 // position:fixed 기준이라 스크롤 오프셋을 더하면 안 된다 — viewport 좌표 그대로 쓴다.
@@ -189,6 +224,9 @@ function showTooltip(mark: HTMLElement, issue: OverlayIssue): void {
   // 틀어질 수 있는데, html까지 그런 경우는 사실상 없다.
   document.documentElement.appendChild(tooltip)
   activeTooltip = tooltip
+  activeAnchorMark = mark
+  window.addEventListener('scroll', repositionActiveTooltip, true)
+  window.addEventListener('resize', repositionActiveTooltip)
 }
 
 export function applyIssueOverlay(issues: OverlayIssue[]): { matched: number; total: number } {
@@ -202,6 +240,7 @@ export function clearIssueOverlay(): void {
   closeTooltip()
   marksByIssueId.clear()
   issuesById.clear()
+  activeIssueId = null
   for (const mark of Array.from(document.querySelectorAll(`.${HIGHLIGHT_CLASS}`))) {
     const parent = mark.parentNode
     if (!parent) continue
@@ -330,6 +369,7 @@ export function scrollToIssue(issueId: string): boolean {
   if (!mark || !issue) return false
   mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
   showTooltip(mark, issue)
+  setActiveMark(issueId)
   return true
 }
 

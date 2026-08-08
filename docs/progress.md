@@ -786,3 +786,36 @@ Overview 카드로 이슈를 옮겨다닐 때도 자동으로 뜨도록 확장 �
 - 카테고리 체크 진행은 여전히 "진짜 신호"가 아니라 progress 값에서 파생된 연출 — 실제 문서마다 위계별
   소요 시간이 다르면(문장 위계가 챕터 수만큼 커지는 등) 근사가 어긋날 수 있음. 진짜 타이어별 콜백을
   넣으려면 결국 벤더링한 `pipeline.py`를 건드려야 해서(ADR 0001의 diffable-copy 트레이드오프) 보류.
+
+## 2026-08-09 — SCREEN 03(QA 결과 확인) 배치 정리 + AI 제안 말풍선 안정화
+
+사용자가 "오류 수정하기 버튼을 Figma처럼 배치"와 "AI 제안 말풍선이 어떤 이슈는 뜨고 어떤 건 안 뜸"을
+같이 지적. `get_design_context`로 SCREEN 03(143:5215)를 다시 실측해서 둘 다 고쳤고, 덧붙여 "지금
+오른쪽 패널에서 보고 있는 이슈의 박스"를 문서 위에서도 구분되게 그라데이션 테두리로 강조했다.
+
+- **`오류 수정하기` 배치**: Figma는 "수정제안" 라벨과 "오류 수정하기" 링크를 10px 간격으로 나란히
+  붙여둔다(카드 양 끝으로 벌어지지 않음) — `.issue-suggestion-row`가 `justify-content: space-between`
+  이었던 걸 `gap: 10px`만 남기고 제거해서 고침. 색이모지 "✏️" 대신 Figma 실측 스타일(작은 원 + 연필)에
+  가까운 인라인 SVG 아이콘으로 교체(`currentColor`라 링크 텍스트와 같은 검정).
+- **AI 제안 말풍선이 가끔 안 뜨던 버그의 진짜 원인**: `scrollToIssue()`가 `mark.scrollIntoView({behavior:
+  'smooth'})`를 건 직후 곧바로 `showTooltip()`으로 그 시점의 `getBoundingClientRect()` 좌표에 말풍선을
+  꽂았음 — 스무스 스크롤 애니메이션이 끝나기 *전* 좌표라, 스크롤 거리가 크면 말풍선이 도착지가 아닌
+  엉뚱한 위치(화면 밖일 수도 있음)에 떠서 사용자 눈엔 "안 뜬 것"처럼 보였다. 애니메이션 종료를 감지하는
+  대신, 말풍선이 열려있는 동안 `scroll`(capture:true — 컨플루언스 내부 스크롤 컨테이너까지 잡기 위해)/
+  `resize` 이벤트마다 위치를 계속 재계산하도록 바꿔서, 스무스 스크롤이 언제 끝나든 최종적으로는 항상
+  mark 바로 아래에 자리잡게 함(닫힐 때 리스너 정리).
+- **`extension/src/content/issueOverlay.ts`**: `ACTIVE_CLASS`(신규) — 오른쪽 패널에서 지금 보고 있는
+  이슈의 mark에만 붙는 클래스. `border-image`는 `border-radius`를 무시하는 CSS 한계가 있어서, 대신
+  `padding-box`(투명)/`border-box`(보라→핑크 그라데이션) 이중 `background`로 우회 — 둥근 모서리를
+  유지하면서 테두리만 그라데이션. 클릭과 `scrollToIssue()` 양쪽 경로 모두 `setActiveMark()`를 거쳐서
+  이전에 보던 이슈의 강조는 자동으로 빠짐.
+- 검증: `issueOverlay.test.ts`에 신규 테스트 2개(active 클래스가 이슈 전환 시 정확히 옮겨가는지, mark의
+  `getBoundingClientRect()`가 스크롤 도중 바뀌면 말풍선 위치도 같이 갱신되는지) 추가. 확장
+  `typecheck`/`lint`/`build`/`vitest` 67개 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 DOC-001에서 오른쪽 패널로 이슈를 넘길 때마다 왼쪽 박스가
+  그라데이션으로 바뀌는지, 스크롤 거리가 먼 이슈로 이동해도 말풍선이 매번 정확한 위치에 뜨는지 확인.
+- 오류 수정하기 아이콘은 Figma 원본 에셋(임시 URL, 7일 만료) 대신 간단한 인라인 SVG로 근사함 — 정확한
+  Figma 벡터가 필요하면 나중에 `download_assets`로 실제 아이콘을 받아 교체할 수 있음.

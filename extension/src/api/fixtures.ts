@@ -50,6 +50,8 @@ export const FIXTURE_ISSUES: IssueResponse[] = [
     reason:
       "2장의 간편결제 지원사가 3사로 명시됐지만, 4장 요구사항에서는 페이코·삼성페이 추가 연동이 언급되어 실제 지원 수단 수와 표현이 일치하지 않습니다.",
     suggestion: '간편결제(카카오페이, 네이버페이, 토스, 삼성페이) 4사만 지원, 페이코 미지원',
+    frame_type: 'object',
+    related_location: null,
   },
   {
     id: 'fixture-2',
@@ -58,6 +60,8 @@ export const FIXTURE_ISSUES: IssueResponse[] = [
     criteria: '상위 목표와 세부 내용의 정합성',
     reason: "4장 '실패 처리 개선' 요구사항에는 타임아웃 재시도가 포함되어 있지만, 배경 항목에는 재시도 로직 언급이 빠져 있습니다.",
     suggestion: 'PG사 응답 지연 시 자동 타임아웃 및 재시도 로직 부재',
+    frame_type: 'object',
+    related_location: null,
   },
   {
     id: 'fixture-3',
@@ -66,5 +70,7 @@ export const FIXTURE_ISSUES: IssueResponse[] = [
     criteria: '정보 누락',
     reason: '목표(3장)와 주요 요구사항 표(4장)에 적힌 간편결제 확대 목표 수치가 서로 달라 어느 쪽이 최신 값인지 확인이 필요합니다.',
     suggestion: '간편결제 지원 수단을 4종에서 8종으로 확대한다',
+    frame_type: 'insert_range',
+    related_location: null,
   },
 ]

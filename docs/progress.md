@@ -856,3 +856,38 @@ Overview 카드로 이슈를 옮겨다닐 때도 자동으로 뜨도록 확장 �
   문제가 있는지 더 파봐야 함.
 - 컨플루언스 헤딩 평탄화 수정은 실사용(실제 DOC-001)에서 논리 단위/문단 구조가 원문 그대로 나오는지
   확인 필요 — Claude가 검증 불가능.
+
+## 2026-08-09 — 하이라이트 프레임 유형(`frame_type`) 배선
+
+사용자가 공유한 "Ver.2 - Edit 행위별 프레임 유형 구분" 설계 문서를 기준으로, 문서 위 하이라이트 박스를
+QA 기준에 따라 다르게 그리는 첫 단계(백엔드 배선)를 진행했다. 전체 매트릭스(QA 기준 8개 × Edit 행위
+4개)를 뜯어보니 실제로 행위 분류가 필요한 건 LG/LF/GA 3개뿐이라는 걸 확인 — TC/TM/AE/RD는 허용 행위가
+Replace/Delete뿐이라 항상 객체 프레임, MI는 Insert뿐이라 항상 삽입범위 프레임, rule_id 카테고리만으로
+결정 가능했다.
+
+- **막힌 지점**: LG/LF/GA는 두 위치 간 관계 오류(예: "2-2가 2-1과 다르다")라 범위 프레임을 그리려면
+  두 번째 위치가 필요한데, review-agent의 `Issue` 스키마엔 `location` 하나뿐이라 지금은 만들 수 없음
+  — `related_location: str | None` 필드 추가를 요청하는 이슈를 올림:
+  [sunic5-planqa/planqa-agent#4](https://github.com/sunic5-planqa/planqa-agent/issues/4).
+- **`backend/src/sunnic_backend/models/issue.py`**: `FrameType` StrEnum(`object`/`range`/`insert_range`)
+  추가, `Issue`에 `frame_type`(기본값 `object`)/`related_location` 필드 추가.
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**: `_frame_type(category, related_location)` — MI는
+  무조건 `insert_range`, LG/LF/GA는 `related_location`이 있을 때만 `range`(없으면 `object`로 안전하게
+  폴백), 나머지는 `object`. `_to_issue_record`가 `getattr(issue, "related_location", None)`으로
+  값을 읽음 — 벤더링한 `schema.py`에 아직 그 필드가 없어도 에러 없이 `None`으로 폴백하고, 원작자가
+  필드를 추가해서 재벤더링하면 **코드 변경 없이 자동으로 채워지는 구조**로 만들어둠. `IssueResponse`에도
+  두 필드 추가해서 API로 노출.
+- **`extension/src/api/types.ts`**: `IssueResponse`에 `frame_type`/`related_location` 타입만 동기화 —
+  **실제로 문서 DOM에서 범위/삽입범위 모양대로 박스를 그리는 로직(`issueOverlay.ts`)은 아직 구현 안 함**,
+  지금은 백엔드가 값을 내려주기 시작한 것뿐. 기존 fixture(`fixtures.ts`)/데모 이슈(`demoIssues.ts`)/
+  테스트 헬퍼(`issueGrouping.test.ts`)도 새 필수 필드 때문에 타입 에러 나서 같이 채워넣음.
+- 검증: 백엔드 `_frame_type` 매핑 12개 케이스 파라미터라이즈 테스트 추가, 전체 72개 통과, ruff 클린.
+  확장 `typecheck`/`lint`/`build`/`vitest` 68개 전부 통과.
+
+### Next
+
+- `issueOverlay.ts`에 `insert_range`(위치의 상위 위계 헤딩 구간 전체를 감싸기)와 `range`(location~
+  related_location 두 헤딩 사이 전체를 감싸기) 렌더링 로직 추가 — 지금은 `frame_type`이 뭐든 항상
+  기존 object 방식(정확한 텍스트 매칭)으로만 그려짐. 헤딩 텍스트로 DOM 위치를 찾는 유틸이 새로 필요함.
+- `related_location`은 원작자가 이슈(#4)를 반영해줘야 실제 값이 들어옴 — 그 전까지 LG/LF/GA는 계속
+  object로 폴백.

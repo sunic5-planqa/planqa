@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 from sunnic_backend.api import qa_jobs
@@ -131,3 +132,27 @@ async def test_qa_job_marks_failed_when_llm_client_cannot_be_built(monkeypatch) 
         status_response = await client.get(f"/qa-jobs/{job_id}/status")
 
     assert status_response.json()["status"] == "failed"
+
+
+# 프레임(문서 위 하이라이트 박스) 유형 매핑 — "Ver.2 - Edit 행위별 프레임 유형 구분" 기준.
+# related_location은 review-agent에 아직 없는 필드(요청: sunic5-planqa/planqa-agent#4)라
+# LG/LF/GA도 값이 없으면 object로 폴백하는 것까지 같이 검증한다.
+@pytest.mark.parametrize(
+    ("category", "related_location", "expected"),
+    [
+        ("TC", None, qa_jobs.FrameType.OBJECT),
+        ("TM", None, qa_jobs.FrameType.OBJECT),
+        ("AE", None, qa_jobs.FrameType.OBJECT),
+        ("RD", None, qa_jobs.FrameType.OBJECT),
+        ("MI", None, qa_jobs.FrameType.INSERT_RANGE),
+        ("MI", "3-1", qa_jobs.FrameType.INSERT_RANGE),
+        ("LG", None, qa_jobs.FrameType.OBJECT),
+        ("LF", None, qa_jobs.FrameType.OBJECT),
+        ("GA", None, qa_jobs.FrameType.OBJECT),
+        ("LG", "3-1", qa_jobs.FrameType.RANGE),
+        ("LF", "2. 배경 및 문제 정의", qa_jobs.FrameType.RANGE),
+        ("GA", "5-2", qa_jobs.FrameType.RANGE),
+    ],
+)
+def test_frame_type_mapping(category: str, related_location: str | None, expected: qa_jobs.FrameType) -> None:
+    assert qa_jobs._frame_type(category, related_location) == expected

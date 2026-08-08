@@ -9,8 +9,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from sunnic_backend.config import settings
+from sunnic_backend.models.issue import FrameType, IssueStatus
 from sunnic_backend.models.issue import Issue as IssueRecord
-from sunnic_backend.models.issue import IssueStatus
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
 from sunnic_backend.qa_engine.review_agent.llm.gemini import DEFAULT_MODEL, GeminiClient
 from sunnic_backend.qa_engine.review_agent.models import gemini_lite
@@ -56,6 +56,25 @@ _ENGLISH_SUFFIX_RE = re.compile(r"^(.*?\S)\s+[A-Za-z].*$")
 def _korean_label(category_label: str) -> str:
     match = _ENGLISH_SUFFIX_RE.match(category_label)
     return match.group(1) if match else category_label
+
+
+# 프레임(문서 위 하이라이트 박스) 유형은 QA 기준의 카테고리만으로 정해진다 — 상세 근거는
+# docs/progress.md 2026-08-09 항목, 원본 설계는 "Ver.2 - Edit 행위별 프레임 유형 구분" 참고.
+#   TC/TM/AE/RD: Replace/Delete만 허용되는 룰이라 항상 단일 위치 object 프레임.
+#   MI: Insert만 허용 — 정보가 없는 자리를 포함하는 최소 상위 위계를 감싸는 insert_range.
+#   LG/LF/GA: 두 위치 간 관계 오류라 원래 range 프레임이 맞지만, 그러려면 두 번째 위치
+#     (related_location)가 있어야 한다 — 아직 review-agent의 Issue 스키마에 그 필드가 없어서
+#     (요청 이슈: sunic5-planqa/planqa-agent#4) 값이 오기 전까지는 object로 안전하게 폴백한다.
+_RANGE_CATEGORIES = frozenset({"LG", "LF", "GA"})
+_INSERT_RANGE_CATEGORIES = frozenset({"MI"})
+
+
+def _frame_type(category: str, related_location: str | None) -> FrameType:
+    if category in _INSERT_RANGE_CATEGORIES:
+        return FrameType.INSERT_RANGE
+    if category in _RANGE_CATEGORIES and related_location:
+        return FrameType.RANGE
+    return FrameType.OBJECT
 
 
 # SCREEN 02 groups categories by review tier — these four map 1:1 to tiers.TIER_ORDER.
@@ -142,6 +161,8 @@ class IssueResponse(BaseModel):
     criteria: str
     reason: str
     suggestion: str
+    frame_type: FrameType
+    related_location: str | None
 
 
 def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> ReviewResult:
@@ -155,6 +176,10 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
 def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue: ReviewIssue) -> IssueRecord:
     rule = rulebook.rule(issue.rule_id)
     criteria = _korean_label(rule.category_label) if rule else issue.rule_id
+    # getattr — 벤더링한 schema.py에 아직 related_location이 없어도(재벤더링 전) 에러 없이 None으로
+    # 폴백, 필드가 생기면 코드 변경 없이 자동으로 채워진다.
+    related_location: str | None = getattr(issue, "related_location", None)
+    frame_type = _frame_type(rule.category, related_location) if rule else FrameType.OBJECT
     input_text = issue.original_text or ""
     start = document_text.find(input_text) if input_text else -1
     start = max(start, 0)
@@ -170,6 +195,8 @@ def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue:
         edited_text=None,
         start=start,
         end=start + len(input_text),
+        frame_type=frame_type,
+        related_location=related_location,
     )
 
 
@@ -262,6 +289,8 @@ async def list_qa_job_issues(job_id: str) -> list[IssueResponse]:
             criteria=issue.criteria,
             reason=issue.reason,
             suggestion=issue.suggestion,
+            frame_type=issue.frame_type,
+            related_location=issue.related_location,
         )
         for issue in issues
     ]

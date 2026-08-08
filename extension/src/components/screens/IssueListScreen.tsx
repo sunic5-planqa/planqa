@@ -134,7 +134,14 @@ export function IssueListScreen() {
                   <span className="resolved-badge">✓ 수정완료</span>
                 ) : (
                   <button type="button" className="issue-fix-link" onClick={startEdit}>
-                    오류 수정하기 ✏️
+                    <span className="issue-fix-link-text">오류 수정하기</span>
+                    <svg className="issue-fix-link-icon" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                      <circle cx="6" cy="6" r="5.25" stroke="currentColor" strokeWidth="1" />
+                      <path
+                        d="M4.4 7.6 7.3 4.7a.5.5 0 0 1 .7 0l.3.3a.5.5 0 0 1 0 .7L5.4 8.6l-1.2.3.2-1.3Z"
+                        fill="currentColor"
+                      />
+                    </svg>
                   </button>
                 ))}
             </div>

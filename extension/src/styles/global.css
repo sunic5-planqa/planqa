@@ -391,22 +391,35 @@ textarea {
   padding: 5px 10px;
 }
 
+/* Figma는 "수정제안" 라벨과 "오류 수정하기" 링크를 10px 간격으로 나란히 붙여둔다(양끝 정렬 아님) —
+   기존엔 justify-content:space-between이라 링크가 카드 오른쪽 끝까지 밀려나 있었다. */
 .issue-suggestion-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
 }
 
 .issue-fix-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   background: none;
   border: none;
   padding: 0;
   font-size: 0.7rem;
   font-weight: 600;
   color: #000;
-  text-decoration: underline;
   cursor: pointer;
+}
+
+.issue-fix-link-text {
+  text-decoration: underline;
+}
+
+.issue-fix-link-icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
 }
 
 /* Figma 실측 — "수정제안" 값은 보라→핑크 그라데이션 텍스트(플레인 검정이 아님). */

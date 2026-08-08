@@ -1,4 +1,6 @@
 import asyncio
+import math
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +17,8 @@ from sunnic_backend.qa_engine.review_agent.models import gemini_lite
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult, review_document
 from sunnic_backend.qa_engine.review_agent.rulebook import RuleBook, parse_rulebook
 from sunnic_backend.qa_engine.review_agent.schema import Issue as ReviewIssue
+from sunnic_backend.qa_engine.review_agent.schema import Level
+from sunnic_backend.qa_engine.review_agent.tiers import TIER_CATEGORIES
 from sunnic_backend.storage.store import store
 
 router = APIRouter(tags=["qa-jobs"])
@@ -32,6 +36,93 @@ def _load_rulebook() -> RuleBook:
     return _rulebook
 
 
+class CategoryItemOut(BaseModel):
+    key: str
+    label: str
+    status: str
+
+
+class ProgressCategoryOut(BaseModel):
+    key: str
+    label: str
+    items: list[CategoryItemOut]
+
+
+# rulebook_v1.0.md's category headings are "<Korean phrase> <English Title Case phrase>"
+# (e.g. "용어 및 단어의 일관성 Terminology Consistency") — the UI only wants the Korean part.
+_ENGLISH_SUFFIX_RE = re.compile(r"^(.*?\S)\s+[A-Za-z].*$")
+
+
+def _korean_label(category_label: str) -> str:
+    match = _ENGLISH_SUFFIX_RE.match(category_label)
+    return match.group(1) if match else category_label
+
+
+# SCREEN 02 groups categories by review tier — these four map 1:1 to tiers.TIER_ORDER.
+_TIER_GROUPS: tuple[tuple[Level, str, str], ...] = (
+    (Level.DOCUMENT, "documents", "Documents"),
+    (Level.LOGICAL_UNIT, "logical_chapter", "Logical Chapter"),
+    (Level.PARAGRAPH, "detailed_chapter", "Detailed Chapter"),
+    (Level.SENTENCE, "sentence", "Sentence"),
+)
+
+
+def _category_label_by_prefix(rulebook: RuleBook) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for rule in rulebook.rules.values():
+        labels.setdefault(rule.category, _korean_label(rule.category_label))
+    return labels
+
+
+def _build_tier_groups(rulebook: RuleBook) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    # Static per-rulebook structure (doesn't change per job): (group_key, group_label,
+    # [(category_prefix, category_label), ...]) for every tier that actually has categories.
+    labels = _category_label_by_prefix(rulebook)
+    groups = []
+    for level, key, label in _TIER_GROUPS:
+        items = [(prefix, labels[prefix]) for prefix in TIER_CATEGORIES.get(level, ()) if prefix in labels]
+        if items:
+            groups.append((key, label, items))
+    return groups
+
+
+def _categories_for_progress(rulebook: RuleBook, progress: int) -> tuple[list[ProgressCategoryOut], str | None]:
+    # No per-category completion signal exists (see docs/adr/0001-...) — this derives a
+    # plausible-looking checklist from the same fake progress % the ticker already computes,
+    # walking through tiers/categories in order as progress advances. Purely cosmetic; the
+    # real per-tier result only ever lands atomically when review_document() returns.
+    groups = _build_tier_groups(rulebook)
+    if not groups:
+        return [], None
+
+    band = 90 / len(groups)
+    tier_index = len(groups) - 1 if progress >= 90 else min(len(groups) - 1, int(progress // band))
+
+    out: list[ProgressCategoryOut] = []
+    current_category: str | None = None
+    for i, (group_key, group_label, items) in enumerate(groups):
+        if i < tier_index or progress >= 90:
+            done_count = len(items)
+        elif i == tier_index:
+            within = min(max((progress - i * band) / band, 0.0), 1.0) if band > 0 else 1.0
+            done_count = int(within * len(items))
+        else:
+            done_count = 0
+
+        item_out: list[CategoryItemOut] = []
+        for idx, (item_key, item_label) in enumerate(items):
+            if idx < done_count:
+                status = "done"
+            elif idx == done_count and i == tier_index and done_count < len(items):
+                status = "in_progress"
+                current_category = item_label
+            else:
+                status = "pending"
+            item_out.append(CategoryItemOut(key=f"{group_key}:{item_key}", label=item_label, status=status))
+        out.append(ProgressCategoryOut(key=group_key, label=group_label, items=item_out))
+    return out, current_category
+
+
 class CreateQAJobResponse(BaseModel):
     job_id: str
 
@@ -41,6 +132,7 @@ class QAJobStatusResponse(BaseModel):
     progress: int
     current_category: str | None
     elapsed_seconds: float
+    categories: list[ProgressCategoryOut] | None = None
 
 
 class IssueResponse(BaseModel):
@@ -62,7 +154,7 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
 
 def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue: ReviewIssue) -> IssueRecord:
     rule = rulebook.rule(issue.rule_id)
-    criteria = rule.category_label if rule else issue.rule_id
+    criteria = _korean_label(rule.category_label) if rule else issue.rule_id
     input_text = issue.original_text or ""
     start = document_text.find(input_text) if input_text else -1
     start = max(start, 0)
@@ -81,11 +173,35 @@ def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue:
     )
 
 
+_ESTIMATED_DURATION_SECONDS = 45.0
+
+
+async def _tick_progress(job_id: str, started_at: datetime) -> None:
+    # review_document() has no per-tier progress hook (see docs/adr/0001-...), so this fakes
+    # a smoothly-advancing bar instead of leaving it pinned at 0% for the whole run — it
+    # asymptotically approaches 90% (never claims done before the real result lands) based on
+    # elapsed time against a rough per-document duration estimate, then _execute_qa_job jumps
+    # it straight to 100 once the pipeline actually returns.
+    try:
+        while True:
+            await asyncio.sleep(1.5)
+            job = await store.get_qa_job(job_id)
+            if job is None or job.status != QAJobStatus.RUNNING:
+                return
+            elapsed = (datetime.now(UTC) - started_at).total_seconds()
+            progress = min(90, int(90 * (1 - math.exp(-elapsed / _ESTIMATED_DURATION_SECONDS))))
+            if progress > job.progress:
+                await store.save_qa_job(job.model_copy(update={"progress": progress}))
+    except asyncio.CancelledError:
+        pass
+
+
 async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> None:
     job = await store.get_qa_job(job_id)
     if job is None:
         return
     rulebook = _load_rulebook()
+    ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
     try:
         result = await asyncio.to_thread(_run_review_sync, document_id, document_text, rulebook)
         for issue in result.issues:
@@ -93,6 +209,8 @@ async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> 
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.DONE, "progress": 100}))
     except Exception:  # noqa: BLE001 - a failed job must still resolve to a terminal status
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.FAILED, "progress": 100}))
+    finally:
+        ticker.cancel()
 
 
 @router.post("/documents/{document_id}/qa-jobs", response_model=CreateQAJobResponse)
@@ -120,8 +238,13 @@ async def get_qa_job_status(job_id: str) -> QAJobStatusResponse:
     if job is None:
         raise HTTPException(status_code=404, detail="qa job not found")
     elapsed = (datetime.now(UTC) - job.started_at).total_seconds()
+    categories, current_category = _categories_for_progress(_load_rulebook(), job.progress)
     return QAJobStatusResponse(
-        status=job.status.value, progress=job.progress, current_category=job.current_category, elapsed_seconds=elapsed
+        status=job.status.value,
+        progress=job.progress,
+        current_category=current_category,
+        elapsed_seconds=elapsed,
+        categories=categories,
     )
 
 

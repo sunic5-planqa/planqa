@@ -255,4 +255,38 @@ describe('scrollToIssue', () => {
     const tooltip = document.querySelector('.sunnic-issue-tooltip')
     expect(tooltip?.textContent).toContain(ISSUE.suggestion)
   })
+
+  it('marks the scrolled-to issue as active (gradient highlight) and clears it from the previous one', () => {
+    const other: OverlayIssue = { ...ISSUE, id: 'issue-2', input_text: '결제 실패 원인' }
+    document.body.innerHTML = `<main>${PAGE_HTML}<p>결제 실패 원인</p></main>`
+    applyIssueOverlay([ISSUE, other])
+    const marks = document.querySelectorAll<HTMLElement>('.sunnic-issue-highlight')
+    for (const mark of marks) mark.scrollIntoView = vi.fn()
+
+    scrollToIssue(ISSUE.id)
+    expect(document.querySelector(`[data-sunnic-issue-id="${ISSUE.id}"]`)?.classList.contains('sunnic-issue-active')).toBe(true)
+
+    scrollToIssue(other.id)
+    expect(document.querySelector(`[data-sunnic-issue-id="${ISSUE.id}"]`)?.classList.contains('sunnic-issue-active')).toBe(false)
+    expect(document.querySelector(`[data-sunnic-issue-id="${other.id}"]`)?.classList.contains('sunnic-issue-active')).toBe(true)
+  })
+
+  it('keeps the AI 제안 bubble tracking the mark position as the page keeps scrolling', () => {
+    applyIssueOverlay([ISSUE])
+    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
+    if (!mark) throw new Error('mark not found')
+    mark.scrollIntoView = vi.fn()
+    mark.getBoundingClientRect = vi.fn().mockReturnValue({ top: 500, bottom: 520, left: 10, right: 100 } as DOMRect)
+
+    scrollToIssue(ISSUE.id)
+    const tooltip = document.querySelector<HTMLElement>('.sunnic-issue-tooltip')
+    expect(tooltip?.style.top).toBe('526px')
+
+    // scrollIntoView's smooth animation lands the mark somewhere else by the time scrolling settles —
+    // the bubble must follow, not stay pinned to the pre-scroll position.
+    mark.getBoundingClientRect = vi.fn().mockReturnValue({ top: 120, bottom: 140, left: 10, right: 100 } as DOMRect)
+    window.dispatchEvent(new Event('scroll'))
+
+    expect(tooltip?.style.top).toBe('146px')
+  })
 })

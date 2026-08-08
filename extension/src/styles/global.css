@@ -391,22 +391,35 @@ textarea {
   padding: 5px 10px;
 }
 
+/* Figma는 "수정제안" 라벨과 "오류 수정하기" 링크를 10px 간격으로 나란히 붙여둔다(양끝 정렬 아님) —
+   기존엔 justify-content:space-between이라 링크가 카드 오른쪽 끝까지 밀려나 있었다. */
 .issue-suggestion-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
 }
 
 .issue-fix-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   background: none;
   border: none;
   padding: 0;
   font-size: 0.7rem;
   font-weight: 600;
   color: #000;
-  text-decoration: underline;
   cursor: pointer;
+}
+
+.issue-fix-link-text {
+  text-decoration: underline;
+}
+
+.issue-fix-link-icon {
+  width: 11px;
+  height: 11px;
+  flex-shrink: 0;
 }
 
 /* Figma 실측 — "수정제안" 값은 보라→핑크 그라데이션 텍스트(플레인 검정이 아님). */
@@ -595,11 +608,33 @@ textarea {
   }
 }
 
-.progress-bar {
+.progress-track {
   position: relative;
-  height: 24px;
-  border-radius: 6px;
-  background: color-mix(in srgb, currentColor 10%, transparent);
+  width: 100%;
+  padding-top: 44px;
+}
+
+.mascot-on-track {
+  position: absolute;
+  top: 0;
+  width: 40px;
+  height: 40px;
+  transition: left 1.4s linear;
+}
+
+.progress-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.progress-bar-track {
+  flex: 1;
+  min-width: 0;
+  height: 8px;
+  border-radius: 4px;
+  background: #eaeaef;
   overflow: hidden;
 }
 
@@ -634,70 +669,87 @@ textarea {
 
 .progress-bar-fill {
   height: 100%;
-  background: #1a1a1a;
+  border-radius: 4px;
+  background: var(--accent-gradient);
   transition: width 0.3s ease;
 }
 
 .progress-bar-label {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.8rem;
-  font-weight: 600;
+  flex-shrink: 0;
+  font-size: 0.95rem;
+  font-weight: 800;
+  color: var(--accent);
 }
 
 .category-tree {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  border: 2px solid var(--border-strong);
-  border-radius: 6px;
-  padding: 8px 12px;
+  gap: 16px;
+  background: #fafafb;
+  border-radius: 14px;
+  padding: 14px;
   text-align: left;
+}
+
+.category-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .category-group-toggle {
   background: none;
   border: none;
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-size: 0.8rem;
+  font-weight: 700;
   cursor: pointer;
-  padding: 2px 0;
+  padding: 0;
   text-align: left;
-  color: inherit;
+  color: #c4c4cc;
   width: 100%;
+}
+
+/* 지금 검증 중인 위계(그룹)만 진하게 — 나머지(완료/대기)는 옅게 눈에서 비켜나 있게 한다 */
+.category-group-toggle-active {
+  color: #1a1a1e;
 }
 
 .category-item-list {
   list-style: none;
   margin: 0;
-  padding-left: 20px;
+  padding-left: 16px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 6px;
 }
 
 .category-item {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.8rem;
-  opacity: 0.6;
-}
-
-.category-item-done {
-  opacity: 1;
-}
-
-.category-item-in_progress {
-  opacity: 1;
-  font-weight: 600;
+  font-size: 0.75rem;
 }
 
 .category-item-icon {
   font-size: 0.7rem;
+  color: var(--accent);
+}
+
+.category-item-label {
+  color: #c4c4cc;
+}
+
+/* done도 in_progress와 마찬가지로 옅게 — 지금 뭘 보는지는 in_progress pill 하나로만 강조한다 */
+.category-item-in_progress {
+  margin-left: -6px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(201, 169, 255, 0.18), rgba(255, 201, 232, 0.18));
+}
+
+.category-item-in_progress .category-item-label {
+  color: #3b1e66;
+  font-weight: 800;
 }
 
 .overview-panel {

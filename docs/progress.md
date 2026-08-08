@@ -738,3 +738,156 @@ Overview 카드로 이슈를 옮겨다닐 때도 자동으로 뜨도록 확장 �
 - 실제 Chrome에 리로드해서 툴바 아이콘이 반투명 배경으로 잘 보이는지(다크 툴바 테마 포함) 확인 필요.
 - QA 엔진 핵심 로직은 이제 배선/검증까지 끝났으니, 다음 최우선순위는 "여전히 최우선"에서 내려와도 됨 —
   남은 건 위 QA 엔진 섹션의 `### Next`(타이어별 진행률, 재동기화, 무료 쿼터로 인한 실사용 테스트 대기).
+
+## 2026-08-08 — SCREEN 02(QA 진행) 실제 반영 + 마스코트가 진행률 바 위를 걷게
+
+사용자가 "진행 경과 시간이 흐르는데 퍼센트가 하나도 안 참"과 "SCREEN 02 UI가 실제에 반영 안 됨(그라데이션
+바, 지금 어느 룰 체크 중인지)"을 각각 지적 — 둘 다 같은 근본 원인: `QAJobStatusResponse`가 처음부터
+`progress=0`/`categories=None`으로 고정이었고, `review_document()`는 타이어별 콜백이 없어 통째로 끝나야만
+결과가 나온다(ADR 0001에서 이미 알려진 한계). 벤더링한 파이프라인은 그대로 두고, 백엔드에서 진행률과
+카테고리 체크리스트를 **경과 시간 기반으로 그럴듯하게 근사**하는 쪽으로 풀었다.
+
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**:
+  - `_tick_progress`(신규): `_execute_qa_job`이 파이프라인을 `asyncio.to_thread`로 돌리는 동안 1.5초마다
+    `job.progress`를 경과 시간 기반 지수함수(`90 * (1 - e^(-elapsed/45))`)로 갱신 — 실제 완료 전엔 90%를
+    절대 못 넘게 해서 "아직 안 끝났는데 100%로 보임" 오인을 방지, 실제 결과가 오면 `_execute_qa_job`이
+    바로 100으로 점프시킴.
+  - `_categories_for_progress`(신규): 룰북의 진짜 카테고리(8개, `rulebook.rules`에서 실제로 파싱된 것)를
+    `tiers.TIER_CATEGORIES`로 4개 위계(Documents/Logical Chapter/Detailed Chapter/Sentence, SCREEN 02
+    그룹명과 1:1)에 묶고, 방금 그 `progress` 값을 다시 활용해 "지금 몇 번째 위계의 몇 번째 카테고리까지
+    끝났다고 보여줄지"를 결정 — 진짜 완료 신호가 아니라 진행률 하나로 파생시킨 연출이라는 점을 코드
+    주석에 명시.
+  - `_korean_label`(신규): 룰북의 카테고리명이 "한글 설명 + 영문 Title Case"로 붙어있어(예: "용어 및
+    단어의 일관성 Terminology Consistency") 정규식으로 영문 접미사를 잘라 한글만 노출 — SCREEN 02
+    목업도, 기존 이슈의 `criteria` 필드도 한글만 보여주는 게 맞아서 둘 다 이걸 쓰도록 통일(이슈
+    `criteria`가 지금까지 영문까지 붙어 나오던 걸 같이 고침).
+  - `GET /qa-jobs/{id}/status`가 이제 `categories`/`current_category`를 실제로 채워서 반환.
+- **`extension/src/components/screens/ProgressScreen.tsx`**: 진행률 바를 Figma 실측(얇은 8px 그라데이션
+  필 바 + 오른쪽에 별도 `%` 라벨, 기존처럼 바 안에 텍스트 겹쳐 넣지 않음)대로 재구성. 마스코트를
+  `.progress-track` 안에 절대배치해서 `left`를 `(트랙 폭 - 마스코트 폭) × progress/100`으로 계산 —
+  진행률이 오를 때마다 마스코트가 바를 따라 오른쪽으로 걸어가고(`transition: left 1.4s linear`), 100%를
+  넘어 트랙 밖으로 튀어나가지 않게 폭을 고정.
+- **`extension/src/components/progress/CategoryTree.tsx`**: Figma 실측 반영 — `done` 항목도 라벨은
+  회색(포커스는 지금 처리 중인 항목에만), `pending` 항목은 아이콘 없이 회색 텍스트만(기존엔 `○`를
+  그렸었음), `in_progress` 항목만 보라 그라데이션 필(`rgba(201,169,255,.18)→rgba(255,201,232,.18)`) +
+  진보라 ExtraBold 텍스트로 강조. 그룹 헤더도 지금 처리 중인 위계만 진하게, 나머지는 회색.
+- **`extension/src/styles/global.css`**: `.progress-track`/`.mascot-on-track`/`.progress-bar-track`
+  신규, `.progress-bar`/`.progress-bar-fill`/`.progress-bar-label`/`.category-tree`/`.category-group-
+  toggle`/`.category-item*` 전면 재작성(색상·반경·패딩 전부 Figma 실측값).
+- 검증: 백엔드 `_categories_for_progress`를 progress 0/10/30/50/89/100으로 수동 실행해 위계가 순서대로
+  넘어가는지, `_korean_label`이 8개 카테고리 전부에서 정규식으로 올바르게 잘리는지 확인(첫 시도는
+  그리디 정규식이라 영문 마지막 단어까지 남는 버그가 있었음 — non-greedy로 수정). 백엔드 60개, 확장
+  `typecheck`/`lint`/`build`/`vitest` 65개 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 Chrome에서 QA 진행 화면을 열어 마스코트가 실제로 바를 따라
+  걷는지, 카테고리 체크리스트가 Figma와 시각적으로 맞아떨어지는지 확인 필요.
+- 카테고리 체크 진행은 여전히 "진짜 신호"가 아니라 progress 값에서 파생된 연출 — 실제 문서마다 위계별
+  소요 시간이 다르면(문장 위계가 챕터 수만큼 커지는 등) 근사가 어긋날 수 있음. 진짜 타이어별 콜백을
+  넣으려면 결국 벤더링한 `pipeline.py`를 건드려야 해서(ADR 0001의 diffable-copy 트레이드오프) 보류.
+
+## 2026-08-09 — SCREEN 03(QA 결과 확인) 배치 정리 + AI 제안 말풍선 안정화
+
+사용자가 "오류 수정하기 버튼을 Figma처럼 배치"와 "AI 제안 말풍선이 어떤 이슈는 뜨고 어떤 건 안 뜸"을
+같이 지적. `get_design_context`로 SCREEN 03(143:5215)를 다시 실측해서 둘 다 고쳤고, 덧붙여 "지금
+오른쪽 패널에서 보고 있는 이슈의 박스"를 문서 위에서도 구분되게 그라데이션 테두리로 강조했다.
+
+- **`오류 수정하기` 배치**: Figma는 "수정제안" 라벨과 "오류 수정하기" 링크를 10px 간격으로 나란히
+  붙여둔다(카드 양 끝으로 벌어지지 않음) — `.issue-suggestion-row`가 `justify-content: space-between`
+  이었던 걸 `gap: 10px`만 남기고 제거해서 고침. 색이모지 "✏️" 대신 Figma 실측 스타일(작은 원 + 연필)에
+  가까운 인라인 SVG 아이콘으로 교체(`currentColor`라 링크 텍스트와 같은 검정).
+- **AI 제안 말풍선이 가끔 안 뜨던 버그의 진짜 원인**: `scrollToIssue()`가 `mark.scrollIntoView({behavior:
+  'smooth'})`를 건 직후 곧바로 `showTooltip()`으로 그 시점의 `getBoundingClientRect()` 좌표에 말풍선을
+  꽂았음 — 스무스 스크롤 애니메이션이 끝나기 *전* 좌표라, 스크롤 거리가 크면 말풍선이 도착지가 아닌
+  엉뚱한 위치(화면 밖일 수도 있음)에 떠서 사용자 눈엔 "안 뜬 것"처럼 보였다. 애니메이션 종료를 감지하는
+  대신, 말풍선이 열려있는 동안 `scroll`(capture:true — 컨플루언스 내부 스크롤 컨테이너까지 잡기 위해)/
+  `resize` 이벤트마다 위치를 계속 재계산하도록 바꿔서, 스무스 스크롤이 언제 끝나든 최종적으로는 항상
+  mark 바로 아래에 자리잡게 함(닫힐 때 리스너 정리).
+- **`extension/src/content/issueOverlay.ts`**: `ACTIVE_CLASS`(신규) — 오른쪽 패널에서 지금 보고 있는
+  이슈의 mark에만 붙는 클래스. `border-image`는 `border-radius`를 무시하는 CSS 한계가 있어서, 대신
+  `padding-box`(투명)/`border-box`(보라→핑크 그라데이션) 이중 `background`로 우회 — 둥근 모서리를
+  유지하면서 테두리만 그라데이션. 클릭과 `scrollToIssue()` 양쪽 경로 모두 `setActiveMark()`를 거쳐서
+  이전에 보던 이슈의 강조는 자동으로 빠짐.
+- 검증: `issueOverlay.test.ts`에 신규 테스트 2개(active 클래스가 이슈 전환 시 정확히 옮겨가는지, mark의
+  `getBoundingClientRect()`가 스크롤 도중 바뀌면 말풍선 위치도 같이 갱신되는지) 추가. 확장
+  `typecheck`/`lint`/`build`/`vitest` 67개 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 DOC-001에서 오른쪽 패널로 이슈를 넘길 때마다 왼쪽 박스가
+  그라데이션으로 바뀌는지, 스크롤 거리가 먼 이슈로 이동해도 말풍선이 매번 정확한 위치에 뜨는지 확인.
+- 오류 수정하기 아이콘은 Figma 원본 에셋(임시 URL, 7일 만료) 대신 간단한 인라인 SVG로 근사함 — 정확한
+  Figma 벡터가 필요하면 나중에 `download_assets`로 실제 아이콘을 받아 교체할 수 있음.
+
+## 2026-08-09 — 컨플루언스 헤딩 평탄화 버그 수정 + "왜 서버 결과가 CLI보다 이슈가 훨씬 많은지" 조사
+
+사용자가 review-agent CLI로 직접 돌린 결과(`review.json`, 6개)와 우리 서버로 같은 문서를 돌린 결과(40여개)가
+왜 이렇게 차이나는지 물어봄 — 두 갈래로 조사했다.
+
+- **찾아서 고친 진짜 버그**: `extension/src/content/confluenceParser.ts`의 `htmlToChapterMarkdown`이
+  컨플루언스의 h1~h6 헤딩을 전부 `##`(챕터) 한 단계로 평탄화하고 있었음 — 이건 예전 백엔드 구조 파서
+  (`#`/`##` 2단계만 이해)에 맞춰 만들어진 로직인데, 지금 QA 엔진(`qa_engine/review_agent/document.py`)은
+  `##`=논리 단위, `###`~`######`=그 안의 문단 경계로 계층을 나눠서 위계별 검토를 한다. 계층을 뭉개면
+  원래 한 논리 단위 안에 중첩됐어야 할 소제목들이 전부 별도의 최상위 논리 단위로 갈라져 나가 검토
+  대상(chunk) 수가 부풀려지고, `dedupe_issues`의 "부모 > 자식" 위치 문자열 겹침 판정도 깨진다 — **실제
+  컨플루언스 문서를 검토할 때만 해당하는 버그**. `h2`→`##`, `h3`→`###`, ... 상대 깊이를 그대로 보존하도록
+  수정(`h6`에서 캡, 페이지 타이틀은 계속 `#` 한 줄 전용이라 본문 h1은 `##`로 취급). 관련 테스트 갱신 +
+  깊이 캡 테스트 1개 추가.
+- **그런데 이게 원인의 전부가 아니었음**: 계층이 멀쩡한 로컬 `.md` 원본(vendored `DOC-001` fixture, 위
+  버그와 무관)을 백엔드 파이프라인으로 직접 돌려봤더니 그래도 **44개**가 나옴 — 완전히 같은 문서·룰북인데
+  CLI의 6개와 여전히 큰 차이. 로그를 까보니 44개 중 23개가 전부 Paragraph 위계의 "MI"(정보 누락)
+  카테고리로, `6-1`~`6-5` 서브섹션마다 거의 기계적으로 반복 검출됨.
+  - **추정 원인**: review-agent는 원래 "저비용 모델이 과하게 flag(스크리닝, 설계상 의도된 동작) →
+    고비용/정밀 모델이 그중 진짜만 확정(정밀검증)"하는 2단계 구조인데, 우리 백엔드는 `qa_screen_model`/
+    `qa_confirm_model` 둘 다 기본값이 같은 `gemini-2.5-flash`라 정밀검증 단계가 스크리닝만큼 약해서
+    over-flag를 거의 그대로 통과시키고 있는 것으로 보임. CLI 쪽(`review.json`)은 `--verify-model`에 더
+    강한 모델을 지정했을 가능성이 높음.
+  - **확실히 검증은 못 함** — 오늘 무료 쿼터를 이 조사로 상당히 써서 재검증이 어려웠음. `.env`에
+    `QA_CONFIRM_MODEL=gemini-2.5-pro`(또는 더 강한 모델)를 지정해서 같은 문서로 다시 돌려보면
+    확인 가능 — 다음 세션 쿼터 리셋 후 시도할 것.
+- 검증: 확장 `typecheck`/`lint`/`build`/`vitest` 68개 전부 통과.
+
+### Next
+
+- **최우선**: `QA_CONFIRM_MODEL`을 정밀 모델로 바꿔서 같은 DOC-001 fixture로 재검토했을 때 이슈 수가
+  CLI의 6개에 가까워지는지 확인 — 이게 맞다면 `.env.example`에도 기본 정밀검증 모델 권장값을 남겨야 함.
+  아니라면(그래도 여전히 많이 나온다면) 스크리닝 자체가 과도하거나, confirm 프롬프트/파싱에 별도
+  문제가 있는지 더 파봐야 함.
+- 컨플루언스 헤딩 평탄화 수정은 실사용(실제 DOC-001)에서 논리 단위/문단 구조가 원문 그대로 나오는지
+  확인 필요 — Claude가 검증 불가능.
+
+## 2026-08-09 — 하이라이트 프레임 유형(`frame_type`) 배선
+
+사용자가 공유한 "Ver.2 - Edit 행위별 프레임 유형 구분" 설계 문서를 기준으로, 문서 위 하이라이트 박스를
+QA 기준에 따라 다르게 그리는 첫 단계(백엔드 배선)를 진행했다. 전체 매트릭스(QA 기준 8개 × Edit 행위
+4개)를 뜯어보니 실제로 행위 분류가 필요한 건 LG/LF/GA 3개뿐이라는 걸 확인 — TC/TM/AE/RD는 허용 행위가
+Replace/Delete뿐이라 항상 객체 프레임, MI는 Insert뿐이라 항상 삽입범위 프레임, rule_id 카테고리만으로
+결정 가능했다.
+
+- **막힌 지점**: LG/LF/GA는 두 위치 간 관계 오류(예: "2-2가 2-1과 다르다")라 범위 프레임을 그리려면
+  두 번째 위치가 필요한데, review-agent의 `Issue` 스키마엔 `location` 하나뿐이라 지금은 만들 수 없음
+  — `related_location: str | None` 필드 추가를 요청하는 이슈를 올림:
+  [sunic5-planqa/planqa-agent#4](https://github.com/sunic5-planqa/planqa-agent/issues/4).
+- **`backend/src/sunnic_backend/models/issue.py`**: `FrameType` StrEnum(`object`/`range`/`insert_range`)
+  추가, `Issue`에 `frame_type`(기본값 `object`)/`related_location` 필드 추가.
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**: `_frame_type(category, related_location)` — MI는
+  무조건 `insert_range`, LG/LF/GA는 `related_location`이 있을 때만 `range`(없으면 `object`로 안전하게
+  폴백), 나머지는 `object`. `_to_issue_record`가 `getattr(issue, "related_location", None)`으로
+  값을 읽음 — 벤더링한 `schema.py`에 아직 그 필드가 없어도 에러 없이 `None`으로 폴백하고, 원작자가
+  필드를 추가해서 재벤더링하면 **코드 변경 없이 자동으로 채워지는 구조**로 만들어둠. `IssueResponse`에도
+  두 필드 추가해서 API로 노출.
+- **`extension/src/api/types.ts`**: `IssueResponse`에 `frame_type`/`related_location` 타입만 동기화 —
+  **실제로 문서 DOM에서 범위/삽입범위 모양대로 박스를 그리는 로직(`issueOverlay.ts`)은 아직 구현 안 함**,
+  지금은 백엔드가 값을 내려주기 시작한 것뿐. 기존 fixture(`fixtures.ts`)/데모 이슈(`demoIssues.ts`)/
+  테스트 헬퍼(`issueGrouping.test.ts`)도 새 필수 필드 때문에 타입 에러 나서 같이 채워넣음.
+- 검증: 백엔드 `_frame_type` 매핑 12개 케이스 파라미터라이즈 테스트 추가, 전체 72개 통과, ruff 클린.
+  확장 `typecheck`/`lint`/`build`/`vitest` 68개 전부 통과.
+
+### Next
+
+- `issueOverlay.ts`에 `insert_range`(위치의 상위 위계 헤딩 구간 전체를 감싸기)와 `range`(location~
+  related_location 두 헤딩 사이 전체를 감싸기) 렌더링 로직 추가 — 지금은 `frame_type`이 뭐든 항상
+  기존 object 방식(정확한 텍스트 매칭)으로만 그려짐. 헤딩 텍스트로 DOM 위치를 찾는 유틸이 새로 필요함.
+- `related_location`은 원작자가 이슈(#4)를 반영해줘야 실제 값이 들어옴 — 그 전까지 LG/LF/GA는 계속
+  object로 폴백.

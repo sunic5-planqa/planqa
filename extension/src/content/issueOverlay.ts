@@ -345,6 +345,20 @@ async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: tru
   return { ok: true, pageId: created.id }
 }
 
+// 저장이 실제로 반영되는 곳(복제본)과 지금 보고 있는 화면(원본)이 다르므로, 저장 성공 후에도 그냥
+// 두면 화면엔 여전히 고치기 전 원문이 남아있어 사용자가 "진짜 반영됐나?" 헷갈린다. 그래서 성공하면
+// 왼쪽 문서에서도 그 자리를 새 텍스트로 덮어써서 눈으로 바로 확인되게 한다 — 실제 저장 대상(복제본)과
+// 무관하게 순수 로컬 DOM 표시일 뿐이다. 매치가 여러 엘리먼트에 걸쳐 나뉜 경우(라벨+뱃지 등) 전부를
+// 정확히 나눠 넣을 방법이 없어 첫 mark에 새 텍스트를 몰아넣고 나머지는 비워 하나로 합친다.
+function overwriteMarkText(issueId: string, newText: string): void {
+  const marks = marksByIssueId.get(issueId)
+  if (!marks || marks.length === 0) return
+  const [first, ...rest] = marks
+  first.textContent = newText
+  for (const extra of rest) extra.remove()
+  marksByIssueId.set(issueId, [first])
+}
+
 export async function applyIssueEdit(issueId: string, oldText: string, newText: string): Promise<ApplyIssueEditResponse> {
   const originalPageId = extractPageId(location.href)
   if (!originalPageId) return { ok: false, error: '컨플루언스 문서 URL이 아니라 복제본을 만들 수 없습니다.' }
@@ -355,6 +369,7 @@ export async function applyIssueEdit(issueId: string, oldText: string, newText: 
   const result = await replaceTextAndSave(session.pageId, oldText, newText)
   if (!result.ok) return result
 
+  overwriteMarkText(issueId, newText)
   for (const mark of marksByIssueId.get(issueId) ?? []) mark.classList.add(RESOLVED_CLASS)
   closeTooltip()
   return { ok: true }

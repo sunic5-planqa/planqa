@@ -6,6 +6,7 @@ import type {
   ExportDocumentResponse,
   IssueResponse,
   QAJobStatusResponse,
+  SimilarityCheckResponse,
   UpdateIssueRequest,
   UpdateIssueResponse,
 } from './types'
@@ -48,6 +49,12 @@ export const api = {
     }),
 
   exportDocument: (documentId: string) => request<ExportDocumentResponse>(`/documents/${documentId}/export`),
+
+  checkEditSimilarity: (suggestion: string, editedText: string) =>
+    request<SimilarityCheckResponse>('/issues/similarity-check', {
+      method: 'POST',
+      body: JSON.stringify({ suggestion, edited_text: editedText }),
+    }),
 
   getDocumentCount: () => request<DocumentCountResponse>('/documents/count'),
 }

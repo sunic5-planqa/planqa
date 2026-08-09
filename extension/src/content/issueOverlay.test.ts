@@ -112,17 +112,29 @@ describe('applyIssueOverlay', () => {
     expect(Array.from(marks).map((m) => m.textContent).join('')).toBe('상태: 검토 중')
   })
 
-  it('resolves every mark of a multi-element match together', async () => {
+  it('merges every mark of a multi-element match into one on apply, showing the new text', async () => {
     stubConfluenceFetch({ duplicateBody: '<p>상태: 검토 중</p>' })
     document.body.innerHTML = '<p>상태: <span class="lozenge">검토 중</span></p>'
     const issue: OverlayIssue = { ...ISSUE, input_text: '상태: 검토 중' }
     applyIssueOverlay([issue])
+    expect(document.querySelectorAll('.sunnic-issue-highlight').length).toBeGreaterThanOrEqual(2)
 
     await applyIssueEdit(issue.id, issue.input_text, '검토 완료')
 
     const marks = document.querySelectorAll('.sunnic-issue-highlight')
-    expect(marks.length).toBeGreaterThanOrEqual(2)
-    expect(Array.from(marks).every((m) => m.classList.contains('sunnic-issue-resolved'))).toBe(true)
+    expect(marks.length).toBe(1)
+    expect(marks[0].classList.contains('sunnic-issue-resolved')).toBe(true)
+    expect(marks[0].textContent).toBe('검토 완료')
+  })
+
+  it('overwrites the mark text in place after a single-element apply', async () => {
+    stubConfluenceFetch()
+    applyIssueOverlay([ISSUE])
+
+    await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+
+    const mark = document.querySelector('.sunnic-issue-highlight')
+    expect(mark?.textContent).toBe(ISSUE.suggestion)
   })
 
   it('clicking a highlight shows a read-only AI 제안 bubble and focuses the sidepanel on it', () => {

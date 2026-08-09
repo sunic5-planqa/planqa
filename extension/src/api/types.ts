@@ -86,6 +86,11 @@ export interface UpdateIssueResponse {
   status: string
 }
 
+export interface SimilarityCheckResponse {
+  similarity: number
+  matches_closely: boolean
+}
+
 export interface ExportDocumentResponse {
   export_text: string
 }

@@ -18,19 +18,29 @@ _TEST_DOCUMENT = (
     "페이코, 삼성페이 추가 연동을 목표로 한다.\n"
 )
 
-_RULE_ID_RE = re.compile(r"^([A-Z]{2}-\d{2}):", re.MULTILINE)
+# category_screen's screen prompt only lists "{2-letter category}: {label}" lines (no rule
+# text/id — that's confirm's job), while its confirm prompt indents each candidate rule as
+# "    {rule_id}: {text} (exception: ...)" — hence the two different regexes below.
+_CATEGORY_RE = re.compile(r"^([A-Z]{2}):", re.MULTILINE)
+_RULE_ID_RE = re.compile(r"^\s*([A-Z]{2}-\d{2}):", re.MULTILINE)
 _CHUNK_ZERO_RE = re.compile(r"\[0\] \([^)]*\)\n(.+?)(?:\n\n|\Z)", re.DOTALL)
 
 
 class FakeGeminiClient:
     """Stands in for review_agent's real GeminiClient — no network call, just enough of a
-    contract (constructor kwargs + complete_json) to drive the real pipeline/qa_jobs wiring
-    end to end without a live API key."""
+    contract (constructor kwargs + complete_json + clone()) to drive the real
+    category_screen/qa_jobs wiring end to end without a live API key."""
 
     def __init__(self, model: str | None = None, api_keys: list[str] | None = None, temperature: float = 0.0) -> None:
         self.model = model
         self.calls: list[tuple[str, str]] = []
         self.usage: list[CallStats] = []
+
+    def clone(self, *, tier: object | None = None) -> FakeGeminiClient:
+        # category_screen.review_document() runs tiers concurrently and clones per tier —
+        # this fake routes purely by prompt content, so every clone can safely be the same
+        # kind of instance (a fresh one, so each tier's .calls/.usage stay separate).
+        return FakeGeminiClient(model=self.model)
 
     def complete_json(self, *, system: str, prompt: str) -> Any:
         self.calls.append((system, prompt))
@@ -38,22 +48,26 @@ class FakeGeminiClient:
         if '"summary"' in system:
             return {"summary": "결제 시스템 개선을 다루는 테스트 문서."}
         if '"candidates"' in system:
-            rule_match = _RULE_ID_RE.search(prompt)
+            category_match = _CATEGORY_RE.search(prompt)
             chunk_match = _CHUNK_ZERO_RE.search(prompt)
-            if not rule_match or not chunk_match:
+            if not category_match or not chunk_match:
                 return {"candidates": []}
             quoted = chunk_match.group(1).strip().splitlines()[0][:30]
             return {
                 "candidates": [
-                    {"chunk_index": 0, "rule_id": rule_match.group(1), "quoted_text": quoted, "reason": "테스트 스크리닝 사유"}
+                    {"chunk_index": 0, "category": category_match.group(1), "quoted_text": quoted, "reason": "테스트 스크리닝 사유"}
                 ]
             }
         if '"verdicts"' in system:
+            rule_match = _RULE_ID_RE.search(prompt)
+            if not rule_match:
+                return {"verdicts": []}
             return {
                 "verdicts": [
                     {
                         "index": 0,
                         "violated": True,
+                        "rule_id": rule_match.group(1),
                         "description": "테스트로 주입된 위반 설명",
                         "rationale": "테스트로 주입된 위반 사유",
                         "fix_direction": "테스트로 주입된 수정 제안",

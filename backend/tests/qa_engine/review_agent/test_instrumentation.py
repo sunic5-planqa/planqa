@@ -4,7 +4,7 @@ from typing import Any
 
 from sunnic_backend.qa_engine.review_agent.instrumentation import CallEvent, record_call
 from sunnic_backend.qa_engine.review_agent.llm.base import CallStats, LLMClient
-from sunnic_backend.qa_engine.review_agent.schema import Level
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Level
 
 
 class _FakeLLM(LLMClient):

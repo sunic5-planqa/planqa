@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from sunnic_backend.qa_engine.review_agent.llm.base import CallStats, LLMClient
-from sunnic_backend.qa_engine.review_agent.schema import Level
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Level
 
 T = TypeVar("T")
 

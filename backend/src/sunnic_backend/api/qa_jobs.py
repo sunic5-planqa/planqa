@@ -13,11 +13,18 @@ from sunnic_backend.models.issue import FrameType, IssueStatus
 from sunnic_backend.models.issue import Issue as IssueRecord
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
 from sunnic_backend.qa_engine.review_agent.llm.gemini import DEFAULT_MODEL, GeminiClient
-from sunnic_backend.qa_engine.review_agent.models import gemini_lite
-from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult, review_document
-from sunnic_backend.qa_engine.review_agent.rulebook import RuleBook, parse_rulebook
-from sunnic_backend.qa_engine.review_agent.schema import Issue as ReviewIssue
-from sunnic_backend.qa_engine.review_agent.schema import Level
+from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
+    RuleBook,
+    parse_rulebook,
+)
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import (
+    Issue as ReviewIssue,
+)
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Level
+from sunnic_backend.qa_engine.review_agent.structures.category_screen import (
+    review_document,
+)
 from sunnic_backend.qa_engine.review_agent.tiers import TIER_CATEGORIES
 from sunnic_backend.storage.store import store
 
@@ -62,9 +69,9 @@ def _korean_label(category_label: str) -> str:
 # docs/progress.md 2026-08-09 항목, 원본 설계는 "Ver.2 - Edit 행위별 프레임 유형 구분" 참고.
 #   TC/TM/AE/RD: Replace/Delete만 허용되는 룰이라 항상 단일 위치 object 프레임.
 #   MI: Insert만 허용 — 정보가 없는 자리를 포함하는 최소 상위 위계를 감싸는 insert_range.
-#   LG/LF/GA: 두 위치 간 관계 오류라 원래 range 프레임이 맞지만, 그러려면 두 번째 위치
-#     (related_location)가 있어야 한다 — 아직 review-agent의 Issue 스키마에 그 필드가 없어서
-#     (요청 이슈: sunic5-planqa/planqa-agent#4) 값이 오기 전까지는 object로 안전하게 폴백한다.
+#   LG/LF/GA: 두 위치 간 관계 오류라 range 프레임 — review-agent가 related_location을 채워주면
+#     (요청 이슈 sunic5-planqa/planqa-agent#4, 2026-08-10 재벤더링으로 반영됨) range, 모델이
+#     특정 못 해 비어 있으면 object로 안전하게 폴백한다.
 _RANGE_CATEGORIES = frozenset({"LG", "LF", "GA"})
 _INSERT_RANGE_CATEGORIES = frozenset({"MI"})
 
@@ -168,17 +175,29 @@ class IssueResponse(BaseModel):
 def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> ReviewResult:
     # review_agent's GeminiClient is a blocking/sync client (retry backoff uses time.sleep) —
     # this whole call runs inside asyncio.to_thread so it never blocks the event loop.
-    screen_llm = GeminiClient(model=settings.qa_screen_model or DEFAULT_MODEL, api_keys=settings.gemini_api_keys)
-    confirm_llm = GeminiClient(model=settings.qa_confirm_model or DEFAULT_MODEL, api_keys=settings.gemini_api_keys)
-    return review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm, gemini_lite)
+    #
+    # category_screen.review_document() runs the 4 tiers concurrently via LLMClient.clone()
+    # (one client per tier, since record_call()'s usage-diffing races if threads share one
+    # client's usage list) — the base class's default clone() re-reads credentials from
+    # os.environ instead of reusing the api_keys passed at construction, which we don't set
+    # process-wide (settings come from .env via pydantic-settings, not the real environment).
+    # Wrap whatever GeminiClient currently resolves to (module-level name, so tests can still
+    # monkeypatch it) in a subclass that threads the explicit keys through clone() instead.
+    base_cls = GeminiClient
+
+    class _ScopedClient(base_cls):  # type: ignore[misc, valid-type]
+        def clone(self, *, tier: object | None = None) -> "GeminiClient":
+            return _ScopedClient(model=self.model, api_keys=settings.gemini_api_keys)
+
+    screen_llm = _ScopedClient(model=settings.qa_screen_model or DEFAULT_MODEL, api_keys=settings.gemini_api_keys)
+    confirm_llm = _ScopedClient(model=settings.qa_confirm_model or DEFAULT_MODEL, api_keys=settings.gemini_api_keys)
+    return review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
 
 
 def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue: ReviewIssue) -> IssueRecord:
     rule = rulebook.rule(issue.rule_id)
     criteria = _korean_label(rule.category_label) if rule else issue.rule_id
-    # getattr — 벤더링한 schema.py에 아직 related_location이 없어도(재벤더링 전) 에러 없이 None으로
-    # 폴백, 필드가 생기면 코드 변경 없이 자동으로 채워진다.
-    related_location: str | None = getattr(issue, "related_location", None)
+    related_location = issue.related_location
     frame_type = _frame_type(rule.category, related_location) if rule else FrameType.OBJECT
     input_text = issue.original_text or ""
     start = document_text.find(input_text) if input_text else -1

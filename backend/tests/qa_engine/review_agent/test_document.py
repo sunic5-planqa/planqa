@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from sunnic_backend.qa_engine.review_agent.document import parse_document
-from sunnic_backend.qa_engine.review_agent.schema import Level
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Level
 
 _SAMPLE = """# 샘플 PRD
 

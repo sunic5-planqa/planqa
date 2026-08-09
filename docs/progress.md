@@ -929,3 +929,62 @@ Replace/Delete뿐이라 항상 객체 프레임, MI는 Insert뿐이라 항상 �
 - 유사도 검사가 문자열 기반(difflib)이라 의미는 같지만 표현이 많이 다른 수정(동의어 교체 등)은
   경고가 뜰 수 있음 — 안전장치로 설계했으므로 오탐이 있어도 사용자가 한 번 더 누르면 그냥 진행되는
   구조라 크게 문제는 아니지만, 필요하면 나중에 임베딩 기반 의미 유사도로 교체 고려 가능.
+
+## 2026-08-10 — review-agent를 `planqa-agent`의 `dev` 브랜치로 재벤더링
+
+사용자가 `sunic5-planqa/planqa-agent`의 `dev` 브랜치로 다시 연결해달라고 요청 — 확인해보니 우리가
+처음 벤더링한 `feature/review-agent` 이후 원작자가 `dev`에서 상당히 진척시켜 놨었다(PR #5~#12).
+가장 중요한 건: **우리가 이슈로 요청했던 `related_location` 필드(sunic5-planqa/planqa-agent#4)가
+실제로 반영됐고**, 검토 위계 4개가 이제 순차가 아니라 **병렬**로 돈다.
+
+- **저장소 구조 변경**: `schema.py`/`rulebook.py`가 별도 `packages/planqa-schemas` 패키지로 분리됐고,
+  `review-agent` 본체는 `services/review-agent`로 이동. 새로 생긴 `structures/category_screen.py`가
+  기존 profile 기반 `pipeline.review_document(..., profile)`을 대체하는 새 진입점 — 우리도 이걸로
+  갈아탐. 스크리닝이 이제 룰 텍스트가 아니라 카테고리 라벨만 보고, 정밀검증 단계에서 그 카테고리의
+  룰 전체 중 구체적 `rule_id`를 직접 고르는 구조로 바뀌었다.
+- **`backend/src/sunnic_backend/qa_engine/review_agent/`**: `models/`(구 profile 기반 스크리너/
+  컨펌어) 전체 삭제, `planqa_schemas/`(신규, schema.py/rulebook.py) 추가, `structures/
+  category_screen.py`(신규) 추가, `document.py`/`dedupe.py`/`instrumentation.py`/`tiers.py`/
+  `verifier.py`/`pipeline.py`/`llm/{base,gemini}.py` 전부 최신으로 교체(import 경로만 재작성).
+  `pipeline.py`는 `review_document` 함수 자체는 이제 안 쓰지만 `ReviewResult` dataclass를 계속
+  가져다 쓰므로 그대로 유지.
+- **`TIER_CATEGORIES`가 원작자 쪽에서 고쳐져 있었음** — 우리가 처음 벤더링했던 버전은 위계별 카테고리
+  배정이 상당히 빠져있었다(예: Document 위계에 TC/TM이 아예 없었음). 재벤더링으로 자동 수정됨 —
+  우리 쪽에서 발견할 수 있는 종류의 문제가 아니었음.
+- **`clone()` 호환성 문제 발견 및 수정**: `LLMClient`에 새로 생긴 `clone(*, tier=...)`(병렬 실행 시
+  위계별로 독립된 클라이언트를 쓰기 위함)의 기본 구현이 생성자에 명시적으로 넘긴 `api_keys`를 재사용하지
+  않고 `os.environ`에서 다시 읽음 — 이 백엔드는 `.env`를 pydantic-settings로만 읽고 프로세스
+  환경변수에는 안 심어서, 그대로 두면 병렬 실행되는 모든 clone이 "키 없음" 에러로 죽는다. 처음엔
+  `os.environ.setdefault(...)`로 채워보려 했으나 **프로세스 전역 상태라 테스트 간에 오염되는 부작용을
+  직접 발견**(`test_config.py`의 "기본값은 빈 리스트" 테스트가 다른 테스트가 심어둔 env var 때문에
+  깨짐) — 대신 `qa_jobs.py`에 로컬 서브클래스(`_ScopedClient`)를 두어 `clone()`이 명시적 키를 그대로
+  물려주도록 오버라이드(벤더링 파일 자체는 안 건드림).
+- **`backend/tests/test_api_qa_jobs.py`의 `FakeGeminiClient`**: 새 프롬프트 형태(스크리닝은
+  `category`만, 정밀검증이 `rule_id`를 직접 지정)에 맞게 정규식/응답 갱신, `clone()` 메서드 추가.
+- **테스트 재벤더링**: `test_confirmer.py`/`test_screener.py`/`test_pipeline.py`(전부 구 profile
+  경로 대상) 삭제, `test_document.py`/`test_dedupe.py`(related_location 관련 케이스 추가)/
+  `test_instrumentation.py`/`test_llm_base.py`/`test_tiers.py`(고쳐진 카테고리 반영)/
+  `test_category_screen.py`(신규) + `conftest.py`(clone 지원 `ScriptedLLM`) 갱신, `source_dir`
+  픽스처는 기존처럼 로컬 `fixtures/`(DOC-001만)로 유지.
+- **실제 Gemini 키로 라이브 검증**: `DOC-001` fixture로 `_run_review_sync` 직접 실행 —
+  22개 이슈, `tier_errors` 없음, LG/LF/GA 이슈에 `related_location`이 실제로 채워지는 것 확인
+  (예: "5. 고려되는 대안"의 LG-05가 "4. 기술적 제약 사항"과 관계있다고 정확히 짚어냄). 재벤더링
+  전 같은 문서·모델로 44개가 나왔던 것과 비교하면 훨씬 정상적인 수치 — 카테고리 기반 스크리닝과
+  고쳐진 `TIER_CATEGORIES` 둘 다 원인일 수 있음(2026-08-09 조사에서 완전히 못 밝혔던 부분과 연결).
+  소요시간 88.8초(대부분 무료 티어 429 재시도 대기로 추정, 병렬화 자체의 체감 효과는 이번 한 번의
+  실행만으로는 정확히 분리 측정 못함).
+- 검증: 백엔드 72개 전부 통과(재벤더링한 테스트 포함), ruff 클린. 확장 쪽은 API 응답 필드(`frame_type`/
+  `related_location`)가 이미 타입에 있어서 변경 없음 — `related_location`이 실제로 채워지기 시작한
+  것뿐이라 프론트가 그 값을 실제로 활용(범위 프레임 렌더링)하는 건 여전히 다음 단계.
+
+### Next
+
+- **최우선**: `issueOverlay.ts`에 실제 `range`/`insert_range` 렌더링 로직 — 이제 `related_location`이
+  진짜 값으로 채워지니 헤딩 텍스트로 두 지점을 찾아 그 사이를 감싸는 로직을 구현할 수 있는 상태가 됨.
+- **Claude가 검증 불가능한 것**: 실제 DOC-001에서 다시 QA를 돌렸을 때 병렬 실행이 체감상 더 빠른지,
+  LG/LF/GA 이슈가 실제 컨플루언스 문서에서도 안정적으로 related_location을 잡아내는지 확인.
+- 6개(CLI) vs 44개(재벤더링 전 서버) 차이가 왜 났는지는 여전히 완전히 설명 못함 — 22개로 줄어든 게
+  좋은 신호이긴 하지만, 정밀검증 모델을 더 강하게(`QA_CONFIRM_MODEL`) 설정하는 것도 여전히 유효한
+  다음 실험.
+- 원작자 쪽 저장소가 앞으로도 계속 바뀔 수 있으니, 다음에 다시 크게 벌어지면 또 재벤더링 필요 — 지금은
+  수동 재복사 방식 그대로(ADR 0001 업데이트에 기록).

@@ -1658,3 +1658,27 @@ AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(Re
 
 - 실제 서버에서 카테고리 충돌 사례로 재검증 필요(이번 건 순수 후처리 로직이라 LLM 호출 없이도
   결정적으로 검증 가능해서 라이브 재현은 생략함).
+
+## 2026-08-10 — Render 무료 티어 배포 설정 준비
+
+"5명이 설치 쉽게, 최대한 공짜로" 요청 — `localhost:8000` 기본값은 각자 자기 컴퓨터를 가리키는
+거라 원격 팀원에게는 애초에 안 닿는다는 걸 짚고, 클라우드 배포로 방향을 정함(자세한 근거는
+`docs/adr/0002-deploy-backend-to-render-free-tier.md`). 계정 생성/연결은 사용자가 직접 해야 해서,
+이번엔 리포 쪽에서 준비할 수 있는 설정 파일과 안내 문서까지만.
+
+- **`render.yaml`**(신규, 리포 루트): Render Blueprint 스펙 — `rootDir: backend`,
+  `uv sync --frozen`으로 빌드, `uv run uvicorn ... --host 0.0.0.0 --port $PORT`로 시작,
+  `/healthz`를 헬스체크 경로로 지정. `ANTHROPIC_API_KEY`/`ALLOWED_ORIGINS`는 `sync: false`(대시보드에서
+  직접 채우는 시크릿, 커밋 안 됨).
+- **`extension/manifest.config.ts`**: `api/client.ts`가 이미 쓰던 `VITE_API_BASE_URL` 환경변수를
+  빌드 시점에 같이 읽어서, 값이 있으면 그 origin도 `host_permissions`에 추가 — 없으면 기존
+  `localhost:8000` 그대로(로컬 개발 흐름 무변경). 이 값만 지정하면(`VITE_API_BASE_URL=https://...
+  npm run build`) 배포된 백엔드를 가리키는 확장이 바로 빌드됨.
+- **`docs/deployment.md`**(신규): 계정 생성부터 5명에게 배포까지 실제로 클릭할 순서 정리.
+- 검증: 확장 84개 전부 통과, `VITE_API_BASE_URL` 지정/미지정 양쪽으로 직접 빌드해서
+  `dist/manifest.json`에 origin이 제대로 반영되는지 확인.
+
+### Next
+
+- 사용자가 직접: Render 계정 생성 → Blueprint 연결 → API 키 입력 → 배포 → 확장 ID 확인 →
+  ALLOWED_ORIGINS 채우기(`docs/deployment.md` 순서대로) — 완료되면 실제 배포 주소로 재검증 필요.

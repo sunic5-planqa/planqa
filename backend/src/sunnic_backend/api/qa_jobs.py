@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import math
 import re
 import uuid
@@ -251,21 +252,40 @@ async def _tick_progress(job_id: str, started_at: datetime) -> None:
         pass
 
 
+# document_text(추출된 문서 전문) 기준으로 리뷰 결과를 캐싱한다 — 같은 컨플루언스 페이지를 반복
+# 테스트할 때마다 실제 Claude API를 새로 호출하면 시간(수십 초)과 비용이 매번 든다. 프로세스
+# 메모리에만 두고(재시작하면 비워짐) 이 서비스의 다른 저장소(store)와 같은 "인메모리" 정책을 따름 —
+# 코드/프롬프트/룰북을 고치면 어차피 서버를 재시작하니 그 시점에 자연스럽게 캐시도 무효화된다.
+_review_cache: dict[str, ReviewResult] = {}
+
+
+def _document_cache_key(document_text: str) -> str:
+    return hashlib.sha256(document_text.encode("utf-8")).hexdigest()
+
+
 async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> None:
     job = await store.get_qa_job(job_id)
     if job is None:
         return
     rulebook = _load_rulebook()
-    ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
+    cache_key = _document_cache_key(document_text)
+    cached = _review_cache.get(cache_key)
+    ticker: asyncio.Task[None] | None = None
     try:
-        result = await asyncio.to_thread(_run_review_sync, document_id, document_text, rulebook)
+        if cached is not None:
+            result = cached
+        else:
+            ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
+            result = await asyncio.to_thread(_run_review_sync, document_id, document_text, rulebook)
+            _review_cache[cache_key] = result
         for issue in result.issues:
             await store.save_issue(_to_issue_record(job_id, document_text, rulebook, issue))
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.DONE, "progress": 100}))
     except Exception:  # noqa: BLE001 - a failed job must still resolve to a terminal status
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.FAILED, "progress": 100}))
     finally:
-        ticker.cancel()
+        if ticker is not None:
+            ticker.cancel()
 
 
 @router.post("/documents/{document_id}/qa-jobs", response_model=CreateQAJobResponse)

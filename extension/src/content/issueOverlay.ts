@@ -341,6 +341,23 @@ function replaceInStorageHtml(html: string, oldText: string, newText: string): s
   return replaceAcrossElements(html, oldText, newText)
 }
 
+// 매칭이 끝내 실패했을 때, 왜 실패했는지 다음 조사를 위해 콘솔에 실제 원본 조각을 남긴다 — 여기서
+// 계속 실패한다는 보고가 반복되는데 여기 로그가 없으면 실제 storage HTML이 정확히 어떻게 생겼는지
+// 확인할 방법이 없다(엔티티 인코딩, 예상 못 한 태그 등 원격으로는 추측만 가능한 경우들 때문).
+function logStorageMatchFailure(html: string, oldText: string): void {
+  const probe = oldText.slice(0, 15)
+  const probeIndex = html.indexOf(probe)
+  if (probeIndex === -1) {
+    console.warn('[SunniC] 원문 앞부분조차 storage HTML에서 찾지 못함:', { probe, oldTextLength: oldText.length })
+    return
+  }
+  const context = html.slice(Math.max(0, probeIndex - 20), probeIndex + oldText.length + 60)
+  console.warn('[SunniC] 원문 앞부분은 찾았지만 전체 매칭 실패. oldText와 실제 주변 HTML을 비교해보세요:', {
+    oldText,
+    surroundingHtml: context,
+  })
+}
+
 // pageId가 가리키는 페이지의 body.storage에서 oldText → newText로 문자열 치환한 뒤 PUT으로 저장한다.
 async function replaceTextAndSave(pageId: string, oldText: string, newText: string): Promise<ApplyResult> {
   const getRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=body.storage,version`, {
@@ -355,7 +372,10 @@ async function replaceTextAndSave(pageId: string, oldText: string, newText: stri
   }
   const html = data.body.storage.value
   const updatedHtml = replaceInStorageHtml(html, oldText, newText)
-  if (updatedHtml === null) return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
+  if (updatedHtml === null) {
+    logStorageMatchFailure(html, oldText)
+    return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
+  }
 
   const putRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}`, {
     method: 'PUT',

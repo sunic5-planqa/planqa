@@ -48,3 +48,8 @@
   - The extension itself still isn't published to the Chrome Web Store — each of the 5 people loads the
     same built `dist/` folder as an unpacked extension. If Render's URL ever needs to change (e.g.
     moving off the free tier later), the extension must be rebuilt and redistributed to everyone.
+  - `.github/workflows/keep-alive.yml` pings `/healthz` every 10 minutes to keep the service from
+    sleeping (free tier spins down after ~15 minutes idle). Running effectively 24/7 uses close to
+    Render's free-tier monthly instance-hour cap (750 hours) for a single service — acceptable since
+    this is the only free service on the account, but adding a second always-on free service later
+    would need re-evaluating (either drop the keep-alive ping, or split across accounts).

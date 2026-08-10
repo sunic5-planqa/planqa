@@ -1682,3 +1682,30 @@ AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(Re
 
 - 사용자가 직접: Render 계정 생성 → Blueprint 연결 → API 키 입력 → 배포 → 확장 ID 확인 →
   ALLOWED_ORIGINS 채우기(`docs/deployment.md` 순서대로) — 완료되면 실제 배포 주소로 재검증 필요.
+
+## 2026-08-10 — 실제 배포 완료, keep-alive 핑 추가
+
+사용자가 Render 계정 생성부터 배포까지 직접 진행 완료. `https://sunnic-backend.onrender.com`이
+실제로 살아있음(`/healthz` 200 확인). 확장을 그 주소로 빌드해서 zip으로 전달할 수 있게 준비하고,
+무료 티어 슬립 문제를 완화하는 자동 핑을 추가했다.
+
+- 확장 ID를 직접 로드해보지 않고 계산: `dev-key.public.txt`의 base64 DER 공개키를 SHA256 해시한
+  뒤 첫 16바이트를 Chrome의 a-p 매핑 규칙으로 변환 — `lakdhpgnlleljlkkfobckijbnojlplcf`.
+  Render의 `ALLOWED_ORIGINS`에 `chrome-extension://lakdhpgnlleljlkkfobckijbnojlplcf`로 설정.
+- `VITE_API_BASE_URL=https://sunnic-backend.onrender.com npm run build`로 확장 빌드,
+  `dist/manifest.json`에 그 origin이 `host_permissions`에 정상 반영된 것 확인 → `extension/dist`를
+  `sunnic-extension.zip`(131KB)으로 압축(gitignore된 산출물이라 커밋 안 함, 로컬에만 존재).
+  나머지 4명에게는 이 zip 파일만 전달하면 됨 — 깃허브 링크나 별도 서버 접속 불필요, 언팩 로드만 하면 끝.
+- **`.github/workflows/keep-alive.yml`(신규)**: Render 무료 티어가 15분 무트래픽 시 슬립하는 걸
+  완화하기 위해 10분마다 `/healthz`를 호출하는 GitHub Actions 스케줄 워크플로 추가. 사용자가
+  "자동으로 계속 연장" 방법을 물어서 3가지 옵션(GitHub Actions / 외부 무료 핑 서비스 / 유료 전환) 중
+  GitHub Actions를 선택 — 저장소 안에서 완결되고 별도 가입이 필요 없어 마찰이 가장 적음. 24시간
+  계속 깨어있게 하면 Render 무료 티어의 월 750시간 인스턴스 한도를 거의 다 쓰게 된다는 점은
+  ADR/문서에 남김(지금은 서비스가 이거 하나뿐이라 문제 없음).
+
+### Next
+
+- GitHub Actions 스케줄이 실제로 10분마다 도는지, 그 핑만으로 슬립을 막기에 충분한지는 며칠
+  지켜봐야 확인 가능(cron은 GitHub 쪽 사정으로 몇 분 밀릴 수 있음 — 알려진 한계).
+- 나머지 4명에게 zip 배포 후 실제 왕복(설치→컨플루언스 페이지에서 QA 시작→응답) 확인 필요 —
+  아직 Claude가 검증할 수 없는 부분.

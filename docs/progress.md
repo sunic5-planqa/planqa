@@ -1404,3 +1404,39 @@ tier를 병렬로 처리하며 붙인 순서, 문서 위치와 무관) 이슈를
 ### Next
 
 - 사용자 재검증 대기 — 실제 컨플루언스에서 복제본을 만들어 제목 시각이 맞는지 확인 필요.
+
+## 2026-08-10 — review-agent 재벤더링: `category_screen` → `bundled_screen_hybrid`
+
+"planqa-agent 모델 변경됐어 이걸로 하고 우리 .env는 유지해" 요청. upstream이 구조를 또 한 번
+바꿨음 — `structures/category_screen.py`가 사라지고 `structures/bundled_screen_hybrid.py`로
+교체(+새 데이터 파일 `structures/fewshot_bank.py`, 룰별 위반/예외 퓨샷 예시 모음). 상세 변경
+근거/버전별 diff는 `docs/adr/0001-...`의 이번 업데이트 섹션 참고. 요약:
+
+- **4개 동시 tier → 2개 순차 패스로 단순화**: Paragraph 패스(대부분 카테고리) → Document 패스
+  (관계형 LG/LF/GA + 부재확인형 LG-01/TC-02)만 순서대로 돈다. **`LLMClient.clone()`이 아예
+  없어져서** 지난 재벤더링 때 만든 `_ScopedClient` 우회 코드가 통째로 필요 없어짐 —
+  `AnthropicClient`를 그냥 직접 생성하도록 단순화(`qa_jobs.py::_run_review_sync`).
+- **진행률 체크리스트도 새 구조에 맞게 다시 짬**: 예전 4그룹(Document/Logical Unit/Paragraph/
+  Sentence) 체계는 이제 Logical Unit/Sentence가 아예 안 쓰이는 위계라 실제와 안 맞았음 —
+  Paragraph/Document 2그룹으로 교체하고, "동시 실행"이 아니라 "진짜 순차 실행"이 됐으니 lockstep
+  대신 **실행 순서대로**(Paragraph가 먼저 100% 찬 뒤에야 Document가 움직이기 시작) 채우도록 함.
+- **JSON 파싱이 더 견고해짐**: `llm/base.py`에 `_repair_json`(잘못된 백슬래시/trailing comma
+  복구)이 새로 생겼고, `AnthropicClient`가 깨지거나 빈 응답이 와도 한 번 더 재시도함 — 2026-08-09
+  Claude 전환 항목에서 관찰만 하고 넘어갔던 "Paragraph 위계 malformed JSON" 이슈를 upstream이
+  직접 고친 셈.
+- **`.env`/API 키 구성은 그대로 유지** — upstream에 새로 생긴 `llm/factory.py`(환경변수
+  `PLANQA_LLM_BACKEND`로 백엔드를 고르는 CLI용 헬퍼)는 벤더링하지 않음. 여전히 `settings`(pydantic-
+  settings, `.env` 기반)에서 읽은 키로 `AnthropicClient`를 직접 생성.
+- 벤더링 파일: `document.py`(신규 `resolve_reported_level` 포함), `dedupe.py`, `verifier.py`,
+  `tiers.py`, `pipeline.py`(여전히 `ReviewResult`만 씀), `instrumentation.py`, `llm/base.py`,
+  `llm/anthropic.py`, `planqa_schemas/rulebook.py`, `structures/bundled_screen_hybrid.py`(신규),
+  `structures/fewshot_bank.py`(신규) — `llm/gemini.py`/`structures/category_screen.py`는 삭제.
+- 검증: 벤더링 테스트 재동기화(`test_bundled_screen_hybrid.py` 신규, `test_fewshot_bank.py` 신규,
+  나머지 import 경로만 갱신) + 우리 쪽 테스트(`FakeAnthropicClient`를 새 프롬프트/응답 형식에 맞게
+  수정, 진행률 체크리스트 테스트 2개 재작성) 포함 백엔드 126개 전부 통과, ruff 클린.
+
+### Next
+
+- 실제 DOC-001로 다시 검증 필요 — 이번엔 패스가 2개뿐이라 이슈 개수/속도가 또 달라질 수 있음
+  (CLI 6개 vs 서버 여러 회 실측 12~44개였던 기존 불일치 조사에 새 데이터 포인트가 될 것).
+- 진행률 체크리스트가 실제로 Paragraph → Document 순서로 차오르는 것처럼 보이는지 실사용 확인.

@@ -22,11 +22,9 @@ from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import (
     Issue as ReviewIssue,
 )
-from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Level
-from sunnic_backend.qa_engine.review_agent.structures.category_screen import (
+from sunnic_backend.qa_engine.review_agent.structures.bundled_screen_hybrid import (
     review_document,
 )
-from sunnic_backend.qa_engine.review_agent.tiers import TIER_CATEGORIES
 from sunnic_backend.storage.store import store
 
 router = APIRouter(tags=["qa-jobs"])
@@ -85,12 +83,16 @@ def _frame_type(category: str, related_location: str | None) -> FrameType:
     return FrameType.OBJECT
 
 
-# SCREEN 02 groups categories by review tier — these four map 1:1 to tiers.TIER_ORDER.
-_TIER_GROUPS: tuple[tuple[Level, str, str], ...] = (
-    (Level.DOCUMENT, "documents", "Documents"),
-    (Level.LOGICAL_UNIT, "logical_chapter", "Logical Chapter"),
-    (Level.PARAGRAPH, "detailed_chapter", "Detailed Chapter"),
-    (Level.SENTENCE, "sentence", "Sentence"),
+# SCREEN 02 groups categories by review pass. bundled_screen_hybrid.review_document()
+# (2026-08-10 재벤더링) only runs two passes now — Paragraph (most categories) and Document
+# (relational categories that need whole-document visibility, same set as _RANGE_CATEGORIES
+# above) — replacing the old 4-tier structure (Document/Logical Unit/Paragraph/Sentence),
+# where Logical Unit and Sentence aren't queried by this structure at all anymore. Reusing
+# _RANGE_CATEGORIES here (rather than a second frozenset) keeps this in lockstep with
+# _frame_type's own notion of "relational" automatically.
+_PROGRESS_GROUPS: tuple[tuple[str, str], ...] = (
+    ("paragraph", "Paragraph"),
+    ("document", "Document"),
 )
 
 
@@ -103,34 +105,36 @@ def _category_label_by_prefix(rulebook: RuleBook) -> dict[str, str]:
 
 def _build_tier_groups(rulebook: RuleBook) -> list[tuple[str, str, list[tuple[str, str]]]]:
     # Static per-rulebook structure (doesn't change per job): (group_key, group_label,
-    # [(category_prefix, category_label), ...]) for every tier that actually has categories.
+    # [(category_prefix, category_label), ...]) for every pass that actually has categories.
     labels = _category_label_by_prefix(rulebook)
-    groups = []
-    for level, key, label in _TIER_GROUPS:
-        items = [(prefix, labels[prefix]) for prefix in TIER_CATEGORIES.get(level, ()) if prefix in labels]
-        if items:
-            groups.append((key, label, items))
-    return groups
+    by_group: dict[str, list[tuple[str, str]]] = {"paragraph": [], "document": []}
+    for prefix, label in labels.items():
+        by_group["document" if prefix in _RANGE_CATEGORIES else "paragraph"].append((prefix, label))
+    return [(key, label, by_group[key]) for key, label in _PROGRESS_GROUPS if by_group[key]]
 
 
 def _categories_for_progress(rulebook: RuleBook, progress: int) -> tuple[list[ProgressCategoryOut], str | None]:
     # No per-category completion signal exists (see docs/adr/0001-...), so this is still a
-    # cosmetic checklist derived from the same fake progress % the ticker computes — but
-    # category_screen.review_document() now runs all 4 tiers *concurrently* (2026-08-10
-    # re-sync), not one after another, so every group has to advance in lockstep here too.
-    # Walking through tiers sequentially (the original version of this function) would show
-    # e.g. "Documents 100% done, Sentence 0%" long after Sentence's screen call actually
-    # already fired — visibly wrong once tiers stopped being sequential.
+    # cosmetic checklist derived from the same fake progress % the ticker computes. But
+    # bundled_screen_hybrid.review_document() (2026-08-10 재벤더링) runs its two passes
+    # genuinely *sequentially* — Paragraph, then Document — unlike the old category_screen
+    # structure's 4 concurrent tiers, which is why that version made every group advance in
+    # lockstep. Now that execution really is one-group-then-the-next, fill each group's own
+    # fraction of the overall fake progress in turn instead, so the checklist tracks the
+    # real pass order (Paragraph fills to 100% before Document starts moving at all).
     groups = _build_tier_groups(rulebook)
     if not groups:
         return [], None
 
     fraction = min(max(progress / 100, 0.0), 1.0)
+    per_group_fraction = 1.0 / len(groups)
 
     out: list[ProgressCategoryOut] = []
     current_category: str | None = None
-    for group_key, group_label, items in groups:
-        done_count = len(items) if progress >= 100 else int(fraction * len(items))
+    for group_index, (group_key, group_label, items) in enumerate(groups):
+        group_start = group_index * per_group_fraction
+        group_fraction = min(max((fraction - group_start) / per_group_fraction, 0.0), 1.0)
+        done_count = len(items) if progress >= 100 else int(group_fraction * len(items))
 
         item_out: list[CategoryItemOut] = []
         for idx, (item_key, item_label) in enumerate(items):
@@ -174,27 +178,14 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
     # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
     # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
     #
-    # category_screen.review_document() runs the 4 tiers concurrently via LLMClient.clone()
-    # (one client per tier, since record_call()'s usage-diffing races if threads share one
-    # client's usage list) — the base class's default clone() re-reads credentials from
-    # os.environ instead of reusing the api_key passed at construction, which we don't set
-    # process-wide (settings come from .env via pydantic-settings, not the real environment).
-    # Wrap whatever AnthropicClient currently resolves to (module-level name, so tests can
-    # still monkeypatch it) in a subclass that threads the explicit key through clone() instead.
-    base_cls = AnthropicClient
-
-    class _ScopedClient(base_cls):  # type: ignore[misc, valid-type]
-        def clone(self, *, tier: object | None = None) -> "AnthropicClient":
-            return _ScopedClient(
-                model=self.model,
-                api_key=settings.anthropic_api_key,
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
-            )
-
+    # bundled_screen_hybrid.review_document() (2026-08-10 재벤더링) calls screen_llm/confirm_llm
+    # directly and sequentially (Paragraph pass, then Document pass) — unlike the old
+    # category_screen structure, nothing here runs concurrently, so LLMClient.clone() is never
+    # called and the _ScopedClient workaround built for it (see docs/adr/0001-...) is gone —
+    # explicit api_key= is threaded straight through the constructor, same as before.
     # 1차 스크리닝(저비용, over-flag 의도) = Haiku, 2차 정밀검증(고비용, 정밀) = Sonnet.
-    screen_llm = _ScopedClient(model=settings.sunnic_haiku_model, api_key=settings.anthropic_api_key)
-    confirm_llm = _ScopedClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
+    screen_llm = AnthropicClient(model=settings.sunnic_haiku_model, api_key=settings.anthropic_api_key)
+    confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
     return review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
 
 

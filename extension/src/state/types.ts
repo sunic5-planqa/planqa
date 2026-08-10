@@ -14,6 +14,9 @@ export interface ConfluenceSiblingDoc {
 export interface IssueEdit {
   action: IssueAction
   editedText?: string
+  // LG/LF/GA(관계형) 이슈의 두 번째 위치(related_location) 원문을 별도로 편집·저장한 결과 —
+  // 첫 번째 위치(editedText)와 독립적으로 채워질 수 있다(둘 중 하나만 고쳐도 저장 가능).
+  relatedEditedText?: string
 }
 
 export interface ReferenceFile {

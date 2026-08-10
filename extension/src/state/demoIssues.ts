@@ -74,6 +74,7 @@ export function buildDemoIssues(structure: ParsedStructure, count = 3): IssueRes
       suggestion: template.suggest(pick.text),
       frame_type: template.frameType,
       related_location: null,
+      related_original_text: null,
     }
   })
 }

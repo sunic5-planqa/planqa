@@ -1459,3 +1459,35 @@ tier를 병렬로 처리하며 붙인 순서, 문서 위치와 무관) 이슈를
 
 - 데이터 포인트가 아직 하나뿐 — 여러 문서/여러 회 실행으로 이슈 개수·소요 시간 편차를 더 확인하면
   좋음.
+
+## 2026-08-10 — review-agent가 bundled_screen_hybrid를 다시 병렬화 (2패스 동시 실행으로 재동기화)
+
+방금 순차 실행으로 재벤더링했는데, review-agent 쪽에서 바로 이어서 그 2패스(Paragraph/Document)를
+동시 실행으로 병렬화하는 PR을 올리고 병합함(`sunic5-planqa/planqa-agent` PR #23~#25,
+`https://github.com/sunic5-planqa/planqa-agent`). 다시 재벤더링.
+
+- **`instrumentation.py`**: `isolate_client(llm, *, key=None)`으로 시그니처 변경 — `llm`에
+  `isolate(key)` 메서드가 있으면(테스트 더블처럼 응답을 분기별로 라우팅해야 하는 경우) 그걸 쓰고,
+  없으면(실제 백엔드) 그냥 `copy.copy()` + 새 usage 리스트로 폴백. **덕분에 우리 쪽
+  `AnthropicClient`는 `isolate()`를 따로 구현할 필요가 전혀 없음** — `copy.copy()` 폴백이 알아서
+  처리해줌(같은 HTTP 클라이언트를 참조로 공유, usage 리스트만 분리).
+- **`bundled_screen_hybrid.py`**: 각 패스를 `_run_pass()`로 뽑아내고, 두 패스가 모두 있으면
+  `ThreadPoolExecutor`로 동시 실행(하나만 있으면 그냥 직접 호출, 스레드풀 오버헤드 안 씀).
+- **`qa_jobs.py`는 무변경** — `_run_review_sync`가 `AnthropicClient`를 그냥 생성만 하면 되는
+  구조라(지난 재벤더링 때 이미 그렇게 단순화해둠), 이번 병렬화도 별도 대응 코드 없이 그대로 호환됨.
+- **진행률 체크리스트를 다시 lockstep으로 되돌림** — 방금 "순차 실행" 가정으로 바꿨던 걸(Paragraph
+  먼저 100%) 원래의 "모든 그룹 동시 진행" 방식으로 원복. 실측도 다시 확인(DOC-001, Claude
+  Haiku→Sonnet 조합): **63.1초**(순차 버전 120.3초 대비 거의 절반, 원래 4-tier 버전 66.1초와
+  거의 동일) — `_ESTIMATED_DURATION_SECONDS`도 35s→20s로 원복.
+- **테스트 더블도 동기화**: `conftest.py`의 `ScriptedLLM`이 `tier_responses`/`clone()`(죽은 코드)
+  대신 `keyed_responses`/`isolate()`를 구현 — key 없이 `isolate()`가 호출되면(테스트 더블에
+  `keyed_responses`를 안 주고 병렬 구조를 테스트하려 한 경우) 애매하게 넘어가지 않고 명확한
+  에러를 던짐(공유 이터레이터 레이스를 나중에 조용히 재현하는 대신 지금 바로 잡아냄).
+- 검증: 벤더링 테스트 재동기화(`test_bundled_screen_hybrid.py`가 `keyed_responses` 기반으로,
+  신규 "plain ScriptedLLM 오용 시 명확한 에러" 테스트 포함) + 우리 진행률 테스트 lockstep으로
+  원복, 백엔드 126개 전부 통과, ruff 클린. 실제 API로도 재검증(4개 이슈, 에러 0건, 63.1초).
+
+### Next
+
+- upstream이 짧은 주기로 계속 구조를 바꾸고 있어 재벤더링이 반복되는 중 — 당분간 병합 전마다
+  `sunic5-planqa/planqa-agent`의 최신 상태를 확인하는 습관이 필요.

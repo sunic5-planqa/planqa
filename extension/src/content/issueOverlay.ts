@@ -473,7 +473,11 @@ async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: tru
   }
   if (!original.space?.key) return { ok: false, error: '스페이스 정보를 확인하지 못했습니다.' }
 
-  const title = `${original.title} (QA 검토 수정본 ${new Date().toLocaleString('ko-KR')})`
+  // 'ko-KR' 로케일은 표기 형식(연월일 순서, 오전/오후 등)만 한국식으로 바꿀 뿐 시간대는 실행 환경의
+  // 시스템 설정을 그대로 따라간다 — timeZone을 명시하지 않으면 브라우저/시스템 시간대가 KST가
+  // 아닐 때 실제 시각과 몇 시간씩 어긋나 보일 수 있어, Asia/Seoul을 직접 고정한다.
+  const timestamp = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+  const title = `${original.title} (QA 검토 수정본 ${timestamp})`
   const createRes = await fetch(`${location.origin}/wiki/rest/api/content`, {
     method: 'POST',
     credentials: 'include',

@@ -105,6 +105,24 @@ describe('applyIssueOverlay', () => {
     expect(mark?.closest('h3')).not.toBeNull()
   })
 
+  it('never falls back to the page title (h1) even when location matches nothing but it', () => {
+    // review-agent의 Document 위계(문서 전체 대상 판정) 이슈는 location이 곧 "문서 제목"이다
+    // (백엔드 document.py의 _doc_title) — 이걸 그대로 폴백 대상으로 허용하면 컨플루언스 페이지
+    // 자체의 제목을 감싸버려서, 마치 "제목이 문제"라는 것처럼 보이는 엉뚱한 하이라이트가 된다
+    // (실사용 중 확인된 버그). h1은 폴백 대상에서 제외해야 하고, 그러면 매칭 자체가 실패해야 한다.
+    document.body.innerHTML = '<main><h1>[DOC-001] NxEF 모바일 웹 — 홈 화면 PRD (v1.0)</h1><h2>1. 프로덕트 목적</h2></main>'
+    const issue: OverlayIssue = {
+      ...ISSUE,
+      input_text: '문서에 없는 문구',
+      location: '[DOC-001] NxEF 모바일 웹 — 홈 화면 PRD (v1.0)',
+    }
+
+    const result = applyIssueOverlay([issue])
+
+    expect(result).toEqual({ matched: 0, total: 1 })
+    expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
+  })
+
   it('still highlights the other issues even if one has no location and cannot be matched', () => {
     // wrapIssue()가 이슈 하나에서 예외를 던지면 filter() 전체가 멈춰서 뒤에 있던 멀쩡한 이슈들까지
     // 하이라이트가 안 그려지는 사고로 이어졌었다(location이 없는 예전 데이터가 섞인 경우 등).

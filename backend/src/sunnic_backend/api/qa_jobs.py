@@ -184,7 +184,12 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
 
     class _ScopedClient(base_cls):  # type: ignore[misc, valid-type]
         def clone(self, *, tier: object | None = None) -> "AnthropicClient":
-            return _ScopedClient(model=self.model, api_key=settings.anthropic_api_key)
+            return _ScopedClient(
+                model=self.model,
+                api_key=settings.anthropic_api_key,
+                temperature=self._temperature,
+                max_tokens=self._max_tokens,
+            )
 
     # 1차 스크리닝(저비용, over-flag 의도) = Haiku, 2차 정밀검증(고비용, 정밀) = Sonnet.
     screen_llm = _ScopedClient(model=settings.sunnic_haiku_model, api_key=settings.anthropic_api_key)

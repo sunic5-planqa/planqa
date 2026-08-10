@@ -31,8 +31,12 @@ class FakeAnthropicClient:
     contract (constructor kwargs + complete_json + clone()) to drive the real
     category_screen/qa_jobs wiring end to end without a live API key."""
 
-    def __init__(self, model: str | None = None, api_key: str | None = None, temperature: float = 0.0) -> None:
+    def __init__(
+        self, model: str | None = None, api_key: str | None = None, temperature: float = 0.0, max_tokens: int = 8192
+    ) -> None:
         self.model = model
+        self._temperature = temperature
+        self._max_tokens = max_tokens
         self.calls: list[tuple[str, str]] = []
         self.usage: list[CallStats] = []
 

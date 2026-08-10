@@ -15,6 +15,7 @@ from sunnic_backend.config import settings
 from sunnic_backend.models.issue import FrameType, IssueStatus
 from sunnic_backend.models.issue import Issue as IssueRecord
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
+from sunnic_backend.qa_engine.review_agent.document import parse_document
 from sunnic_backend.qa_engine.review_agent.llm.anthropic import AnthropicClient
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
@@ -186,6 +187,7 @@ class QAJobStatusResponse(BaseModel):
 class IssueResponse(BaseModel):
     id: str
     location: str
+    location_number: str | None
     input_text: str
     criteria: str
     reason: str
@@ -359,7 +361,34 @@ def _issue_start(document_text: str, input_text: str, location: str) -> int:
     return len(document_text)
 
 
-def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue: ReviewIssue) -> IssueRecord:
+# 원문 헤딩 자체에 번호가 있든 없든(작성자마다 제각각이라 신뢰 불가 — 실사용 피드백으로 확인됨)
+# 문서 안에서 소주제(logical unit)/그 하위 소소주제(paragraph 위계 헤딩)가 실제로 등장하는 순서를
+# 우리가 직접 세어 "2", "2-1" 같은 번호를 계산한다. review_agent의 parse_document를 그대로
+# 호출만 하고(벤더링 정책상 그 파일 자체는 안 건드림) 반환된 Chunk.location 문자열을 키로 쓴다 —
+# location은 document.py가 헤딩 텍스트를 그대로 담아 만든 값이라, Issue.location과 정확히 같은
+# 문자열로 다시 나온다.
+def _build_heading_numbers(document_text: str) -> dict[str, str]:
+    tree = parse_document("_numbering", document_text)
+    numbers: dict[str, str] = {}
+    for index, unit in enumerate(tree.logical_units, start=1):
+        numbers[unit.location] = str(index)
+
+    sub_index_by_unit: dict[str, int] = {}
+    for paragraph in tree.paragraphs:
+        if " > " not in paragraph.location:
+            continue
+        unit_label = paragraph.location.split(" > ", 1)[0]
+        unit_number = numbers.get(unit_label)
+        if unit_number is None:
+            continue
+        sub_index_by_unit[unit_label] = sub_index_by_unit.get(unit_label, 0) + 1
+        numbers[paragraph.location] = f"{unit_number}-{sub_index_by_unit[unit_label]}"
+    return numbers
+
+
+def _to_issue_record(
+    job_id: str, document_text: str, rulebook: RuleBook, issue: ReviewIssue, heading_numbers: dict[str, str]
+) -> IssueRecord:
     rule = rulebook.rule(issue.rule_id)
     criteria = _korean_label(rule.category_label) if rule else issue.rule_id
     related_location = issue.related_location
@@ -370,6 +399,7 @@ def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue:
         id=str(uuid.uuid4()),
         job_id=job_id,
         location=issue.location,
+        location_number=heading_numbers.get(issue.location),
         input_text=input_text,
         criteria=criteria,
         reason=issue.rationale or issue.description,
@@ -441,8 +471,9 @@ async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> 
             ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
             result = await asyncio.to_thread(_run_review_sync, document_id, document_text, rulebook)
             _review_cache[cache_key] = result
+        heading_numbers = _build_heading_numbers(document_text)
         for issue in result.issues:
-            await store.save_issue(_to_issue_record(job_id, document_text, rulebook, issue))
+            await store.save_issue(_to_issue_record(job_id, document_text, rulebook, issue, heading_numbers))
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.DONE, "progress": 100}))
     except Exception:  # noqa: BLE001 - a failed job must still resolve to a terminal status
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.FAILED, "progress": 100}))
@@ -500,6 +531,7 @@ async def list_qa_job_issues(job_id: str) -> list[IssueResponse]:
         IssueResponse(
             id=issue.id,
             location=issue.location,
+            location_number=issue.location_number,
             input_text=issue.input_text,
             criteria=issue.criteria,
             reason=issue.reason,

@@ -67,6 +67,7 @@ export function buildDemoIssues(structure: ParsedStructure, count = 3): IssueRes
     return {
       id: `demo-${idx + 1}`,
       location: pick.chapterTitle,
+      location_number: null,
       input_text: pick.text,
       criteria: template.criteria,
       reason: template.reason,

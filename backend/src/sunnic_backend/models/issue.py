@@ -24,6 +24,7 @@ class Issue(BaseModel):
     id: str
     job_id: str
     location: str
+    location_number: str | None = None
     input_text: str
     criteria: str
     reason: str

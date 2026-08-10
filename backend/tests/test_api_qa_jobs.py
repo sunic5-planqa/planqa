@@ -213,6 +213,31 @@ def test_categories_for_progress_marks_everything_done_at_100() -> None:
     assert all(item.status == "done" for group in categories for item in group.items)
 
 
+# Logical Unit은 bundled_screen_hybrid가 직접 dispatch하는 패스는 아니지만(Paragraph/Document
+# 청크만 모델에 던짐), confirm이 resolve_reported_level로 승격시키면 실제 Issue.level에 찍히는
+# 값이라 rulebook_v1.0.md §2 기준으로는 실재하는 위계다 — 체크리스트에도 세 번째 그룹으로 보여야 함.
+def test_build_tier_groups_includes_all_three_tiers() -> None:
+    rulebook = qa_jobs._load_rulebook()
+
+    groups = qa_jobs._build_tier_groups(rulebook)
+
+    group_keys = [key for key, _label, _items in groups]
+    assert group_keys == ["document", "logical_unit", "paragraph"]
+
+
+def test_build_tier_groups_logical_unit_covers_every_category() -> None:
+    # tiers.TIER_CATEGORIES[Level.LOGICAL_UNIT]는 8개 카테고리 전부를 커버한다(rulebook §2 기준)
+    # — Document/Paragraph 그룹에 이미 나온 카테고리라도 Logical Unit에 다시 나오는 게 정상이다.
+    rulebook = qa_jobs._load_rulebook()
+
+    groups = qa_jobs._build_tier_groups(rulebook)
+    by_key = {key: items for key, _label, items in groups}
+    logical_unit_categories = {prefix for prefix, _label in by_key["logical_unit"]}
+
+    all_categories = {rule.category for rule in rulebook.rules.values()}
+    assert logical_unit_categories == all_categories
+
+
 async def test_qa_job_reuses_cached_result_for_identical_document_text(monkeypatch) -> None:
     # 같은 문서를 반복 검토할 때마다 실제 LLM을 다시 부르면 매번 수십 초 + 비용이 든다 — 문서
     # 텍스트가 완전히 같으면(document_id가 새로 발급돼도) 캐시에서 재사용해야 한다.

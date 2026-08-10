@@ -286,6 +286,29 @@ describe('applyIssueEdit', () => {
       `<li><p><strong>${newText}</strong><br> 홈→장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>`,
     )
   })
+
+  it('still matches when an unrelated part of the document has an HTML entity like &rarr;', async () => {
+    // 실제 DOC-001에서 재현된 그대로 — "→"가 storage HTML에는 &rarr; 엔티티로 저장돼 있었다. 매치
+    // 구간 자체는 그 엔티티 앞에서 끝나지만, 예전 구현(디코딩한 텍스트를 원본에서 다시 찾는 방식)은
+    // 이 엔티티 때문에 그 엘리먼트의 전체 텍스트를 원본에서 못 찾아 실패했었다.
+    const oldText =
+      '홈 UV (Unique Visitor) 월 2만명 달성근거: 구매 전환율 1.5% 목표 달성을 위해 장바구니 유입 최소 1,000명 필요.'
+    const newText = '실제 퍼널 수치를 재계산하여 일관된 근거로 제시'
+    const fragment =
+      '<li><p><strong>홈 UV (Unique Visitor) 월 2만명 달성</strong><br />근거: 구매 전환율 1.5% 목표 달성을 위해 ' +
+      '장바구니 유입 최소 1,000명 필요. 홈&rarr;장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>'
+    const fetchMock = stubConfluenceFetch({ duplicateBody: fragment })
+
+    const result = await applyIssueEdit('issue-entity', oldText, newText)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    // 매치 밖에 있던 &rarr; 엔티티는 그대로(디코딩되지 않고) 보존돼야 한다.
+    expect(putBody.body.storage.value).toBe(
+      `<li><p><strong>${newText}</strong><br /> 홈&rarr;장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>`,
+    )
+  })
 })
 
 describe('scrollToIssue', () => {

@@ -268,77 +268,88 @@ function extractPageId(url: string): string | null {
 
 type ApplyResult = { ok: true } | { ok: false; error: string }
 
-interface RawTextSpan {
-  text: string
-  start: number
-  end: number
+// <textarea>.innerHTML → .value 트릭으로 named/numeric HTML 엔티티를 브라우저가 아는 그대로
+// 디코딩한다 — &rarr; 같은 엔티티를 전부 나열한 표를 직접 관리하지 않아도 된다.
+const entityDecoder = document.createElement('textarea')
+function decodeHtmlEntity(raw: string): string {
+  entityDecoder.innerHTML = raw
+  return entityDecoder.value
 }
 
-// root 아래 모든 텍스트 노드를 이어붙여, collectTextSpans()와 같은 방식(전체 텍스트 + 노드별 구간)을
-// 만든다. collectTextSpans()와 따로 두는 이유는 저 쪽은 라이브 document 전용 오버레이 필터링이 걸려
-// 있어서(isInsideOverlayNode 등) 파싱된 storage HTML 문서에는 그대로 못 쓰기 때문이다.
-function collectPlainTextSpans(root: Element): { fullText: string; spans: RawTextSpan[] } {
-  const ownerDoc = root.ownerDocument
-  const walker = ownerDoc.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+// storage HTML을 한 번 훑으면서 태그(<...>)는 건너뛰고 텍스트만 이어붙이되, 디코딩된 글자 하나하나가
+// 원본 문자열의 어느 바이트 구간에서 왔는지 같이 기록한다. 예전엔 "디코딩한 텍스트를 원본 문자열
+// 안에서 다시 찾기"(indexOf) 방식이었는데, &rarr; 처럼 엔티티로 인코딩된 문자가 매치 구간 안에 하나만
+// 있어도 디코딩된 문자가 원본에 그대로 존재하지 않아 못 찾는 문제가 있었다(실제 DOC-001에서 확인).
+// 이렇게 스캔과 동시에 오프셋을 기록해두면 나중엔 역산만 하면 되니 그 문제 자체가 생기지 않는다 —
+// 목록/표처럼 문구가 여러 엘리먼트(태그)에 걸친 경우도 태그를 그냥 건너뛰는 것만으로 자연히 처리된다.
+function decodeStorageHtmlText(html: string): { fullText: string; rawRanges: Array<[number, number]> } {
   let fullText = ''
-  const spans: RawTextSpan[] = []
-  for (let current = walker.nextNode(); current; current = walker.nextNode()) {
-    const text = current.textContent ?? ''
-    if (!text) continue
-    spans.push({ text, start: fullText.length, end: fullText.length + text.length })
-    fullText += text
+  const rawRanges: Array<[number, number]> = []
+  let i = 0
+  while (i < html.length) {
+    const ch = html[i]
+    if (ch === '<') {
+      const close = html.indexOf('>', i)
+      i = close === -1 ? html.length : close + 1
+      continue
+    }
+    if (ch === '&') {
+      const semi = html.indexOf(';', i)
+      if (semi !== -1 && semi - i <= 32) {
+        const raw = html.slice(i, semi + 1)
+        const decoded = decodeHtmlEntity(raw)
+        if (decoded !== raw) {
+          for (const decodedChar of decoded) {
+            fullText += decodedChar
+            rawRanges.push([i, semi + 1])
+          }
+          i = semi + 1
+          continue
+        }
+      }
+    }
+    fullText += ch
+    rawRanges.push([i, i + 1])
+    i += 1
   }
-  return { fullText, spans }
+  return { fullText, rawRanges }
 }
 
-// 목록/표 항목 두 개처럼 사람 눈엔 붙어 보여도 실제로는 <li>...</li><li>...</li>처럼 태그가 그 사이에
-// 끼어 있는 문구는, 공백만 관대하게 봐주는 정규식만으로는 못 찾는다(애초에 원문에 공백이 없으면 봐줄
-// 대상 자체가 없다). storage HTML을 파싱해 텍스트 노드 단위로 이어붙인 뒤(wrapIssue가 라이브 DOM에서
-// 하는 것과 동일한 방식) 매치 구간에 걸리는 노드들을 원본 문자열 안에서 각각 다시 찾아 그 부분만
-// 정교하게 잘라 넣는다 — 파싱한 트리를 통째로 re-serialize하면 매크로 등 나머지 마크업이 미묘하게
-// 바뀔 위험이 있어, 원본 문자열은 건드리지 않고 매치된 구간만 문자열 스플라이스로 치환한다.
-function replaceAcrossElements(html: string, oldText: string, newText: string): string | null {
-  const doc = new DOMParser().parseFromString(html, 'text/html')
-  const { fullText, spans } = collectPlainTextSpans(doc.body)
+// storage HTML에서 oldText(공백은 느슨하게)를 찾아 newText로 치환한다. 매치 구간을 raw 오프셋으로
+// 역산한 뒤, 그 구간 [rawStart, rawEnd) 안을 다시 한번 훑어서 태그(<strong>, </li> 등)는 전부 그대로
+// 보존하고 실제 매치된 텍스트만 한 곳에 newText로 몰아 넣는다 — [rawStart, rawEnd)를 통째로 잘라내고
+// newText로 바꿔버리면, <strong>A</strong><br>B처럼 매치가 태그 경계에 걸친 경우 여는 태그만 남고
+// 닫는 태그가 같이 지워져서 마크업이 깨진다.
+function replaceInStorageHtml(html: string, oldText: string, newText: string): string | null {
+  const { fullText, rawRanges } = decodeStorageHtmlText(html)
   const match = buildLooseTextRegex(oldText).exec(fullText)
-  if (!match) return null
+  if (!match || match[0].length === 0) return null
 
   const matchStart = match.index
   const matchEnd = match.index + match[0].length
-  const overlapping = spans.filter((span) => span.start < matchEnd && span.end > matchStart)
-  if (overlapping.length === 0) return null
+  const rawStart = rawRanges[matchStart][0]
+  const rawEnd = rawRanges[matchEnd - 1][1]
 
-  let searchCursor = 0
-  let result = ''
-  let lastCopiedEnd = 0
-
-  for (const [i, span] of overlapping.entries()) {
-    const rawIndex = html.indexOf(span.text, searchCursor)
-    // 엔티티 인코딩 등으로 파싱된 텍스트와 원본 문자열이 어긋나면, 잘못된 위치를 잘라내느니 그냥
-    // 실패 처리한다(문서를 깨뜨리느니 아무것도 안 하는 쪽).
-    if (rawIndex === -1) return null
-    searchCursor = rawIndex + span.text.length
-
-    const localStart = Math.max(matchStart - span.start, 0)
-    const localEnd = Math.min(matchEnd - span.start, span.text.length)
-    const isFirst = i === 0
-    const isLast = i === overlapping.length - 1
-    const replacement = (isFirst ? span.text.slice(0, localStart) + newText : '') + (isLast ? span.text.slice(localEnd) : '')
-
-    result += html.slice(lastCopiedEnd, rawIndex) + replacement
-    lastCopiedEnd = rawIndex + span.text.length
+  let middle = ''
+  let inserted = false
+  let i = rawStart
+  while (i < rawEnd) {
+    if (html[i] === '<') {
+      const close = html.indexOf('>', i)
+      const tagEnd = close === -1 ? rawEnd : Math.min(close + 1, rawEnd)
+      middle += html.slice(i, tagEnd)
+      i = tagEnd
+      continue
+    }
+    if (!inserted) {
+      middle += newText
+      inserted = true
+    }
+    i += 1
   }
-  result += html.slice(lastCopiedEnd)
-  return result
-}
+  if (!inserted) middle += newText
 
-// 먼저 공백만 느슨하게 허용하는 단순 정규식(buildLooseTextRegex)으로 원본 문자열 그대로 찾는다 —
-// 이게 되면 나머지 마크업을 전혀 건드리지 않는 가장 안전한 경로다. 그걸로 못 찾을 때만(문구가 여러
-// 엘리먼트에 걸쳐 있을 때) 파싱 기반 매칭(replaceAcrossElements)으로 넘어간다.
-function replaceInStorageHtml(html: string, oldText: string, newText: string): string | null {
-  const match = buildLooseTextRegex(oldText).exec(html)
-  if (match) return html.slice(0, match.index) + newText + html.slice(match.index + match[0].length)
-  return replaceAcrossElements(html, oldText, newText)
+  return html.slice(0, rawStart) + middle + html.slice(rawEnd)
 }
 
 // 매칭이 끝내 실패했을 때, 왜 실패했는지 다음 조사를 위해 콘솔에 실제 원본 조각을 남긴다 — 여기서

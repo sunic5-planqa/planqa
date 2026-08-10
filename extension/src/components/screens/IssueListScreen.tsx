@@ -87,6 +87,9 @@ export function IssueListScreen() {
       dispatch({ type: 'STAGE_ISSUE_EDIT', issueId: issue.id, action: 'edit', editedText: draftText })
       dispatch({ type: 'STOP_EDIT_ISSUE' })
       setDraft(null)
+      // 저장 성공 시 다음 이슈로 자동 이동 — 마지막 이슈였으면 NAVIGATE_ISSUE가 범위를 clamp해서
+      // 그냥 제자리에 머문다(appReducer.ts), 별도 경계 처리 필요 없음.
+      dispatch({ type: 'NAVIGATE_ISSUE', direction: 'next' })
 
       try {
         await api.updateIssue(issue.id, { action: 'edit', edited_text: draftText })

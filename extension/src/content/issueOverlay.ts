@@ -83,12 +83,28 @@ function isInsideOverlayNode(node: Node): boolean {
   return !!element?.closest(`.${HIGHLIGHT_CLASS}, .${TOOLTIP_CLASS}`)
 }
 
+// input_text가 목록/표 항목에서 나온 경우, 백엔드가 마크다운으로 평탄화할 때 넣은 "- " 불릿
+// 접두사나 "| 셀 | 셀 |" 표 구분자가 모델이 그대로 인용한 원문 텍스트에 섞여 들어온다(모델은 자기가
+// 받은 청크를 verbatim으로 인용하도록 지시받음 — bundled_screen_hybrid.py). 이 기호들은 실제
+// 렌더링된 페이지의 <li>/<td> 텍스트엔 애초에 존재하지 않아서(순수 항목 내용뿐), 리터럴로 매칭하면
+// 목록/표에서 나온 이슈는 거의 항상 못 찾는다 — 매칭 전에 걷어낸다.
+function stripMarkdownArtifacts(input: string): string {
+  return input
+    .split('\n')
+    .map((line) => line.replace(/^\s*-\s+/, '').replace(/^\s*\|\s*/, '').replace(/\s*\|\s*$/, ''))
+    .join('\n')
+}
+
 // input_text의 공백/줄바꿈을 \s+로 느슨하게 치환한 정규식을 만든다 — 백엔드가 마크다운으로 평탄화하며
 // 공백을 한 칸으로 접었던 것과 실제 렌더링된 HTML의 공백(여러 칸, 줄바꿈 등)이 완전히 같지 않아도
 // 매칭되게 하기 위함. 이게 없으면 문단 텍스트조차 사소한 공백 차이로 못 찾는 경우가 많았다.
 function buildLooseTextRegex(input: string): RegExp {
-  const escaped = input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(escaped.replace(/\s+/g, '\\s+'))
+  const escaped = stripMarkdownArtifacts(input).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // 공백을 포함한 파이프 전체("공백* \| 공백*")를 한 단위로 0개 이상 공백으로 느슨화한다 — 셀 사이
+  // 구분자가 실제 DOM/저장 HTML엔 아예 없을 수도 있어서, 파이프 양옆 공백까지 같이 선택적으로
+  // 만들어야 한다(따로 처리하면 "\s+ \s* \s+"처럼 여전히 공백 1개 이상을 강제하게 된다).
+  const loosened = escaped.replace(/\s*\\\|\s*/g, '\\s*')
+  return new RegExp(loosened.replace(/\s+/g, '\\s+'))
 }
 
 interface TextSpan {

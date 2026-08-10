@@ -8,6 +8,7 @@ const ISSUE: OverlayIssue = {
   criteria: '용어 및 단어의 일관성',
   reason: '테스트용 이유',
   suggestion: '4사만 지원, 페이코 미지원',
+  location: '결제 수단',
 }
 
 const ORIGINAL_PAGE_ID = '482910'
@@ -83,6 +84,35 @@ describe('applyIssueOverlay', () => {
 
     expect(result).toEqual({ matched: 1, total: 1 })
     expect(document.querySelector('.sunnic-issue-highlight')?.textContent).toBe('3사만 지원, 페이코 미지원')
+  })
+
+  it('falls back to highlighting the location heading when input_text has no match (e.g. missing-info issues)', () => {
+    // "정보 누락(MI)" 같은 이슈는 애초에 원문에 없는 걸 지적하니 input_text로 찾을 대상 자체가
+    // 없다 — 그럴 때도 "다음"으로 넘기면 문서가 스크롤돼야 어디를 고쳐야 하는지 알 수 있다.
+    document.body.innerHTML =
+      '<main><h2>6. 프로덕트 기능</h2><h3>6-1. 메인 배너 (캐러셀)</h3><p>최대 5개 슬라이드로 구성.</p></main>'
+    const issue: OverlayIssue = {
+      ...ISSUE,
+      input_text: '자동 슬라이드 전환 간격',
+      location: '6. 프로덕트 기능 > 6-1. 메인 배너 (캐러셀)',
+    }
+
+    const result = applyIssueOverlay([issue])
+
+    expect(result).toEqual({ matched: 1, total: 1 })
+    const mark = document.querySelector('.sunnic-issue-highlight')
+    expect(mark?.textContent).toBe('6-1. 메인 배너 (캐러셀)')
+    expect(mark?.closest('h3')).not.toBeNull()
+  })
+
+  it('reports 0 matched when neither input_text nor the location heading exist in the document', () => {
+    document.body.innerHTML = '<main><h2>다른 제목</h2></main>'
+    const issue: OverlayIssue = { ...ISSUE, input_text: '문서에 없는 문구', location: '문서에 없는 제목' }
+
+    const result = applyIssueOverlay([issue])
+
+    expect(result).toEqual({ matched: 0, total: 1 })
+    expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
   })
 
   it('wraps every matching issue at once, not just one', () => {

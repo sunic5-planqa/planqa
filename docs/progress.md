@@ -1266,3 +1266,29 @@ Atlassian 연동으로 실제 페이지(`gy30356635.atlassian.net`, pageId 22954
 
 - 실제 사용 중 체감이 여전히 느리면 `_ESTIMATED_DURATION_SECONDS`를 더 낮추거나, 문서 길이에 비례한
   동적 추정으로 바꾸는 것도 고려할 수 있음(지금은 데이터 포인트가 하나뿐이라 고정 상수로 유지).
+
+## 2026-08-10 — Overview "다음/에러" 클릭 시 일부 이슈에서 문서가 안 움직이던 버그 수정
+
+"오버뷰에서 다음을 눌렀을 때 2개는 움직이는데 단어 누락 같은 에러는 안 움직여"라는 보고. 원인은
+`wrapIssue()`가 `issue.input_text`를 문서 안에서 찾아 `<mark>`로 감싸는데, **"정보 누락(MI)" 같은
+이슈는 애초에 원문에 없는 걸 지적**하므로 `input_text`로 찾을 매치 대상 자체가 없어서 항상 매칭
+실패 → 하이라이트가 생성 안 됨 → `scrollToIssue()`가 감쌀 `<mark>`를 못 찾아 스크롤도 안 됨. 정식
+`range`/`insert_range` 프레임 렌더링(design spec에서 설계만 하고 아직 구현 안 한 부분, 2026-08-09
+`frame_type` 계산 항목 참고)이 아직 없어서 생긴 공백.
+
+- **`extension/src/content/messages.ts`**: `OverlayIssue`에 `location` 필드 추가(`IssueResponse`엔
+  이미 있었지만 content script로 안 넘어가고 있었음).
+- **`extension/src/hooks/useIssueOverlaySync.ts`**: `location`도 같이 전달하도록 매핑 갱신.
+- **`extension/src/content/issueOverlay.ts`**: `wrapIssue()`가 `input_text` 매칭에 실패하면
+  `wrapIssueByLocationHeading()`으로 폴백 — `issue.location`(예: "6. 프로덕트 기능 > 6-1. 메인 배너
+  (캐러셀)")의 가장 안쪽 위계와 텍스트가 일치하는 제목(h1~h6)을 찾아 그 제목 자체를 감싼다.
+  `location`은 `htmlToChapterMarkdown`이 만든 헤딩 텍스트 그대로라 실제 문서 제목과 일치해야 정상.
+  클릭 핸들러 부착 로직을 `attachIssueMarkHandlers()`로 뽑아 기존 경로/폴백 경로가 공유하도록 정리.
+  - **범위 제한**: 이번 수정은 "스크롤·클릭할 대상이 하나는 있게" 하는 최소 안전망이고, 실제
+    range/insert_range 시각적 프레임(구간 전체를 감싸는 등)은 여전히 미구현 — 그건 별도 작업.
+- 검증: 신규 테스트 2개(제목 폴백 성공/실패 케이스) 추가, 확장 70개 전부 통과, lint/tsc/build 클린.
+
+### Next
+
+- range/insert_range의 실제 시각적 프레임(구간 전체 하이라이트) 구현은 여전히 남은 작업.
+- 사용자 재검증 대기.

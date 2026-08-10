@@ -159,6 +159,11 @@ export function IssueListScreen() {
         )}
 
         <div className="issue-detail-card">
+          <p className="issue-location">
+            {issue.location}
+            {issue.related_location && <> ↔ {issue.related_location}</>}
+          </p>
+
           <div className="issue-detail-block">
             <span className="issue-detail-label">입력내용</span>
             <p className="issue-detail-value">{issue.input_text}</p>

@@ -444,3 +444,59 @@ def test_run_review_sync_drops_mi_false_positive_but_keeps_other_issues(monkeypa
     assert [issue.rule_id for issue in result.issues] == ["TC-01"]
     assert len(verify_calls) == 1
     assert _TEST_DOCUMENT in verify_calls[0]
+
+
+def _issue(rule_id: str, location: str, original_text: str | None) -> qa_jobs.ReviewIssue:
+    return qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id=rule_id,
+        location=location,
+        description="d",
+        original_text=original_text,
+        rationale="r",
+    )
+
+
+# 같은 문구(위치+인용문)에 서로 다른 카테고리의 룰이 동시에 걸리는 경우(실사용 중 확인됨 — "용어
+# 오용"과 "상위 목표와의 정합성"이 완전히 같은 입력내용을 가리킴), 더 시급한 카테고리 하나만 남긴다.
+def test_dedupe_conflicting_categories_keeps_the_higher_priority_one() -> None:
+    rulebook = qa_jobs._load_rulebook()
+    tm_issue = _issue("TM-01", "6. FAQ", "Q. 당일 배송은 어떤 지역에서 가능한가요?")
+    ga_issue = _issue("GA-01", "6. FAQ", "Q. 당일 배송은 어떤 지역에서 가능한가요?")
+
+    kept = qa_jobs._dedupe_conflicting_categories((tm_issue, ga_issue), rulebook)
+
+    assert [issue.rule_id for issue in kept] == ["GA-01"]
+
+
+def test_dedupe_conflicting_categories_keeps_higher_priority_regardless_of_input_order() -> None:
+    rulebook = qa_jobs._load_rulebook()
+    ga_issue = _issue("GA-01", "6. FAQ", "같은 문구")
+    tm_issue = _issue("TM-01", "6. FAQ", "같은 문구")
+
+    kept = qa_jobs._dedupe_conflicting_categories((ga_issue, tm_issue), rulebook)
+
+    assert [issue.rule_id for issue in kept] == ["GA-01"]
+
+
+def test_dedupe_conflicting_categories_keeps_both_when_location_or_text_differs() -> None:
+    rulebook = qa_jobs._load_rulebook()
+    a = _issue("TM-01", "6. FAQ", "문구 A")
+    b = _issue("GA-01", "7. 마일스톤", "문구 A")
+    c = _issue("TC-01", "6. FAQ", "문구 B")
+
+    kept = qa_jobs._dedupe_conflicting_categories((a, b, c), rulebook)
+
+    assert {issue.rule_id for issue in kept} == {"TM-01", "GA-01", "TC-01"}
+
+
+def test_dedupe_conflicting_categories_never_collapses_issues_without_a_quote() -> None:
+    # MI(정보 누락)처럼 인용문이 없는 이슈는 "같은 문구"인지 판단할 근거가 없어 손대지 않는다.
+    rulebook = qa_jobs._load_rulebook()
+    a = _issue("MI-01", "6. FAQ", None)
+    b = _issue("MI-02", "6. FAQ", None)
+
+    kept = qa_jobs._dedupe_conflicting_categories((a, b), rulebook)
+
+    assert {issue.rule_id for issue in kept} == {"MI-01", "MI-02"}

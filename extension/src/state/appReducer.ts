@@ -12,7 +12,7 @@ export type Action =
   | { type: 'SELECT_ISSUE_BY_ID'; issueId: string }
   | { type: 'START_EDIT_ISSUE'; issueId: string }
   | { type: 'STOP_EDIT_ISSUE' }
-  | { type: 'STAGE_ISSUE_EDIT'; issueId: string; action: IssueAction; editedText?: string }
+  | { type: 'STAGE_ISSUE_EDIT'; issueId: string; action: IssueAction; target?: 'primary' | 'related'; editedText?: string }
   | { type: 'SET_ERROR'; error: string | null }
   | { type: 'CONFLUENCE_DETECT_START' }
   | { type: 'CONFLUENCE_DETECTED'; title: string; markdown: string }
@@ -64,14 +64,18 @@ export function appReducer(state: AppState, action: Action): AppState {
     case 'STOP_EDIT_ISSUE':
       return { ...state, editingIssueId: null }
 
-    case 'STAGE_ISSUE_EDIT':
-      return {
-        ...state,
-        issueEdits: {
-          ...state.issueEdits,
-          [action.issueId]: { action: action.action, editedText: action.editedText },
-        },
-      }
+    case 'STAGE_ISSUE_EDIT': {
+      // target이 'related'면 relatedEditedText만 갱신하고 editedText(첫 번째 위치)는 기존 값을
+      // 그대로 유지한다(반대도 마찬가지) — 두 위치를 독립적으로 편집·저장할 수 있어야 하므로 한
+      // 쪽을 저장할 때 다른 쪽에 저장해둔 걸 지워버리면 안 된다.
+      const existing = state.issueEdits[action.issueId]
+      const target = action.target ?? 'primary'
+      const updated =
+        target === 'related'
+          ? { action: action.action, editedText: existing?.editedText, relatedEditedText: action.editedText }
+          : { action: action.action, editedText: action.editedText, relatedEditedText: existing?.relatedEditedText }
+      return { ...state, issueEdits: { ...state.issueEdits, [action.issueId]: updated } }
+    }
 
     case 'SET_ERROR':
       return { ...state, error: action.error }

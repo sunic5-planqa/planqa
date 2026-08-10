@@ -21,6 +21,54 @@ describe('appReducer', () => {
   })
 
 
+  // 관계형(LG/LF/GA) 이슈는 두 위치를 독립적으로 편집·저장할 수 있어야 한다 — 한쪽을 저장할 때
+  // 다른 쪽에 이미 저장해둔 걸 지워버리면 안 된다.
+  it('STAGE_ISSUE_EDIT with target "related" keeps the previously staged primary edit', () => {
+    const staged = appReducer(initialAppState, {
+      type: 'STAGE_ISSUE_EDIT',
+      issueId: 'issue-1',
+      action: 'edit',
+      editedText: '첫 번째 위치 수정본',
+    })
+
+    const state = appReducer(staged, {
+      type: 'STAGE_ISSUE_EDIT',
+      issueId: 'issue-1',
+      action: 'edit',
+      target: 'related',
+      editedText: '두 번째 위치 수정본',
+    })
+
+    expect(state.issueEdits['issue-1']).toEqual({
+      action: 'edit',
+      editedText: '첫 번째 위치 수정본',
+      relatedEditedText: '두 번째 위치 수정본',
+    })
+  })
+
+  it('STAGE_ISSUE_EDIT with target "primary" (default) keeps a previously staged related edit', () => {
+    const staged = appReducer(initialAppState, {
+      type: 'STAGE_ISSUE_EDIT',
+      issueId: 'issue-1',
+      action: 'edit',
+      target: 'related',
+      editedText: '두 번째 위치 수정본',
+    })
+
+    const state = appReducer(staged, {
+      type: 'STAGE_ISSUE_EDIT',
+      issueId: 'issue-1',
+      action: 'edit',
+      editedText: '첫 번째 위치 수정본',
+    })
+
+    expect(state.issueEdits['issue-1']).toEqual({
+      action: 'edit',
+      editedText: '첫 번째 위치 수정본',
+      relatedEditedText: '두 번째 위치 수정본',
+    })
+  })
+
   it('CONFLUENCE_DETECTED sets title, markdown, and status', () => {
     const state = appReducer(initialAppState, {
       type: 'CONFLUENCE_DETECTED',

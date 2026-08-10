@@ -115,26 +115,23 @@ def _build_tier_groups(rulebook: RuleBook) -> list[tuple[str, str, list[tuple[st
 
 def _categories_for_progress(rulebook: RuleBook, progress: int) -> tuple[list[ProgressCategoryOut], str | None]:
     # No per-category completion signal exists (see docs/adr/0001-...), so this is still a
-    # cosmetic checklist derived from the same fake progress % the ticker computes. But
-    # bundled_screen_hybrid.review_document() (2026-08-10 재벤더링) runs its two passes
-    # genuinely *sequentially* — Paragraph, then Document — unlike the old category_screen
-    # structure's 4 concurrent tiers, which is why that version made every group advance in
-    # lockstep. Now that execution really is one-group-then-the-next, fill each group's own
-    # fraction of the overall fake progress in turn instead, so the checklist tracks the
-    # real pass order (Paragraph fills to 100% before Document starts moving at all).
+    # cosmetic checklist derived from the same fake progress % the ticker computes. Briefly
+    # (right after the bundled_screen_hybrid re-sync, before its own follow-up parallelization
+    # landed upstream) the two passes ran strictly sequentially and this filled Paragraph to
+    # 100% before Document moved at all — but review-agent's own "perf: run bundled_screen_
+    # hybrid's 2 passes concurrently" update (2026-08-10) means they're back to running at the
+    # same time via ThreadPoolExecutor, so every group has to advance in lockstep again, same
+    # reasoning as the original 4-tier-concurrent version of this function.
     groups = _build_tier_groups(rulebook)
     if not groups:
         return [], None
 
     fraction = min(max(progress / 100, 0.0), 1.0)
-    per_group_fraction = 1.0 / len(groups)
 
     out: list[ProgressCategoryOut] = []
     current_category: str | None = None
-    for group_index, (group_key, group_label, items) in enumerate(groups):
-        group_start = group_index * per_group_fraction
-        group_fraction = min(max((fraction - group_start) / per_group_fraction, 0.0), 1.0)
-        done_count = len(items) if progress >= 100 else int(group_fraction * len(items))
+    for group_key, group_label, items in groups:
+        done_count = len(items) if progress >= 100 else int(fraction * len(items))
 
         item_out: list[CategoryItemOut] = []
         for idx, (item_key, item_label) in enumerate(items):
@@ -231,13 +228,12 @@ def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue:
     )
 
 
-# 20s는 4-tier 동시 실행(category_screen) 시절 실측(66.1초)에 맞춰 잡은 값이었다 — 2026-08-10
-# bundled_screen_hybrid 재벤더링으로 2패스 순차 실행이 되면서 동시성 이점이 없어졌고, 각 호출
-# 프롬프트에 룰 텍스트+퓨샷 예시가 통째로 들어가 개별 호출도 무거워져서, 실측 소요 시간이
-# 120.3초로(DOC-001, Claude Haiku→Sonnet) 거의 2배가 됐다 — 옛날 상수 그대로 두면 진행률이
-# 완료 시점보다 한참 전에 90%에 도달해 그 뒤로 오래 멈춰 있는 것처럼 보인다. 새 실측치 기준으로
-# 다시 잡음 — 35s면 t=120s에 e^(-120/35)≈0.032, 진행률 90*(1-0.032)≈87%.
-_ESTIMATED_DURATION_SECONDS = 35.0
+# 20s → 4-tier 동시 실행(category_screen) 시절 실측(66.1초) 기준. bundled_screen_hybrid로
+# 재벤더링한 직후엔 2패스가 순차 실행이라 120.3초로 늘어나서 35s로 잠깐 올렸었는데, review-agent가
+# 곧이어 그 2패스를 다시 동시 실행으로 병렬화해서(2026-08-10) 실측이 63.1초로 원래 값 근처로
+# 돌아왔다 — 20s로 원복(t=63.1s일 때 진행률 ≈86%, 35s로 두면 이번엔 반대로 완료 훨씬 전에 90%를
+# 넘겨 오차가 커짐).
+_ESTIMATED_DURATION_SECONDS = 20.0
 
 
 async def _tick_progress(job_id: str, started_at: datetime) -> None:

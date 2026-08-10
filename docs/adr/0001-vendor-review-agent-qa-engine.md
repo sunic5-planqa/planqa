@@ -121,3 +121,28 @@ of curated violation/exception examples). Re-vendored the same file set as befor
   imports `bundled_screen_hybrid.review_document` directly (same as it did for `category_screen`
   before) and never touches upstream's `STRUCTURES` registry, but `structures/__init__.py` is still
   kept (updated to point at the new module) purely for diffability.
+
+## Update — 2026-08-10 re-sync: bundled_screen_hybrid's 2 passes parallelized
+
+Same day, immediate follow-up upstream (`sunic5-planqa/planqa-agent` PRs #23–#25): the Paragraph and
+Document passes — sequential as of the update above — now run concurrently via `ThreadPoolExecutor`
+(falls back to a direct call when only one pass is actually active, skipping thread-pool overhead).
+
+- **`instrumentation.isolate_client(llm, *, key=None)`** changed shape: calls `llm.isolate(key)` when
+  the client defines one (test doubles that need to route scripted responses by branch identity), else
+  falls back to `copy.copy(llm)` + a fresh `usage` list for real backends. **This backend's
+  `AnthropicClient` needed zero changes** — the `copy.copy()` fallback already does the right thing
+  (shares the underlying `anthropic.Anthropic` HTTP client by reference, isolates only the usage-
+  tracking list), and `qa_jobs.py::_run_review_sync` already just constructs plain `AnthropicClient`
+  instances (simplified in the update above, once `clone()` disappeared) — no `isolate()` override
+  needed there either.
+- `qa_jobs.py::_categories_for_progress` reverted from "fill Paragraph to 100% before Document starts"
+  back to lockstep (all groups advance together) — the sequential-fill logic added in the previous
+  update was correct for that update's sequential execution, but wrong again now that the two passes
+  are concurrent. Re-measured live against DOC-001 (Claude Haiku→Sonnet): 63.1s (vs. 120.3s sequential,
+  vs. 66.1s under the original 4-tier-concurrent `category_screen`) — `_ESTIMATED_DURATION_SECONDS`
+  reverted 35s → 20s to match.
+- Vendored test double (`tests/qa_engine/review_agent/conftest.py::ScriptedLLM`) swapped its dead
+  `tier_responses`/`clone()` shape for `keyed_responses`/`isolate()`, matching the new
+  `isolate_client` contract — `isolate()` now raises a clear error if called with a key but no
+  `keyed_responses` configured, instead of silently falling back to the shared (racy) instance.

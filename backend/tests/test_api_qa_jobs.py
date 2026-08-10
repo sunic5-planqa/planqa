@@ -182,31 +182,21 @@ def test_frame_type_mapping(category: str, related_location: str | None, expecte
     assert qa_jobs._frame_type(category, related_location) == expected
 
 
-# bundled_screen_hybrid.review_document()는 Paragraph 패스 → Document 패스 순서로 진짜
-# 순차 실행이라(2026-08-10 재벤더링, category_screen의 4-tier 동시 실행과 다름), 진행률
-# 체크리스트도 두 그룹이 같이 차오르는 대신 실행 순서대로 한 그룹씩 채워야 한다.
-def test_categories_for_progress_fills_paragraph_before_document_starts() -> None:
-    rulebook = qa_jobs._load_rulebook()
-
-    categories, _ = qa_jobs._categories_for_progress(rulebook, 25)
-
-    assert [group.key for group in categories] == ["paragraph", "document"]
-    paragraph, document = categories
-    paragraph_fraction = sum(1 for item in paragraph.items if item.status == "done") / len(paragraph.items)
-    # 절반 지점(진행률 50)까지가 Paragraph 몫이라, 25%면 Paragraph는 대략 절반쯤 찼고 Document는
-    # 아직 하나도 안 끝나 있어야 한다 — 예전 버전(모든 그룹 동시 진행)이라면 둘 다 비슷했을 것.
-    assert 0.2 < paragraph_fraction < 0.8
-    assert all(item.status != "done" for item in document.items)
-
-
-def test_categories_for_progress_finishes_paragraph_before_document_moves_at_all() -> None:
+# bundled_screen_hybrid.review_document()의 두 패스(Paragraph/Document)는 다시 동시 실행이라
+# (2026-08-10 review-agent 자체 병렬화 업데이트 — 잠깐 순차였다가 되돌아감), 진행률 체크리스트도
+# 한 그룹씩 순서대로가 아니라 모든 그룹이 같은 속도로 같이 차올라야 한다.
+def test_categories_for_progress_advances_every_group_together() -> None:
     rulebook = qa_jobs._load_rulebook()
 
     categories, _ = qa_jobs._categories_for_progress(rulebook, 50)
 
-    paragraph, document = categories
-    assert all(item.status == "done" for item in paragraph.items)
-    assert all(item.status != "done" for item in document.items)
+    assert len(categories) > 1
+    done_fractions = [
+        sum(1 for item in group.items if item.status == "done") / len(group.items) for group in categories
+    ]
+    # 그룹마다 아이템 개수가 달라 정수 반올림 오차는 있지만, 전부 비슷한 진행률(≈0.5)이어야 한다 —
+    # 순차 실행 버전이라면 한 그룹은 1.0(완료), 나머지는 0.0(대기)이었을 것.
+    assert all(abs(fraction - 0.5) < 0.34 for fraction in done_fractions)
 
 
 def test_categories_for_progress_marks_everything_done_at_100() -> None:

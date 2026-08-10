@@ -21,10 +21,32 @@ export function htmlToChapterMarkdown(pageTitle: string, storageHtml: string): s
     }
 
     if (node.tagName === 'UL' || node.tagName === 'OL') {
+      // 쉼표로 한 줄에 이어붙이면(예전 방식) 실제 문서엔 없는 문구를 만들어내는 셈이라, QA 엔진이
+      // 그 가짜 텍스트를 그대로 인용하면 저장 단계에서 원문을 영영 찾을 수 없다(DOC-001 "목표
+      // 런칭일:, QA 기간:" 케이스로 실제 확인). review-agent의 document.py도 `- `로 시작하는 줄을
+      // 하나의 문장 단위(불릿)로 인식하도록 짜여 있어서, 항목마다 별도 줄의 마크다운 불릿으로 남긴다.
       const items = Array.from(node.querySelectorAll('li'))
         .map((li) => collapseWhitespace(li.textContent ?? ''))
         .filter(Boolean)
-      if (items.length) lines.push('', items.join(', '))
+      if (items.length) {
+        lines.push('')
+        for (const item of items) lines.push(`- ${item}`)
+      }
+      continue
+    }
+
+    if (node.tagName === 'TABLE') {
+      // 분기가 없으면 아래 fallback으로 떨어져서 표 전체 textContent를 셀 구분자 하나 없이 그냥
+      // 이어붙여버린다(목록의 ", " 이어붙이기보다 더 심함 — 그마저도 없음) — 실제 문서엔 없는
+      // 문구가 만들어지는 건 똑같다. document.py의 `_TABLE_ROW_LINE`(`|...|`)이 행 하나를 문장
+      // 단위로 인식하도록 짜여 있어서, 행마다 마크다운 표 문법으로 별도 줄에 남긴다.
+      const rows = Array.from(node.querySelectorAll('tr'))
+        .map((tr) => Array.from(tr.querySelectorAll('th, td')).map((cell) => collapseWhitespace(cell.textContent ?? '')))
+        .filter((cells) => cells.some(Boolean))
+      if (rows.length) {
+        lines.push('')
+        for (const cells of rows) lines.push(`| ${cells.join(' | ')} |`)
+      }
       continue
     }
 

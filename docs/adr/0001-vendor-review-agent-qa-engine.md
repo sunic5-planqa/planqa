@@ -86,3 +86,38 @@ profile-based `pipeline.review_document(..., profile)` as this backend's call ta
   document/model — see progress.md's 2026-08-09 investigation into that discrepancy, still not
   fully explained, but the corrected `TIER_CATEGORIES` and category-based screening both plausibly
   contribute).
+
+## Update — 2026-08-10 re-sync to `bundled_screen_hybrid`
+
+Upstream swapped its default structure again — `structures/category_screen.py` is gone, replaced by
+`structures/bundled_screen_hybrid.py` (plus a new sibling data file, `structures/fewshot_bank.py`,
+of curated violation/exception examples). Re-vendored the same file set as before, minus `category_screen.py`/
+`llm/gemini.py` (genuinely unused — this backend calls Anthropic directly, not upstream's env-var-driven
+`llm/factory.py`), plus `structures/fewshot_bank.py`:
+
+- **Only two passes now, not four concurrent tiers**: `review_document()` runs a Paragraph pass (most
+  categories) then a Document pass (relational categories LG/LF/GA, plus two specific absence-check
+  rules LG-01/TC-02) — sequentially, not via `ThreadPoolExecutor`. **`LLMClient.clone()` no longer
+  exists at all** — the `_ScopedClient` workaround from the last re-sync (see update above) is gone;
+  `qa_jobs.py` now constructs `AnthropicClient` directly.
+- **`_categories_for_progress` reworked to match** — the old 4-group (Document/Logical Unit/Paragraph/
+  Sentence) cosmetic checklist no longer corresponded to anything real (Logical Unit and Sentence
+  aren't queried by this structure at all). Replaced with 2 groups (Paragraph/Document, split by the
+  same `_RANGE_CATEGORIES` set `_frame_type` already uses) that fill **in real execution order**
+  (Paragraph to 100% before Document starts moving) rather than in lockstep — lockstep was specifically
+  built for the *concurrent* 4-tier case, which no longer applies now that execution really is
+  sequential.
+- **`llm/base.py` gained built-in JSON repair** (`_repair_json` — fixes stray backslashes and trailing
+  commas inside a model's JSON response) and `AnthropicClient.complete_json` now retries once on a
+  malformed/empty response instead of failing the whole call. This directly addresses the "Paragraph
+  tier 위계에서 Claude가 malformed JSON 응답" issue flagged as a live, unresolved observation in
+  progress.md's 2026-08-09 Claude-switch entry.
+- **`document.py` gained `resolve_reported_level()`** — confirm can now report a finding at a *coarser*
+  level than the chunk it was actually scoped to (e.g. a Paragraph-tier candidate whose real scope is
+  the whole Logical Unit), never finer. `_to_issue_record` needed no change — it already just uses
+  whatever `location`/`level` the vendored `Issue` carries.
+- Not vendored (not on this backend's import path): `cli.py`, `run_stats.py`, `diff_report.py`,
+  `eval_service_notify.py`, `llm/factory.py`, `llm/ollama.py`, `models/gemini_lite/*` — this backend
+  imports `bundled_screen_hybrid.review_document` directly (same as it did for `category_screen`
+  before) and never touches upstream's `STRUCTURES` registry, but `structures/__init__.py` is still
+  kept (updated to point at the new module) purely for diffability.

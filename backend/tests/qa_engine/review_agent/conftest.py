@@ -29,7 +29,13 @@ class ScriptedLLM(LLMClient):
     clone(tier=...) for tests that exercise category_screen.review_document's concurrent
     tier loop, where call order across tiers is no longer deterministic — a None/missing
     entry means that tier's clone should see no calls at all (mirrors a tier whose screening
-    pass found nothing, so confirm is never invoked for it)."""
+    pass found nothing, so confirm is never invoked for it).
+
+    tier_responses/clone() are unused dead weight even in upstream's own conftest.py as of
+    the bundled_screen_hybrid re-sync (2026-08-10) — category_screen (the only structure
+    that ever called clone() for concurrent per-tier dispatch) is gone, and no current test
+    exercises this path. Kept anyway per the vendoring policy (docs/adr/0001-...): a diffable
+    copy of upstream, not reshaped to drop what upstream itself hasn't cleaned up yet."""
 
     def __init__(self, responses: list[Any] | None = None, *, tier_responses: list[Any] | None = None) -> None:
         self.model = "fake"

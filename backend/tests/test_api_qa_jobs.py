@@ -20,11 +20,10 @@ _TEST_DOCUMENT = (
     "페이코, 삼성페이 추가 연동을 목표로 한다.\n"
 )
 
-# category_screen's screen prompt only lists "{2-letter category}: {label}" lines (no rule
-# text/id — that's confirm's job), while its confirm prompt indents each candidate rule as
-# "    {rule_id}: {text} (exception: ...)" — hence the two different regexes below.
-_CATEGORY_RE = re.compile(r"^([A-Z]{2}):", re.MULTILINE)
-_RULE_ID_RE = re.compile(r"^\s*([A-Z]{2}-\d{2}):", re.MULTILINE)
+# bundled_screen_hybrid's screen AND confirm prompts both embed each rule via _hybrid_block
+# as a "  {rule_id} ({category_label}): {text}" line — same regex extracts the first rule
+# mentioned in either phase's prompt.
+_RULE_ID_LINE_RE = re.compile(r"^\s*([A-Z]{2}-\d{2})\s*\(", re.MULTILINE)
 _CHUNK_ZERO_RE = re.compile(r"\[0\] \([^)]*\)\n(.+?)(?:\n\n|\Z)", re.DOTALL)
 
 
@@ -40,8 +39,8 @@ def _clear_review_cache():
 
 class FakeAnthropicClient:
     """Stands in for review_agent's real AnthropicClient — no network call, just enough of a
-    contract (constructor kwargs + complete_json + clone()) to drive the real
-    category_screen/qa_jobs wiring end to end without a live API key."""
+    contract (constructor kwargs + complete_json) to drive the real
+    bundled_screen_hybrid/qa_jobs wiring end to end without a live API key."""
 
     def __init__(
         self, model: str | None = None, api_key: str | None = None, temperature: float = 0.0, max_tokens: int = 8192
@@ -52,30 +51,24 @@ class FakeAnthropicClient:
         self.calls: list[tuple[str, str]] = []
         self.usage: list[CallStats] = []
 
-    def clone(self, *, tier: object | None = None) -> FakeAnthropicClient:
-        # category_screen.review_document() runs tiers concurrently and clones per tier —
-        # this fake routes purely by prompt content, so every clone can safely be the same
-        # kind of instance (a fresh one, so each tier's .calls/.usage stay separate).
-        return FakeAnthropicClient(model=self.model)
-
-    def complete_json(self, *, system: str, prompt: str) -> Any:
+    def complete_json(self, *, system: str, prompt: str, cache_prefix: str | None = None) -> Any:
         self.calls.append((system, prompt))
         self.usage.append(CallStats(elapsed_seconds=0.0, prompt_tokens=None, completion_tokens=None, total_tokens=None))
         if '"summary"' in system:
             return {"summary": "결제 시스템 개선을 다루는 테스트 문서."}
         if '"candidates"' in system:
-            category_match = _CATEGORY_RE.search(prompt)
+            rule_match = _RULE_ID_LINE_RE.search(prompt)
             chunk_match = _CHUNK_ZERO_RE.search(prompt)
-            if not category_match or not chunk_match:
+            if not rule_match or not chunk_match:
                 return {"candidates": []}
             quoted = chunk_match.group(1).strip().splitlines()[0][:30]
             return {
                 "candidates": [
-                    {"chunk_index": 0, "category": category_match.group(1), "quoted_text": quoted, "reason": "테스트 스크리닝 사유"}
+                    {"chunk_index": 0, "rule_id": rule_match.group(1), "quoted_text": quoted, "reason": "테스트 스크리닝 사유"}
                 ]
             }
         if '"verdicts"' in system:
-            rule_match = _RULE_ID_RE.search(prompt)
+            rule_match = _RULE_ID_LINE_RE.search(prompt)
             if not rule_match:
                 return {"verdicts": []}
             return {
@@ -83,10 +76,11 @@ class FakeAnthropicClient:
                     {
                         "index": 0,
                         "violated": True,
-                        "rule_id": rule_match.group(1),
+                        "original_text": "테스트로 주입된 인용문",
                         "description": "테스트로 주입된 위반 설명",
                         "rationale": "테스트로 주입된 위반 사유",
                         "fix_direction": "테스트로 주입된 수정 제안",
+                        "excused": False,
                     }
                 ]
             }
@@ -188,20 +182,31 @@ def test_frame_type_mapping(category: str, related_location: str | None, expecte
     assert qa_jobs._frame_type(category, related_location) == expected
 
 
-# category_screen.review_document()의 4개 위계가 실제로는 동시에 도니까, 진행률 체크리스트도
-# 한 그룹씩 순서대로가 아니라 모든 그룹이 같은 속도로 같이 차올라야 한다(2026-08-10).
-def test_categories_for_progress_advances_every_group_together() -> None:
+# bundled_screen_hybrid.review_document()는 Paragraph 패스 → Document 패스 순서로 진짜
+# 순차 실행이라(2026-08-10 재벤더링, category_screen의 4-tier 동시 실행과 다름), 진행률
+# 체크리스트도 두 그룹이 같이 차오르는 대신 실행 순서대로 한 그룹씩 채워야 한다.
+def test_categories_for_progress_fills_paragraph_before_document_starts() -> None:
+    rulebook = qa_jobs._load_rulebook()
+
+    categories, _ = qa_jobs._categories_for_progress(rulebook, 25)
+
+    assert [group.key for group in categories] == ["paragraph", "document"]
+    paragraph, document = categories
+    paragraph_fraction = sum(1 for item in paragraph.items if item.status == "done") / len(paragraph.items)
+    # 절반 지점(진행률 50)까지가 Paragraph 몫이라, 25%면 Paragraph는 대략 절반쯤 찼고 Document는
+    # 아직 하나도 안 끝나 있어야 한다 — 예전 버전(모든 그룹 동시 진행)이라면 둘 다 비슷했을 것.
+    assert 0.2 < paragraph_fraction < 0.8
+    assert all(item.status != "done" for item in document.items)
+
+
+def test_categories_for_progress_finishes_paragraph_before_document_moves_at_all() -> None:
     rulebook = qa_jobs._load_rulebook()
 
     categories, _ = qa_jobs._categories_for_progress(rulebook, 50)
 
-    assert len(categories) > 1
-    done_fractions = [
-        sum(1 for item in group.items if item.status == "done") / len(group.items) for group in categories
-    ]
-    # 그룹마다 아이템 개수가 달라 정수 반올림 오차는 있지만, 전부 비슷한 진행률(≈0.5)이어야 한다 —
-    # 예전 버전이라면 한 그룹은 1.0(완료), 나머지는 0.0(대기)이었을 것.
-    assert all(abs(fraction - 0.5) < 0.34 for fraction in done_fractions)
+    paragraph, document = categories
+    assert all(item.status == "done" for item in paragraph.items)
+    assert all(item.status != "done" for item in document.items)
 
 
 def test_categories_for_progress_marks_everything_done_at_100() -> None:

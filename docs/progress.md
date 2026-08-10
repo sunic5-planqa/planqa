@@ -1042,4 +1042,48 @@ Replace/Delete뿐이라 항상 객체 프레임, MI는 Insert뿐이라 항상 �
 
 - **Claude가 검증 불가능한 것**: 실제 Chrome에서 QA 진행 화면을 열어 4개 그룹이 실제로 동시에
   체크되는 것처럼 보이는지 확인.
-- `ANTHROPIC_API_KEY` 채워서 Claude 조합 실제 검증하는 건 여전히 남아있음(바로 위 항목과 동일).
+
+## 2026-08-10 — failed job이 "이슈 없음"으로 오인되던 버그 수정 + Claude 조합 실검증
+
+사용자가 실서버에서 QA를 돌렸는데 "발견된 이슈가 없습니다"만 뜬다고 보고 — 확인해보니
+`ANTHROPIC_API_KEY`가 비어있어 job이 시작하자마자 실패(`failed`)하고 있었는데, 폴링 로직이
+`failed`를 `done`과 똑같이 취급해서 그냥 빈 이슈 목록을 불러오고 있었다. 실제로는 "검토 자체가
+실패"인데 화면엔 "문제 없음"처럼 보이는 게 진짜 버그라 같이 고쳤다.
+
+- **`extension/src/hooks/useQAJobPolling.ts`**: `status === 'failed'`일 때 더 이상 `ISSUES_LOADED`로
+  넘어가지 않고, `SET_ERROR`로 명확한 에러 메시지("QA 검토가 실패했습니다. 서버의 API 키 설정을
+  확인해주세요.")를 띄우도록 분리 — `App.tsx`에 이미 있던 전역 `ErrorBanner`가 자동으로 뜬다(새
+  컴포넌트 필요 없었음). `done`일 때만 기존처럼 이슈 목록을 불러옴.
+- **`.env` 정리**: `ANTHROPIC_API_KEY` 줄이 중복(빈 값 하나 + 실제 키 하나)으로 들어가 있어서 빈
+  줄 제거.
+- **실제 Claude(Haiku→Sonnet) 조합으로 DOC-001 검증**: 66.1초, **12개 이슈** — Gemini 조합(22개)
+  보다 훨씬 적고 CLI 기준(6개)에 더 가까워짐, Sonnet 정밀검증이 더 엄격하게 거른다는 가설과 일치.
+  `tier_errors` 1건(Paragraph 위계에서 Claude가 malformed JSON 응답 — 파이프라인이 그 위계만
+  격리하고 나머지 3개 위계는 정상 진행, 설계대로 동작한 것이지 버그 아님) 확인.
+- 검증: 확장 `typecheck`/`lint`/`build`/`vitest` 63개 전부 통과(신규 테스트는 안 붙임 — 이 훅은
+  기존에도 전용 테스트 파일이 없던 컨벤션 유지).
+
+### Next
+
+- **여전히 남은 조사**: 6개(CLI) vs 12개(Claude 서버) 차이가 여전히 존재 — 헤딩 평탄화 버그도 고쳤고
+  모델도 Sonnet으로 정밀화했는데 아직 2배 차이. 문서 자체(fixture DOC-001)와 CLI 실행 당시 정확히
+  같은 조건이었는지(모델/프롬프트 버전 등) 재확인이 다음 단계로 남음.
+- Paragraph 위계의 malformed JSON 이슈가 반복되면 Claude 쪽 응답 파싱(`parse_json_response`)이나
+  프롬프트 쪽에 더 견고한 처리가 필요할 수 있음 — 지금은 1회성이라 관찰만.
+
+## 2026-08-10 — PR #15 `/code-review` 결과 반영
+
+머지 전 `/code-review`를 돌려서 8개 지적 발견. 그중 우리 코드(`qa_jobs.py`)에 해당하는 진짜 버그
+1개만 고치고, 나머지 6개는 전부 벤더링해온 파일(`review_agent/**`, ADR 0001 정책상 upstream과
+diffable하게 그대로 두기로 한 영역) 안의 지적이라 로컬에서 고치지 않기로 판단 — 대신 upstream에
+알려야 할 사안인지는 별도 검토.
+
+- **고침**: `_ScopedClient.clone()`(qa_jobs.py)이 원본 인스턴스의 `temperature`/`max_tokens`를 안
+  물려주고 매번 기본값으로 리셋되던 버그 — 지금 당장은 둘 다 항상 기본값이라 실제 동작에 영향 없었지만,
+  나중에 `max_tokens`를 조정하면 병렬 실행되는 clone들만 조용히 무시하게 될 뻔했음. 테스트 더블
+  `FakeAnthropicClient`도 `_temperature`/`_max_tokens` 속성을 갖도록 맞춤.
+- **판단 보류(벤더링 정책)**: `pipeline.review_document()`가 이제 죽은 코드라는 지적, `category_screen.py`의
+  category/rule_id 매칭이 완전일치라는 지적, 벤더링한 테스트 파일들의 docstring/순환 검증 등 — 전부
+  `review_agent/**` 안의 upstream 코드라 로컬에서 고치지 않음. `pipeline.review_document()` 건은
+  실제로 유효한 지적이라 `sunic5-planqa/planqa-agent`에 이슈로 알릴지 다음에 검토.
+- 검증: 백엔드 85개 전부 통과, ruff 클린. 확장 63개 전부 통과.

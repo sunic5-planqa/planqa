@@ -23,9 +23,13 @@ from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import (
     Issue as ReviewIssue,
 )
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import (
+    Level,
+)
 from sunnic_backend.qa_engine.review_agent.structures.bundled_screen_hybrid import (
     review_document,
 )
+from sunnic_backend.qa_engine.review_agent.tiers import TIER_CATEGORIES
 from sunnic_backend.storage.store import store
 
 router = APIRouter(tags=["qa-jobs"])
@@ -84,23 +88,30 @@ def _frame_type(category: str, related_location: str | None) -> FrameType:
     return FrameType.OBJECT
 
 
-# SCREEN 02 groups categories by review pass. bundled_screen_hybrid.review_document()
-# (2026-08-10 재벤더링) only runs two passes now — Paragraph (most categories) and Document
-# (relational categories that need whole-document visibility, same set as _RANGE_CATEGORIES
-# above) — replacing the old 4-tier structure (Document/Logical Unit/Paragraph/Sentence),
-# where Logical Unit and Sentence aren't queried by this structure at all anymore. Reusing
-# _RANGE_CATEGORIES here (rather than a second frozenset) keeps this in lockstep with
-# _frame_type's own notion of "relational" automatically.
+# SCREEN 02 groups categories by review 위계 (tier), not by API call — bundled_screen_hybrid.
+# review_document() only ever *dispatches* two passes, Paragraph and Document (Level.LOGICAL_UNIT
+# chunks are never sent to the model directly), but a Paragraph-tier finding can still be
+# *promoted* to Level.LOGICAL_UNIT in the reported Issue via resolve_reported_level (confirm names
+# a coarser "level" than the chunk it was given — see bundled_screen_hybrid.py's confirm prompt).
+# So Logical Unit is a real reported outcome even without its own dispatch pass, and rulebook_v1.0.md
+# §2's own tier table (tiers.TIER_CATEGORIES) lists it as covering every category — showing it as a
+# third group here (using that same canonical mapping, not an ad-hoc frozenset) reflects that
+# accurately. A category can legitimately appear in more than one group (e.g. "LG" is reviewable at
+# Document, Logical Unit, and Paragraph tiers all at once per §2) — that's not a display bug.
+#
+# Still cosmetic progress (see docs/adr/0001-...): there's no per-category completion signal, so
+# every group fills at the same fake elapsed-time fraction regardless of which categories are in it.
 #
 # Known imprecision: bundled_screen_hybrid also routes two *individual* rule_ids
 # (tiers.ABSENCE_CHECK_RULE_IDS — LG-01, TC-02) into the Document pass regardless of their
 # category, but this checklist only has per-*category* granularity — so the "TC" item still
-# shows under Paragraph as a whole (accurate for TC-01/03/04/05, technically early for the
-# single rule TC-02) rather than splitting one category across two groups. Not worth the
-# added complexity for a cosmetic, already-fake progress signal (see docs/adr/0001-...).
-_PROGRESS_GROUPS: tuple[tuple[str, str], ...] = (
-    ("paragraph", "Paragraph"),
-    ("document", "Document"),
+# shows under Paragraph/Logical Unit as a whole (accurate for TC-01/03/04/05, technically early
+# for the single rule TC-02) rather than splitting one category across groups. Not worth the
+# added complexity for a cosmetic, already-fake progress signal.
+_PROGRESS_GROUPS: tuple[tuple[str, str, Level], ...] = (
+    ("document", "Document", Level.DOCUMENT),
+    ("logical_unit", "Logical Unit", Level.LOGICAL_UNIT),
+    ("paragraph", "Paragraph", Level.PARAGRAPH),
 )
 
 
@@ -113,12 +124,15 @@ def _category_label_by_prefix(rulebook: RuleBook) -> dict[str, str]:
 
 def _build_tier_groups(rulebook: RuleBook) -> list[tuple[str, str, list[tuple[str, str]]]]:
     # Static per-rulebook structure (doesn't change per job): (group_key, group_label,
-    # [(category_prefix, category_label), ...]) for every pass that actually has categories.
+    # [(category_prefix, category_label), ...]) for every tier that actually has categories.
     labels = _category_label_by_prefix(rulebook)
-    by_group: dict[str, list[tuple[str, str]]] = {"paragraph": [], "document": []}
-    for prefix, label in labels.items():
-        by_group["document" if prefix in _RANGE_CATEGORIES else "paragraph"].append((prefix, label))
-    return [(key, label, by_group[key]) for key, label in _PROGRESS_GROUPS if by_group[key]]
+    groups: list[tuple[str, str, list[tuple[str, str]]]] = []
+    for group_key, group_label, level in _PROGRESS_GROUPS:
+        tier_categories = TIER_CATEGORIES.get(level, ())
+        items = [(prefix, label) for prefix, label in labels.items() if prefix in tier_categories]
+        if items:
+            groups.append((group_key, group_label, items))
+    return groups
 
 
 def _categories_for_progress(rulebook: RuleBook, progress: int) -> tuple[list[ProgressCategoryOut], str | None]:

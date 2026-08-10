@@ -35,3 +35,4 @@ class Issue(BaseModel):
     end: int
     frame_type: FrameType = FrameType.OBJECT
     related_location: str | None = None
+    related_original_text: str | None = None

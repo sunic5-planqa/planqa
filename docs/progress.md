@@ -2066,3 +2066,34 @@ AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(Re
   진단이 가능함 — 아직 원인 자체는 못 찾음, 로그 인프라만 준비된 상태.
 - planqa-agent#29(related_original_text) upstream 대응 대기 — 받으면 재벤더링 + 프론트에 두 번째
   위치 편집 UI 추가 필요.
+
+## 2026-08-11 — planqa-agent 재벤더링(related_original_text) + 관계형 이슈 두 위치 편집 UI
+
+이슈 [#29](https://github.com/sunic5-planqa/planqa-agent/issues/29) 요청이 예상보다 훨씬 빨리
+처리됨(PR [#30](https://github.com/sunic5-planqa/planqa-agent/pull/30), "middle-cost" 등급으로
+직접 분류해서 대응). 재벤더링하고 바로 프론트 편집 UI까지 완성.
+
+- **재벤더링**: `planqa_schemas/schema.py`에 `related_original_text: str | None = None` 필드
+  (related_location과 같은 자리·조건), `bundled_screen_hybrid.py`의 confirm 프롬프트가 관련
+  위치의 정확한 인용문도 요청하도록 보강 + 파싱에서 채움. 순수 필드 추가라(시그니처/모듈명 변경
+  없음) diff는 import 경로 차이 외엔 이거뿐. 벤더링된 테스트(`test_bundled_screen_hybrid.py`)도
+  upstream과 동일하게 2개 갱신(비관계형 카테고리는 무시하는지, 관계형은 채워지는지).
+- **백엔드**: `IssueRecord`/`IssueResponse`에 `related_original_text` 스레딩.
+- **확장 — 두 위치 독립 편집**: `IssueEdit`에 `relatedEditedText` 필드 추가, `STAGE_ISSUE_EDIT`
+  액션에 `target: 'primary' | 'related'` 파라미터 추가해 한쪽을 저장해도 다른 쪽에 이미 저장해둔
+  게 안 지워지게 함. `IssueListScreen.tsx`에 "관련 위치 원문" 블록 신규(관계형 이슈 +
+  related_original_text 있을 때만) — 자체 "오류 수정하기"/저장 흐름을 가짐. 관련 위치는 AI
+  "제안"이 따로 없어서(원문에서 직접 고치는 게 목적) 유사도 LLM 판단 검사는 건너뛰고 로컬 "원래
+  문구가 남아있는지" 체크만 함.
+- **알려진 스코프 제한**: 히스토리 화면(`HistoryExportScreen.tsx`)의 원본/수정본 비교 목록은
+  아직 primary 편집만 보여줌 — related 편집은 반영 안 됨. 편집 중엔 두 위치 중 하나만 동시에
+  열 수 있음(같은 `editingIssueId`를 공유). 저장 후 자동으로 다음 이슈로 넘어가는 동작은 두
+  위치 다 안 고쳐도 그대로 유지 — "이전"으로 돌아와 나머지를 마저 고치면 됨.
+- 테스트: 백엔드 149개(스키마/전달 경로), 벤더링 테스트 8개, 확장 98개(신규: appReducer의
+  STAGE_ISSUE_EDIT 독립성 2개) 전부 통과. typecheck/lint/build 클린.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 GA/LG/LF 이슈에서 "관련 위치 원문" 블록이 정확한 문구로
+  뜨고, 독립적으로 편집·저장되는지 확인 필요.
+- HistoryExportScreen에 related 편집 반영은 다음 과제로 남김.

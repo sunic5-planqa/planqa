@@ -502,4 +502,30 @@ describe('scrollToIssue', () => {
 
     expect(tooltip?.style.top).toBe('146px')
   })
+
+  it('self-corrects the bubble position even if no scroll event ever fires', () => {
+    // 실제로 겪은 버그: 컨플루언스 내부 스크롤 컨테이너 구조에 따라 scrollIntoView가 끝나도
+    // 우리가 잡을 수 있는 'scroll' 이벤트가 안 날 수 있다 — 그러면 말풍선이 클릭 시점(스크롤
+    // 전, 옛 위치)에 영영 고정된다. scroll 이벤트에 의존하지 않는 rAF 기반 재계산이 이걸 잡는다.
+    vi.useFakeTimers()
+    try {
+      applyIssueOverlay([ISSUE])
+      const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
+      if (!mark) throw new Error('mark not found')
+      mark.scrollIntoView = vi.fn()
+      mark.getBoundingClientRect = vi.fn().mockReturnValue({ top: 5, bottom: 20, left: 2, right: 90 } as DOMRect)
+
+      scrollToIssue(ISSUE.id)
+      const tooltip = document.querySelector<HTMLElement>('.sunnic-issue-tooltip')
+      expect(tooltip?.style.top).toBe('26px')
+
+      // scroll settles somewhere else, but no 'scroll' event is ever dispatched.
+      mark.getBoundingClientRect = vi.fn().mockReturnValue({ top: 500, bottom: 520, left: 10, right: 100 } as DOMRect)
+      vi.advanceTimersByTime(800)
+
+      expect(tooltip?.style.top).toBe('526px')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

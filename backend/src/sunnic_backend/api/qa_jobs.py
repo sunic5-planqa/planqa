@@ -113,35 +113,32 @@ def _build_tier_groups(rulebook: RuleBook) -> list[tuple[str, str, list[tuple[st
 
 
 def _categories_for_progress(rulebook: RuleBook, progress: int) -> tuple[list[ProgressCategoryOut], str | None]:
-    # No per-category completion signal exists (see docs/adr/0001-...) — this derives a
-    # plausible-looking checklist from the same fake progress % the ticker already computes,
-    # walking through tiers/categories in order as progress advances. Purely cosmetic; the
-    # real per-tier result only ever lands atomically when review_document() returns.
+    # No per-category completion signal exists (see docs/adr/0001-...), so this is still a
+    # cosmetic checklist derived from the same fake progress % the ticker computes — but
+    # category_screen.review_document() now runs all 4 tiers *concurrently* (2026-08-10
+    # re-sync), not one after another, so every group has to advance in lockstep here too.
+    # Walking through tiers sequentially (the original version of this function) would show
+    # e.g. "Documents 100% done, Sentence 0%" long after Sentence's screen call actually
+    # already fired — visibly wrong once tiers stopped being sequential.
     groups = _build_tier_groups(rulebook)
     if not groups:
         return [], None
 
-    band = 90 / len(groups)
-    tier_index = len(groups) - 1 if progress >= 90 else min(len(groups) - 1, int(progress // band))
+    fraction = min(max(progress / 100, 0.0), 1.0)
 
     out: list[ProgressCategoryOut] = []
     current_category: str | None = None
-    for i, (group_key, group_label, items) in enumerate(groups):
-        if i < tier_index or progress >= 90:
-            done_count = len(items)
-        elif i == tier_index:
-            within = min(max((progress - i * band) / band, 0.0), 1.0) if band > 0 else 1.0
-            done_count = int(within * len(items))
-        else:
-            done_count = 0
+    for group_key, group_label, items in groups:
+        done_count = len(items) if progress >= 100 else int(fraction * len(items))
 
         item_out: list[CategoryItemOut] = []
         for idx, (item_key, item_label) in enumerate(items):
             if idx < done_count:
                 status = "done"
-            elif idx == done_count and i == tier_index and done_count < len(items):
+            elif idx == done_count and done_count < len(items):
                 status = "in_progress"
-                current_category = item_label
+                if current_category is None:
+                    current_category = item_label
             else:
                 status = "pending"
             item_out.append(CategoryItemOut(key=f"{group_key}:{item_key}", label=item_label, status=status))

@@ -1021,3 +1021,25 @@ Replace/Delete뿐이라 항상 객체 프레임, MI는 Insert뿐이라 항상 �
 - SCREEN 02의 진행률 카테고리 체크리스트(`_categories_for_progress`)는 여전히 "위계가 순차로 끝난다"고
   가정하고 만들어짐 — 지금은 Gemini든 Claude든 4개 위계가 실제로는 병렬 실행이라 이 가정이 실제와
   어긋나 있음(사용자가 직접 지적). 아직 안 고침 — 다음 우선순위.
+
+## 2026-08-10 — 진행률 체크리스트를 병렬 실행에 맞게 수정
+
+바로 위 Next 항목 — `_categories_for_progress`가 "Documents 다 끝나고 → Logical Chapter → ..."
+순서로 하나씩 차오른다고 가정하고 있었는데, `category_screen.review_document()`는 4개 위계를
+동시에 돌리니 실제로는 다 같이 진행되다가 다 같이 끝난다. 사용자가 지적한 그대로 고쳤다.
+
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**: `tier_index`/`band` 기반의 순차 워크스루 로직을
+  제거하고, 모든 그룹이 같은 `fraction = progress / 100`으로 동시에 차오르도록 변경 — 그룹 4개가
+  전부 비슷한 속도로 진행되다가 100%에서 다 같이 완료 처리됨. `current_category`는 그중 맨 처음
+  발견한 "진행 중" 항목 하나를 대표로 반환(여러 그룹이 동시에 in_progress 상태를 가질 수 있어서).
+- 프론트(`CategoryTree.tsx`)는 그룹별로 독립적으로 "이 그룹에 in_progress 항목이 있으면 진하게"
+  판단하는 로직이라 코드 변경 없이 자동으로 4개 그룹이 동시에 강조되게 됨.
+- 검증: 신규 테스트 2개(모든 그룹이 비슷한 속도로 진행되는지, 100%에서 전부 done인지) 추가, 백엔드
+  85개 전부 통과. `progress=0/30/50/89/100`으로 수동 실행해 4개 그룹이 실제로 같이 움직이는 것 확인.
+  확장 `typecheck`/`lint`/`build`/`vitest` 63개(변경 없음, 프론트 코드는 안 건드림) 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 Chrome에서 QA 진행 화면을 열어 4개 그룹이 실제로 동시에
+  체크되는 것처럼 보이는지 확인.
+- `ANTHROPIC_API_KEY` 채워서 Claude 조합 실제 검증하는 건 여전히 남아있음(바로 위 항목과 동일).

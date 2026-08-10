@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -199,3 +201,68 @@ def test_categories_for_progress_marks_everything_done_at_100() -> None:
 
     assert current_category is None
     assert all(item.status == "done" for group in categories for item in group.items)
+
+
+# 문서 본문 순서로 이슈를 내려주려면(SCREEN 02 "다음"/오버뷰가 왼쪽 원본을 위→아래로 훑도록) 각
+# 이슈가 document_text 안 어디쯤인지 알아야 한다.
+def test_issue_start_prefers_input_text_position() -> None:
+    document_text = "머리말\n\n## 1장\n\n본문 문장입니다.\n\n## 2장\n\n다른 문장.\n"
+
+    assert qa_jobs._issue_start(document_text, "다른 문장", "2장") == document_text.index("다른 문장")
+
+
+def test_issue_start_falls_back_to_location_heading_when_input_text_missing() -> None:
+    # 정보 누락(MI) 이슈는 input_text가 원래 빈 문자열이다 — 그 위계의 제목으로라도 위치를 잡아야
+    # 정렬했을 때 맨 앞으로 쏠리지 않는다.
+    document_text = "머리말\n\n## 1장\n\n본문.\n\n## 2장\n\n다른 문장.\n"
+
+    assert qa_jobs._issue_start(document_text, "", "1장 > 2장") == document_text.index("2장")
+
+
+def test_issue_start_falls_back_to_end_of_document_when_nothing_matches() -> None:
+    # 못 찾았다고 0(맨 앞)으로 보내면 실제로는 후반부 이슈인데 항상 첫 번째로 나와버려 순서 왜곡이
+    # 더 커진다 — 그래서 맨 뒤로 보낸다.
+    document_text = "머리말\n\n본문.\n"
+
+    assert qa_jobs._issue_start(document_text, "", "존재하지 않는 제목") == len(document_text)
+
+
+async def test_qa_job_issues_are_sorted_by_position_in_the_document() -> None:
+    # 파이프라인이 위계(tier)별로 병렬 처리하며 저장한 순서(뒤죽박죽)가 아니라, 문서 본문에서
+    # 실제로 나타나는 순서로 내려줘야 SCREEN 02의 "다음"/오버뷰가 왼쪽 원본을 위→아래로 훑는다.
+    job = qa_jobs.QAJob(
+        id=str(uuid.uuid4()),
+        document_id="doc-order",
+        status=qa_jobs.QAJobStatus.DONE,
+        progress=100,
+        current_category=None,
+        started_at=datetime.now(UTC),
+    )
+    await qa_jobs.store.save_qa_job(job)
+
+    def make_issue(issue_id: str, start: int) -> qa_jobs.IssueRecord:
+        return qa_jobs.IssueRecord(
+            id=issue_id,
+            job_id=job.id,
+            location="위치",
+            input_text="문구",
+            criteria="기준",
+            reason="이유",
+            suggestion="제안",
+            status=qa_jobs.IssueStatus.PENDING,
+            edited_text=None,
+            start=start,
+            end=start + 2,
+        )
+
+    # 저장은 뒤죽박죽 순서로(실제 파이프라인이 tier별 병렬 처리 후 붙이는 순서를 흉내).
+    await qa_jobs.store.save_issue(make_issue("late", 500))
+    await qa_jobs.store.save_issue(make_issue("early", 10))
+    await qa_jobs.store.save_issue(make_issue("middle", 200))
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/qa-jobs/{job.id}/issues")
+
+    ids = [issue["id"] for issue in response.json()]
+    assert ids == ["early", "middle", "late"]

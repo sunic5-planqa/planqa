@@ -326,6 +326,22 @@ describe('applyIssueEdit', () => {
     expect(putBody.body.storage.value).toContain(ISSUE.suggestion)
   })
 
+  it('finds the original page id even from a new-editor draft URL ("/pages/edit-v2/{id}")', async () => {
+    // confluence-extractor.ts에서 고친 것과 같은 버그가 이 파일 안의 복제된 extractPageId에도
+    // 그대로 있었다 — 원본 페이지 id를 못 찾으면 저장 자체가 시작도 못 한다.
+    ;(window as unknown as HappyDomWindow).happyDOM.setURL(
+      `http://localhost:8000/mock-confluence/pages/edit-v2/${ORIGINAL_PAGE_ID}?draftShareId=abc`,
+    )
+    const fetchMock = stubConfluenceFetch()
+    applyIssueOverlay([ISSUE])
+
+    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+
+    expect(result).toEqual({ ok: true })
+    const originalGet = fetchMock.mock.calls.find(([url]) => (url as string).includes(ORIGINAL_PAGE_ID))
+    expect(originalGet).toBeDefined()
+  })
+
   it('stamps the duplicate title with Korea time computed by pure arithmetic, not Intl', async () => {
     // timeZone: 'Asia/Seoul'을 명시한 toLocaleString도 실제 서비스 환경에서 여전히 몇 시간씩
     // 어긋난다는 보고가 있어(Intl 구현/환경에 따라 달라질 여지가 남아있었던 걸로 보임), Intl에

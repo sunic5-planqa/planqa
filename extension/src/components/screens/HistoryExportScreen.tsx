@@ -41,6 +41,12 @@ export function HistoryExportScreen() {
     dispatch({ type: 'NAVIGATE', screen: 'main' })
   }
 
+  // "QA 완료"를 눌러 여기 왔다가 마음이 바뀌어 이슈를 더 보고/고치고 싶을 수 있다는 피드백 —
+  // 그냥 이슈 화면으로 돌아간다(currentIssueIndex 등 기존 상태는 그대로라 보던 자리에서 이어짐).
+  const goBackToIssues = () => {
+    dispatch({ type: 'NAVIGATE', screen: 'issues' })
+  }
+
   return (
     <div className="screen history-export-screen">
       <div className="screen-scroll">
@@ -94,7 +100,10 @@ export function HistoryExportScreen() {
         )}
       </div>
 
-      <div className="screen-footer">
+      <div className="screen-footer history-footer">
+        <button type="button" className="history-back-link" onClick={goBackToIssues}>
+          ← 이슈 목록으로
+        </button>
         <Button className="btn-cta" onClick={finishReview}>
           검토 종료
         </Button>

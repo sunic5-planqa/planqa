@@ -60,6 +60,13 @@ const STYLE = `
   color: #7c5cff;
   margin-bottom: 2px;
 }
+.${TOOLTIP_CLASS} .sunnic-tooltip-quote {
+  font-weight: 700;
+  background: linear-gradient(135deg, #c9a9ff, #ffc9e8);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
 `
 
 function ensureStyleInjected(): void {
@@ -245,6 +252,19 @@ function positionNear(el: HTMLElement, anchor: HTMLElement): void {
   el.style.left = `${rect.left}px`
 }
 
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+// AI 제안 문장 전체를 다 강조하면 오히려 뭐가 핵심인지 안 보인다 — 따옴표로 감싼 부분(예: '핵클
+// SDK 연동...'처럼 구체적인 대안/인용구)만 골라 그라데이션으로 강조한다. 작은따옴표/큰따옴표 둘 다
+// 실제 제안 문구에서 섞여 쓰여서 둘 다 지원한다.
+const QUOTED_SPAN_RE = /(['"])((?:(?!\1).)+)\1/g
+
+function highlightQuotedSpans(text: string): string {
+  return escapeHtml(text).replace(QUOTED_SPAN_RE, (match) => `<span class="sunnic-tooltip-quote">${match}</span>`)
+}
+
 // 통일된 읽기 전용 "AI 제안" 말풍선 — 어떤 이슈든 항상 같은 모양(제목 + 제안 한 줄)이고 버튼이 없다.
 // 실제 수정은 오른쪽 패널에서 하므로 여기서는 안내만 한다. 항상 열기만 하고(닫힌 상태 유지는 호출부
 // 책임) — 오른쪽 패널에서 이슈를 옮겨다닐 때도 이 함수로 자동으로 띄운다.
@@ -256,7 +276,7 @@ function showTooltip(mark: HTMLElement, issue: OverlayIssue): void {
   tooltip.dataset.sunnicForIssue = issue.id
   tooltip.innerHTML = `
     <div class="sunnic-tooltip-heading">AI 제안</div>
-    <div>${issue.suggestion}</div>
+    <div>${highlightQuotedSpans(issue.suggestion)}</div>
   `
   positionNear(tooltip, mark)
   // body가 아니라 html에 직접 붙인다 — 실제 컨플루언스 페이지의 body(또는 그 사이 어딘가)에

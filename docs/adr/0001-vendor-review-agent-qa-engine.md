@@ -53,3 +53,36 @@
   - `backend/src/sunnic_backend/qa_engine/review_agent/**` is exempted from ruff's `B023`/`UP047`
     (see `pyproject.toml`) rather than being reshaped to satisfy rules upstream doesn't enforce —
     the same diffability trade-off.
+
+## Update — 2026-08-10 re-sync from `planqa-agent`'s `dev` branch
+
+Upstream restructured significantly since the initial vendor (`feature/review-agent` → `dev`,
+`sunic5-planqa/planqa-agent` PRs #5–#12): `schema.py`/`rulebook.py` moved into a separate
+`packages/planqa-schemas` package, `review-agent` itself moved under `services/review-agent`, and
+a new pluggable "structure" was added — `structures/category_screen.py` — which replaces the old
+profile-based `pipeline.review_document(..., profile)` as this backend's call target:
+
+- **`related_location` landed** (the field requested in
+  [sunic5-planqa/planqa-agent#4](https://github.com/sunic5-planqa/planqa-agent/issues/4)) — `qa_jobs.py`'s
+  `_frame_type()` no longer permanently falls back to `object` for LG/LF/GA; it now genuinely
+  returns `range` whenever confirm names a second location. `dedupe.py` was updated in lockstep
+  (two relational findings with different `related_location` are no longer collapsed into one).
+- **The 4 tiers now run concurrently** (`ThreadPoolExecutor`, one cloned `LLMClient` per tier) —
+  `LLMClient` gained a `clone(*, tier=...)` method for this. Its default implementation re-reads
+  credentials from `os.environ` instead of reusing the `api_keys` passed at construction, which this
+  backend never populates process-wide (settings come from `.env` via pydantic-settings, not real
+  env vars) — worked around in `qa_jobs.py` with a small local subclass (`_ScopedClient`) that
+  overrides `clone()` to thread the explicit keys through, rather than mutating `os.environ` (which
+  was tried first and rejected — it leaked across requests/tests, see the commit that fixed it).
+- **`TIER_CATEGORIES` was corrected upstream** — the version this backend had vendored was missing
+  several category→tier assignments (e.g. Document tier was missing TC/TM entirely). Re-vendoring
+  fixed this as a side effect, not something this backend could have caught on its own.
+- Screening now sees only category labels, not rule text — confirm picks the specific `rule_id`
+  out of that category's full rule set. Dropped `models/gemini_lite/*` and the old
+  `pipeline.review_document` call path entirely (pipeline.py itself is still vendored — kept only
+  for the shared `ReviewResult` dataclass).
+- Re-validated live against the vendored `DOC-001` fixture: 22 issues, zero tier errors, real
+  `related_location` values present on LG/LF/GA findings (was 44 issues pre-re-sync on the same
+  document/model — see progress.md's 2026-08-09 investigation into that discrepancy, still not
+  fully explained, but the corrected `TIER_CATEGORIES` and category-based screening both plausibly
+  contribute).

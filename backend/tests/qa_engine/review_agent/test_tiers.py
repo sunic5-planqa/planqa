@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from sunnic_backend.qa_engine.review_agent.rulebook import parse_rulebook
-from sunnic_backend.qa_engine.review_agent.schema import Level
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import parse_rulebook
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Level
 from sunnic_backend.qa_engine.review_agent.tiers import (
     TIER_CATEGORIES,
     TIER_ORDER,
@@ -34,3 +34,10 @@ def test_rules_for_tier_matches_document_declared_categories(rulebook_path):
 def test_rules_for_tier_empty_for_word_level(rulebook_path):
     rulebook = parse_rulebook(rulebook_path)
     assert rules_for_tier(rulebook, Level.WORD) == []
+
+
+def test_tier_categories_matches_rulebook_section_2():
+    assert TIER_CATEGORIES[Level.DOCUMENT] == ("LG", "LF", "TC", "TM", "MI", "RD", "GA")
+    assert TIER_CATEGORIES[Level.LOGICAL_UNIT] == ("LG", "LF", "TC", "TM", "AE", "MI", "RD", "GA")
+    assert TIER_CATEGORIES[Level.PARAGRAPH] == ("LG", "LF", "TC", "TM", "AE", "MI", "RD")
+    assert TIER_CATEGORIES[Level.SENTENCE] == ("LG", "TC", "TM", "AE", "MI")

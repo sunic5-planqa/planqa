@@ -1976,3 +1976,31 @@ AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(Re
   정확한 수정을 저장할 때 더 이상 불필요한 경고가 안 뜨는지, 반대로 진짜 안 고친 경우엔 여전히
   잘 걸러지는지 확인 필요.
 - 저장 1회당 API 호출이 1콜 늘어남(Haiku, 저비용이지만 0은 아님) — 사용량이 늘면 비용 재점검.
+
+## 2026-08-11 — planqa-agent 재벤더링: GA/TC/MI 카테고리 경계 프롬프트 보강
+
+`sunic5-planqa/planqa-agent` 이슈 [#26](https://github.com/sunic5-planqa/planqa-agent/issues/26)
+(방금 이 세션에서 올린 것, GA↔TC/TC↔MI 오분류)에 대응해 upstream이 PR
+[#27](https://github.com/sunic5-planqa/planqa-agent/pull/27)로 프롬프트만 수정 — 정확히 이슈
+코멘트에서 요청한 "저비용 경로"(시그니처/모듈명/LLMClient 계약 안 건드림) 그대로 따라줌.
+
+- **원인(upstream 분석)**: `_hybrid_block`이 룰별 텍스트만 보여주고 카테고리 자체의 "한줄정의"는
+  안 보여줘서, "두 문장이 다르다"는 표면 패턴만으로 GA(내용 충돌)와 TC(표기 불일치)를 헷갈리기
+  쉬웠음. `global_context`도 용어집이 아니라 요약이라, 재표현된 기존 용어를 "새 개념"으로 오인해
+  MI로 새는 것으로 추정.
+- **`bundled_screen_hybrid.py`**: `_CATEGORY_BOUNDARY_NOTES`(GA-vs-TC, TC-vs-MI 경계 설명 두
+  문단) 신규 상수 추가, `_SCREEN_HYBRID_SYSTEM`(1차 분류가 일어나는 곳)과
+  `_CONFIRM_HYBRID_SYSTEM`(confirm이 잘못 태깅된 후보를 rule_id 재할당은 못 해도 최소
+  violated=false로 거부는 할 수 있는 2차 방어선) 양쪽에 삽입. 재벤더링 diff는 순수 import 경로
+  차이(`planqa_review.` → `sunnic_backend.qa_engine.review_agent.`) 외엔 이 프롬프트 추가분뿐 —
+  다른 파일은 하나도 안 건드림, `.env`도 그대로 유지.
+- upstream이 사례3(낮은 재현율)·사례4(비결정성)는 재현 가능한 입력이 없어서 이번엔 손 못 댔다고
+  명시 — 이슈는 계속 열어둠, 유사 사례 나오면 원문과 함께 다시 리포트하기로 함.
+- 검증: 백엔드 144개 전부 통과(프롬프트 텍스트 변경이라 신규 테스트는 추가 안 함, upstream도
+  123/123으로 이미 확인), ruff 클린.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 알파테스트에서 GA/TC/MI 오분류 사례가 줄어드는지 확인
+  필요 — upstream도 재현 입력이 없어 라이브 검증을 못 했다고 명시했음, 다음 실사용 관찰이 사실상
+  첫 검증.

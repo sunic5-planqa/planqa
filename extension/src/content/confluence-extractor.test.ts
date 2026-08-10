@@ -14,6 +14,15 @@ describe('extractPageId', () => {
     expect(extractPageId(url)).toBe('987654321')
   })
 
+  it('extracts the id from the new editor\'s draft path ("/pages/edit-v2/{id}")', () => {
+    // 실사용자가 겪은 버그: 새 편집기 초안 URL은 "pages/" 뒤에 "edit-v2/"가 한 단계 더 끼어들어서
+    // 숫자가 바로 안 나온다 — 도메인은 *.atlassian.net으로 맞는데도 "컨플루언스 페이지가 아님"으로
+    // 잘못 판정됐다.
+    const url = 'https://playonejr.atlassian.net/wiki/spaces/~712020b/pages/edit-v2/294914?draftShareId=abc'
+
+    expect(extractPageId(url)).toBe('294914')
+  })
+
   it('returns null for a non-Confluence URL', () => {
     expect(extractPageId('https://www.google.com')).toBeNull()
   })

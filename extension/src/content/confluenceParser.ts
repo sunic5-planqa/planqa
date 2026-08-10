@@ -35,6 +35,21 @@ export function htmlToChapterMarkdown(pageTitle: string, storageHtml: string): s
       continue
     }
 
+    if (node.tagName === 'TABLE') {
+      // 분기가 없으면 아래 fallback으로 떨어져서 표 전체 textContent를 셀 구분자 하나 없이 그냥
+      // 이어붙여버린다(목록의 ", " 이어붙이기보다 더 심함 — 그마저도 없음) — 실제 문서엔 없는
+      // 문구가 만들어지는 건 똑같다. document.py의 `_TABLE_ROW_LINE`(`|...|`)이 행 하나를 문장
+      // 단위로 인식하도록 짜여 있어서, 행마다 마크다운 표 문법으로 별도 줄에 남긴다.
+      const rows = Array.from(node.querySelectorAll('tr'))
+        .map((tr) => Array.from(tr.querySelectorAll('th, td')).map((cell) => collapseWhitespace(cell.textContent ?? '')))
+        .filter((cells) => cells.some(Boolean))
+      if (rows.length) {
+        lines.push('')
+        for (const cells of rows) lines.push(`| ${cells.join(' | ')} |`)
+      }
+      continue
+    }
+
     const text = collapseWhitespace(node.textContent ?? '')
     if (text) lines.push('', text)
   }

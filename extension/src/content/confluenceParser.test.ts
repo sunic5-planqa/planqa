@@ -52,6 +52,18 @@ describe('htmlToChapterMarkdown', () => {
     expect(result).toBe('# 제목\n\n- 항목 하나\n- 항목 둘')
   })
 
+  it('renders table rows as markdown table lines instead of concatenating every cell', () => {
+    // 분기가 없으면 표 전체 textContent가 셀 구분자 하나 없이 그냥 붙어버려서(목록의 ", "
+    // 이어붙이기보다 더 심함) 실제 문서엔 없는 문구가 만들어졌었다.
+    const html =
+      '<table><thead><tr><th><p>서비스</p></th><th><p>참고</p></th></tr></thead>' +
+      '<tbody><tr><td><p>크림</p></td><td><p>희소성</p></td></tr></tbody></table>'
+
+    const result = htmlToChapterMarkdown('제목', html)
+
+    expect(result).toBe('# 제목\n\n| 서비스 | 참고 |\n| 크림 | 희소성 |')
+  })
+
   it('best-effort extracts text content from unrecognized elements like macros', () => {
     const html = '<ac:structured-macro><ac:parameter>info</ac:parameter>매크로 안 텍스트</ac:structured-macro>'
 

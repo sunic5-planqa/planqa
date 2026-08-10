@@ -238,6 +238,31 @@ describe('applyIssueEdit', () => {
     expect(putBody.body.storage.value).toContain(ISSUE.suggestion)
   })
 
+  it('stamps the duplicate title with Korea time even when the runtime default timezone is not KST', async () => {
+    // toLocaleString('ko-KR')만 쓰면 로케일 표기 형식만 한국식이 될 뿐 시간대는 실행 환경의 시스템
+    // 설정을 따라간다 — 서버/브라우저의 기본 시간대가 KST가 아니면 실제 시각과 몇 시간씩 어긋나
+    // 보였다(사용자 보고). timeZone: 'Asia/Seoul'을 명시하면 환경 설정과 무관해야 한다.
+    vi.stubEnv('TZ', 'UTC')
+    const fixedNow = new Date('2026-08-10T03:00:00Z') // KST로는 정오, UTC로는 오전 — 서로 달라야 의미 있는 검증
+    vi.useFakeTimers()
+    vi.setSystemTime(fixedNow)
+    try {
+      const fetchMock = stubConfluenceFetch()
+
+      await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+
+      const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
+      const body = JSON.parse((postCall?.[1] as RequestInit).body as string) as { title: string }
+      const nowInSeoul = fixedNow.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
+      const nowInSystemDefault = fixedNow.toLocaleString('ko-KR')
+      expect(body.title).toContain(nowInSeoul)
+      expect(nowInSeoul).not.toBe(nowInSystemDefault)
+    } finally {
+      vi.useRealTimers()
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('a second call reuses the same duplicate page instead of creating another one', async () => {
     const fetchMock = stubConfluenceFetch({
       duplicateBody: `${PAGE_HTML}<p>결제 실패 원인에 대한 안내가 필요하다.</p>`,

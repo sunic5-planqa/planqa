@@ -268,12 +268,80 @@ function extractPageId(url: string): string | null {
 
 type ApplyResult = { ok: true } | { ok: false; error: string }
 
+interface RawTextSpan {
+  text: string
+  start: number
+  end: number
+}
+
+// root 아래 모든 텍스트 노드를 이어붙여, collectTextSpans()와 같은 방식(전체 텍스트 + 노드별 구간)을
+// 만든다. collectTextSpans()와 따로 두는 이유는 저 쪽은 라이브 document 전용 오버레이 필터링이 걸려
+// 있어서(isInsideOverlayNode 등) 파싱된 storage HTML 문서에는 그대로 못 쓰기 때문이다.
+function collectPlainTextSpans(root: Element): { fullText: string; spans: RawTextSpan[] } {
+  const ownerDoc = root.ownerDocument
+  const walker = ownerDoc.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let fullText = ''
+  const spans: RawTextSpan[] = []
+  for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+    const text = current.textContent ?? ''
+    if (!text) continue
+    spans.push({ text, start: fullText.length, end: fullText.length + text.length })
+    fullText += text
+  }
+  return { fullText, spans }
+}
+
+// 목록/표 항목 두 개처럼 사람 눈엔 붙어 보여도 실제로는 <li>...</li><li>...</li>처럼 태그가 그 사이에
+// 끼어 있는 문구는, 공백만 관대하게 봐주는 정규식만으로는 못 찾는다(애초에 원문에 공백이 없으면 봐줄
+// 대상 자체가 없다). storage HTML을 파싱해 텍스트 노드 단위로 이어붙인 뒤(wrapIssue가 라이브 DOM에서
+// 하는 것과 동일한 방식) 매치 구간에 걸리는 노드들을 원본 문자열 안에서 각각 다시 찾아 그 부분만
+// 정교하게 잘라 넣는다 — 파싱한 트리를 통째로 re-serialize하면 매크로 등 나머지 마크업이 미묘하게
+// 바뀔 위험이 있어, 원본 문자열은 건드리지 않고 매치된 구간만 문자열 스플라이스로 치환한다.
+function replaceAcrossElements(html: string, oldText: string, newText: string): string | null {
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const { fullText, spans } = collectPlainTextSpans(doc.body)
+  const match = buildLooseTextRegex(oldText).exec(fullText)
+  if (!match) return null
+
+  const matchStart = match.index
+  const matchEnd = match.index + match[0].length
+  const overlapping = spans.filter((span) => span.start < matchEnd && span.end > matchStart)
+  if (overlapping.length === 0) return null
+
+  let searchCursor = 0
+  let result = ''
+  let lastCopiedEnd = 0
+
+  for (const [i, span] of overlapping.entries()) {
+    const rawIndex = html.indexOf(span.text, searchCursor)
+    // 엔티티 인코딩 등으로 파싱된 텍스트와 원본 문자열이 어긋나면, 잘못된 위치를 잘라내느니 그냥
+    // 실패 처리한다(문서를 깨뜨리느니 아무것도 안 하는 쪽).
+    if (rawIndex === -1) return null
+    searchCursor = rawIndex + span.text.length
+
+    const localStart = Math.max(matchStart - span.start, 0)
+    const localEnd = Math.min(matchEnd - span.start, span.text.length)
+    const isFirst = i === 0
+    const isLast = i === overlapping.length - 1
+    const replacement = (isFirst ? span.text.slice(0, localStart) + newText : '') + (isLast ? span.text.slice(localEnd) : '')
+
+    result += html.slice(lastCopiedEnd, rawIndex) + replacement
+    lastCopiedEnd = rawIndex + span.text.length
+  }
+  result += html.slice(lastCopiedEnd)
+  return result
+}
+
+// 먼저 공백만 느슨하게 허용하는 단순 정규식(buildLooseTextRegex)으로 원본 문자열 그대로 찾는다 —
+// 이게 되면 나머지 마크업을 전혀 건드리지 않는 가장 안전한 경로다. 그걸로 못 찾을 때만(문구가 여러
+// 엘리먼트에 걸쳐 있을 때) 파싱 기반 매칭(replaceAcrossElements)으로 넘어간다.
+function replaceInStorageHtml(html: string, oldText: string, newText: string): string | null {
+  const match = buildLooseTextRegex(oldText).exec(html)
+  if (match) return html.slice(0, match.index) + newText + html.slice(match.index + match[0].length)
+  return replaceAcrossElements(html, oldText, newText)
+}
+
 // pageId가 가리키는 페이지의 body.storage에서 oldText → newText로 문자열 치환한 뒤 PUT으로 저장한다.
-// storage HTML의 공백/줄바꿈이 화면에 렌더링된 것과 완전히 같지 않은 경우가 흔해서, wrapIssue()가
-// 라이브 DOM에서 찾을 때와 똑같이 공백만 느슨하게 허용하는 정규식(buildLooseTextRegex)으로 찾는다 —
-// 예전엔 여기만 완전 일치(`includes`)로 체크해서, 화면에 분명히 보이는 문구인데도 저장 단계에서만
-// "원문에서 찾지 못했습니다"로 실패하는 경우가 있었다. 표/목록처럼 인라인 태그가 문구 중간에 끼어드는
-// 경우까지는 여전히 못 잡는다 — 그런 경우는 계속 실패 처리(문서를 깨뜨리느니 아무것도 안 하는 쪽).
 async function replaceTextAndSave(pageId: string, oldText: string, newText: string): Promise<ApplyResult> {
   const getRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=body.storage,version`, {
     credentials: 'include',
@@ -286,9 +354,8 @@ async function replaceTextAndSave(pageId: string, oldText: string, newText: stri
     body: { storage: { value: string } }
   }
   const html = data.body.storage.value
-  const match = buildLooseTextRegex(oldText).exec(html)
-  if (!match) return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
-  const updatedHtml = html.slice(0, match.index) + newText + html.slice(match.index + match[0].length)
+  const updatedHtml = replaceInStorageHtml(html, oldText, newText)
+  if (updatedHtml === null) return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
 
   const putRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}`, {
     method: 'PUT',

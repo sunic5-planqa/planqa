@@ -218,6 +218,27 @@ describe('applyIssueOverlay', () => {
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ type: 'ISSUE_OVERLAY_FOCUS', issueId: ISSUE.id })
   })
 
+  it('highlights quoted spans in the AI 제안 text with a gradient, leaving the rest plain', () => {
+    // 문장 전체를 다 강조하면 오히려 핵심이 안 보여서, 따옴표로 감싼 구체적 제안치/인용구만 강조한다.
+    const issue: OverlayIssue = { ...ISSUE, suggestion: "마일스톤의 P2 항목을 '핵클 SDK 연동'으로 수정" }
+    applyIssueOverlay([issue])
+    document.querySelector<HTMLElement>('.sunnic-issue-highlight')?.click()
+
+    const quoted = document.querySelector('.sunnic-issue-tooltip .sunnic-tooltip-quote')
+    expect(quoted?.textContent).toBe("'핵클 SDK 연동'")
+    expect(document.querySelector('.sunnic-issue-tooltip')?.textContent).toContain(issue.suggestion)
+  })
+
+  it('escapes HTML special characters in the AI 제안 text instead of interpreting them as markup', () => {
+    const issue: OverlayIssue = { ...ISSUE, suggestion: '<b>업계 평균</b> & "3 < 5" 확인' }
+    applyIssueOverlay([issue])
+    document.querySelector<HTMLElement>('.sunnic-issue-highlight')?.click()
+
+    const tooltip = document.querySelector('.sunnic-issue-tooltip')
+    expect(tooltip?.querySelector('b')).toBeNull()
+    expect(tooltip?.textContent).toContain('<b>업계 평균</b> & "3 < 5" 확인')
+  })
+
   it('clicking the same highlight again closes the bubble', () => {
     applyIssueOverlay([ISSUE])
     const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')

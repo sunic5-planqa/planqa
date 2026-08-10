@@ -222,7 +222,13 @@ def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue:
     )
 
 
-_ESTIMATED_DURATION_SECONDS = 45.0
+# 4개 tier가 순차 실행이던 시절(예전 벤더링) 기준으로 잡았던 상수(45s)가 그대로 남아 있었다 —
+# 2026-08-10 재벤더링 이후로는 4개가 ThreadPoolExecutor로 동시에 돌아서 실제로 훨씬 빨리
+# 끝나는데(Claude Haiku→Sonnet 조합 실측 66.1초, DOC-001), 곡선은 여전히 "45초짜리 작업"
+# 기준으로 늘어져서 체감상 진행바가 계속 느려 보였다. 실측치 기준으로 t=완료 시점 즈음엔 90%
+# 근처까지 거의 다 차 있도록(더 이상 "끝났는데도 한참 밑에 머물러 있는" 느낌이 안 나도록) 시간
+# 상수를 다시 잡음 — 20s면 t=66s에 86%까지 올라온다(예전 45s 기준으로는 69%에 그쳤음).
+_ESTIMATED_DURATION_SECONDS = 20.0
 
 
 async def _tick_progress(job_id: str, started_at: datetime) -> None:

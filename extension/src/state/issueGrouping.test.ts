@@ -6,6 +6,7 @@ function makeIssue(overrides: Partial<IssueResponse>): IssueResponse {
   return {
     id: 'id',
     location: 'loc',
+    location_number: null,
     input_text: 'input',
     criteria: 'criteria',
     reason: 'reason',

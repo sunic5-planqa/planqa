@@ -11,8 +11,6 @@ class Settings(BaseSettings):
     sunnic_haiku_model: str = "claude-haiku-4-5"
     sunnic_sonnet_model: str = "claude-sonnet-5"
     gemini_api_keys: Annotated[list[str], NoDecode] = []
-    qa_screen_model: str = ""
-    qa_confirm_model: str = ""
     allowed_origins: Annotated[list[str], NoDecode] = []
 
     @field_validator("gemini_api_keys", mode="before")

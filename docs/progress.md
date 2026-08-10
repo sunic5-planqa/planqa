@@ -984,7 +984,40 @@ Replace/Delete뿐이라 항상 객체 프레임, MI는 Insert뿐이라 항상 �
 - **Claude가 검증 불가능한 것**: 실제 DOC-001에서 다시 QA를 돌렸을 때 병렬 실행이 체감상 더 빠른지,
   LG/LF/GA 이슈가 실제 컨플루언스 문서에서도 안정적으로 related_location을 잡아내는지 확인.
 - 6개(CLI) vs 44개(재벤더링 전 서버) 차이가 왜 났는지는 여전히 완전히 설명 못함 — 22개로 줄어든 게
-  좋은 신호이긴 하지만, 정밀검증 모델을 더 강하게(`QA_CONFIRM_MODEL`) 설정하는 것도 여전히 유효한
-  다음 실험.
+  좋은 신호이긴 하지만, 더 정밀한 모델(현재는 Claude Sonnet, 아래 항목 참고)로 재검증하는 것도
+  여전히 유효한 다음 실험.
 - 원작자 쪽 저장소가 앞으로도 계속 바뀔 수 있으니, 다음에 다시 크게 벌어지면 또 재벤더링 필요 — 지금은
   수동 재복사 방식 그대로(ADR 0001 업데이트에 기록).
+
+## 2026-08-10 — QA 엔진을 Gemini에서 Claude(Haiku 스크리닝 → Sonnet 정밀검증)로 전환
+
+사용자가 병렬 실행은 유지하면서 모델을 Claude API로 바꿔달라고 요청 — 1차 스크리닝은 Haiku, 2차
+정밀검증은 Sonnet. 마침 `config.py`엔 2026-08-04부터 `anthropic_api_key`/`sunnic_haiku_model`/
+`sunnic_sonnet_model` 설정이 이미 있었음(그때는 안 쓰이고 있었을 뿐) — 바로 연결하면 됐다.
+
+- **`llm/anthropic.py`(신규 벤더링)**: `planqa-agent` dev의 `AnthropicClient` — 동기 클라이언트,
+  429/5xx/연결오류 재시도, `claude-sonnet-5`는 `temperature` 파라미터 자체를 거부해서 모델별로
+  조건 분기, extended thinking은 고정 스키마 JSON 작업엔 불필요(레이턴시 10배 될 수 있음)해서
+  명시적으로 꺼둠(`thinking: {type: "disabled"}`), 응답에 `ThinkingBlock`이 먼저 와도 첫 번째
+  text 블록을 찾아 파싱. 테스트 11개(재시도/온도 조건분기/thinking 블록 스킵 등)도 같이 벤더링.
+- **`qa_jobs.py`**: `GeminiClient` → `AnthropicClient`로 교체. `_ScopedClient`(clone() 시 명시적
+  키를 다시 물려주는 로컬 서브클래스, Gemini 때와 동일한 이유)도 `api_keys`(리스트) 대신
+  `api_key`(단일 문자열)로 맞춤. `screen_llm`은 `settings.sunnic_haiku_model`, `confirm_llm`은
+  `settings.sunnic_sonnet_model` — 새 설정 추가 없이 기존 필드 그대로 사용.
+- **`config.py`**: 이제 안 쓰는 Gemini 전용 오버라이드 `qa_screen_model`/`qa_confirm_model` 제거
+  (같은 역할을 처음부터 하던 `sunnic_haiku_model`/`sunnic_sonnet_model`과 중복이라 정리). `gemini_
+  api_keys`와 벤더링된 `llm/gemini.py`는 그대로 남겨둠(당장 안 쓰지만 나중에 다시 필요할 수 있어
+  제거는 안 함) — 다만 `qa_jobs.py`에서 더 이상 import 안 됨.
+- 검증: 백엔드 83개 전부 통과(신규 Anthropic 클라이언트 테스트 11개 포함), ruff 클린
+  (`C408`도 벤더링 예외 목록에 추가 — 벤더링 코드를 upstream과 다르게 리팩터링하지 않기 위해,
+  기존 B023/UP047과 같은 이유).
+
+### Next
+
+- **Claude가 검증 불가능한 것**: `.env`에 `ANTHROPIC_API_KEY`가 아직 비어있어서 실제 호출 검증을
+  못 함 — 채운 뒤 DOC-001로 다시 돌려서 (1) Haiku/Sonnet 조합이 실제로 동작하는지, (2) 이슈 수가
+  Gemini 조합(22개) 대비 어떻게 달라지는지, (3) `sunnic_haiku_model` 기본값("claude-haiku-4-5")이
+  실제 Anthropic API가 받는 정확한 모델 ID가 맞는지(날짜 붙은 정식 ID가 필요할 수도 있음) 확인 필요.
+- SCREEN 02의 진행률 카테고리 체크리스트(`_categories_for_progress`)는 여전히 "위계가 순차로 끝난다"고
+  가정하고 만들어짐 — 지금은 Gemini든 Claude든 4개 위계가 실제로는 병렬 실행이라 이 가정이 실제와
+  어긋나 있음(사용자가 직접 지적). 아직 안 고침 — 다음 우선순위.

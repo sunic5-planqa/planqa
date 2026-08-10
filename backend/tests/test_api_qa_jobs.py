@@ -26,21 +26,21 @@ _RULE_ID_RE = re.compile(r"^\s*([A-Z]{2}-\d{2}):", re.MULTILINE)
 _CHUNK_ZERO_RE = re.compile(r"\[0\] \([^)]*\)\n(.+?)(?:\n\n|\Z)", re.DOTALL)
 
 
-class FakeGeminiClient:
-    """Stands in for review_agent's real GeminiClient — no network call, just enough of a
+class FakeAnthropicClient:
+    """Stands in for review_agent's real AnthropicClient — no network call, just enough of a
     contract (constructor kwargs + complete_json + clone()) to drive the real
     category_screen/qa_jobs wiring end to end without a live API key."""
 
-    def __init__(self, model: str | None = None, api_keys: list[str] | None = None, temperature: float = 0.0) -> None:
+    def __init__(self, model: str | None = None, api_key: str | None = None, temperature: float = 0.0) -> None:
         self.model = model
         self.calls: list[tuple[str, str]] = []
         self.usage: list[CallStats] = []
 
-    def clone(self, *, tier: object | None = None) -> FakeGeminiClient:
+    def clone(self, *, tier: object | None = None) -> FakeAnthropicClient:
         # category_screen.review_document() runs tiers concurrently and clones per tier —
         # this fake routes purely by prompt content, so every clone can safely be the same
         # kind of instance (a fresh one, so each tier's .calls/.usage stay separate).
-        return FakeGeminiClient(model=self.model)
+        return FakeAnthropicClient(model=self.model)
 
     def complete_json(self, *, system: str, prompt: str) -> Any:
         self.calls.append((system, prompt))
@@ -78,7 +78,7 @@ class FakeGeminiClient:
 
 
 async def test_qa_job_runs_pipeline_and_produces_mapped_issues(monkeypatch) -> None:
-    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeGeminiClient)
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -128,12 +128,12 @@ async def test_qa_job_marks_failed_when_llm_client_cannot_be_built(monkeypatch) 
     # review_document() itself isolates each stage's LLM errors into tier_errors and still
     # returns a (empty) result — by design, see pipeline.py's docstring — so the only way a
     # job actually resolves to "failed" is a failure *before* the pipeline runs, e.g. no
-    # Gemini API key configured (GeminiClient's constructor raising), mirrored here.
-    class BrokenGeminiClient:
+    # Anthropic API key configured (AnthropicClient's constructor raising), mirrored here.
+    class BrokenAnthropicClient:
         def __init__(self, *args: object, **kwargs: object) -> None:
-            raise RuntimeError("no Gemini API key configured")
+            raise RuntimeError("no Anthropic API key configured")
 
-    monkeypatch.setattr(qa_jobs, "GeminiClient", BrokenGeminiClient)
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", BrokenAnthropicClient)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

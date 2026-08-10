@@ -434,6 +434,14 @@ textarea {
   color: transparent;
 }
 
+/* insert_range(정보 누락) 이슈용 안내 — 자동 반영 대상이 아니라는 걸 눈에 띄게 알려준다. */
+.issue-suggestion-hint {
+  margin: 6px 0 0;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
 .issue-detail-divider {
   border: none;
   border-top: 1px solid #ededf0;

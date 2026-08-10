@@ -1312,3 +1312,27 @@ Atlassian 연동으로 실제 페이지(`gy30356635.atlassian.net`, pageId 22954
 ### Next
 
 - 사용자 재검증 대기 — 이번엔 하이라이트/스크롤 자체가 다시 보이는지부터.
+
+## 2026-08-10 — insert_range(정보 누락) 이슈에서 "제목"이 수정 제안 대상으로 잡히지 않게 제어
+
+`main` 배포 직후 "제목은 제안하지 않도록 제어해줘" 요청 — 확인해보니 섹션 제목(헤딩)에 수정 제안이
+걸리는 걸 막아달라는 뜻이었다. 방금 추가한 `wrapIssueByLocationHeading` 폴백이 "정보 누락(MI)"
+이슈를 섹션 제목으로 하이라이트하는데, `IssueListScreen`은 `frame_type`과 무관하게 모든 이슈에 똑같이
+"수정 저장" 흐름을 열어두고 있어서 — 그대로 두면 사용자가 그 하이라이트에서 "수정 저장"을 눌렀을 때
+`oldText = issue.input_text`로 시도하다 결국 섹션 제목 자체가 AI의 "이 정보를 추가하세요" 같은
+제안 문구로 통째로 덮어써지는 사고로 이어질 수 있었다(input_text가 비어있으면 저장은 실패하지만,
+비어있지 않은 경우엔 진짜로 위험함).
+
+- **`extension/src/components/screens/IssueListScreen.tsx`**: `frame_type === 'insert_range'`인
+  이슈는 애초에 편집 모드 진입 자체를 막음(`isEditing`을 로컬에서 항상 `false`로 파생) — "오류
+  수정하기" 버튼도 안 보이고, 문서 쪽 하이라이트(제목)를 클릭해 `ISSUE_OVERLAY_FOCUS`로 편집 모드
+  진입을 시도해도(전역 상태는 바뀌어도) 이 컴포넌트는 그 상태를 무시하도록 이중으로 막음. 대신
+  "문서에 없는 내용을 추가하라는 안내라 자동으로 반영할 수 없다"는 안내 문구를 보여줌.
+- **`extension/src/styles/global.css`**: 안내 문구용 `.issue-suggestion-hint` 스타일 추가.
+- 검증: 확장 71개 전부 통과(이 UI 분기 자체는 프로젝트에 React 컴포넌트 테스트 도구가 아직 없어
+  전용 테스트는 안 붙임 — 기존 컨벤션 유지), lint/tsc/build 클린.
+
+### Next
+
+- React 컴포넌트 레벨 테스트 도구(@testing-library/react 등) 도입 여부는 아직 미정 — 이런 UI 분기
+  로직이 늘어나면 필요해질 수 있음.

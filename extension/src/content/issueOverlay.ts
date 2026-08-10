@@ -10,6 +10,7 @@ import type {
   ShowIssueOverlayRequest,
   ShowIssueOverlayResponse,
 } from './messages'
+import { splitQuotedSegments } from '../utils/quoteSegments'
 
 // 문서 본문 위에 모든 이슈를 한 번에 하이라이트 박스로 표시하고, 클릭하면 통일된 "AI 제안" 말풍선(읽기
 // 전용)을 보여준다. 실제 수정/저장은 여기서 하지 않고 사이드패널(오른쪽 패널)에서 하도록 포커스만
@@ -257,12 +258,14 @@ function escapeHtml(text: string): string {
 }
 
 // AI 제안 문장 전체를 다 강조하면 오히려 뭐가 핵심인지 안 보인다 — 따옴표로 감싼 부분(예: '핵클
-// SDK 연동...'처럼 구체적인 대안/인용구)만 골라 그라데이션으로 강조한다. 작은따옴표/큰따옴표 둘 다
-// 실제 제안 문구에서 섞여 쓰여서 둘 다 지원한다.
-const QUOTED_SPAN_RE = /(['"])((?:(?!\1).)+)\1/g
-
+// SDK 연동...'처럼 구체적인 대안/인용구)만 골라 그라데이션으로 강조한다. 분리 로직 자체는
+// utils/quoteSegments.ts에서 사이드패널(React)과 공유 — 여기서는 HTML 문자열로 조립하는 부분만.
 function highlightQuotedSpans(text: string): string {
-  return escapeHtml(text).replace(QUOTED_SPAN_RE, (match) => `<span class="sunnic-tooltip-quote">${match}</span>`)
+  return splitQuotedSegments(text)
+    .map((segment) =>
+      segment.quoted ? `<span class="sunnic-tooltip-quote">${escapeHtml(segment.text)}</span>` : escapeHtml(segment.text),
+    )
+    .join('')
 }
 
 // 통일된 읽기 전용 "AI 제안" 말풍선 — 어떤 이슈든 항상 같은 모양(제목 + 제안 한 줄)이고 버튼이 없다.

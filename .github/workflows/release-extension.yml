@@ -1,0 +1,57 @@
+name: Release extension
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'extension/**'
+      - '.github/workflows/release-extension.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Install dependencies
+        working-directory: extension
+        run: npm ci
+
+      - name: Build extension
+        working-directory: extension
+        # extension/dev-key.public.txt is committed to the repo, so this always produces the same
+        # pinned extension id (chrome-extension://lakdhpgnlleljlkkfobckijbnojlplcf) — Render's
+        # ALLOWED_ORIGINS never needs to change even though this rebuilds on every push.
+        env:
+          VITE_API_BASE_URL: https://sunnic-backend.onrender.com
+        run: npm run build
+
+      - name: Zip extension
+        working-directory: extension/dist
+        run: zip -r ../sunnic-extension.zip .
+
+      # Always overwrites the same "extension-latest" tag/release instead of creating a new one
+      # per push — teammates bookmark one URL (the repo's Releases page) and always get the
+      # current build, no need to track version numbers or ask for a fresh zip each time.
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: extension-latest
+          name: 써니C 확장 프로그램 (최신)
+          body: |
+            자동으로 빌드된 최신 버전입니다.
+
+            1. `sunnic-extension.zip`을 내려받아 압축 풀기
+            2. `chrome://extensions` → "개발자 모드" 켜기 → "압축해제된 확장 프로그램 로드" → 방금 푼 폴더 선택
+          files: extension/sunnic-extension.zip
+          make_latest: true

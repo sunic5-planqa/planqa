@@ -53,6 +53,7 @@ export const FIXTURE_ISSUES: IssueResponse[] = [
     suggestion: '간편결제(카카오페이, 네이버페이, 토스, 삼성페이) 4사만 지원, 페이코 미지원',
     frame_type: 'object',
     related_location: null,
+    related_original_text: null,
   },
   {
     id: 'fixture-2',
@@ -64,6 +65,7 @@ export const FIXTURE_ISSUES: IssueResponse[] = [
     suggestion: 'PG사 응답 지연 시 자동 타임아웃 및 재시도 로직 부재',
     frame_type: 'object',
     related_location: null,
+    related_original_text: null,
   },
   {
     id: 'fixture-3',
@@ -75,5 +77,6 @@ export const FIXTURE_ISSUES: IssueResponse[] = [
     suggestion: '간편결제 지원 수단을 4종에서 8종으로 확대한다',
     frame_type: 'insert_range',
     related_location: null,
+    related_original_text: null,
   },
 ]

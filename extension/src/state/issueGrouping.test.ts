@@ -13,6 +13,7 @@ function makeIssue(overrides: Partial<IssueResponse>): IssueResponse {
     suggestion: 'suggestion',
     frame_type: 'object',
     related_location: null,
+    related_original_text: null,
     ...overrides,
   }
 }

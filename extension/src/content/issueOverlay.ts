@@ -129,6 +129,51 @@ function setActiveMark(issueId: string): void {
   activeIssueId = issueId
 }
 
+function attachIssueMarkHandlers(mark: HTMLElement, issue: OverlayIssue): void {
+  mark.className = HIGHLIGHT_CLASS
+  mark.dataset.sunnicIssueId = issue.id
+  mark.addEventListener('click', (event) => {
+    event.stopPropagation()
+    // 이미 이 이슈의 말풍선이 떠 있는 채로 같은 박스를 다시 누르면 닫는다(토글) — 다른 이슈를
+    // 보다가 이 박스를 누른 거면 그냥 새로 연다.
+    if (activeTooltip?.dataset.sunnicForIssue === issue.id) closeTooltip()
+    else showTooltip(mark, issue)
+    setActiveMark(issue.id)
+    chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
+      // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
+    })
+  })
+}
+
+function normalizeHeadingText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+// input_text로 못 찾을 때의 최후 수단 — "정보 누락(MI)"처럼 애초에 원문에 없는 걸 지적하는 이슈는
+// 매치 대상 자체가 없어서 항상 여기로 온다(그 외 사소한 매칭 실패의 안전망 역할도 겸함). issue.location
+// (예: "6. 프로덕트 기능 > 6-1. 메인 배너 (캐러셀)")의 가장 안쪽 위계와 텍스트가 일치하는 제목(h1~h6)을
+// 찾아 그 제목 자체를 감싼다 — location은 htmlToChapterMarkdown이 만든 헤딩 텍스트 그대로라 실제
+// 문서 제목과 일치해야 정상이다. 이렇게라도 하이라이트가 있어야 "다음"으로 넘겼을 때 문서가 스크롤돼
+// 어느 부분을 고쳐야 하는지 보여줄 수 있다 — 정밀한 range/insert_range 프레임 렌더링은 아직 없음.
+function wrapIssueByLocationHeading(issue: OverlayIssue): boolean {
+  const target = normalizeHeadingText(issue.location.split('>').pop() ?? '')
+  if (!target) return false
+
+  const heading = Array.from(document.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')).find(
+    (h) => !isInsideOverlayNode(h) && normalizeHeadingText(h.textContent ?? '') === target,
+  )
+  if (!heading) return false
+
+  const mark = document.createElement('mark')
+  attachIssueMarkHandlers(mark, issue)
+  while (heading.firstChild) mark.appendChild(heading.firstChild)
+  heading.appendChild(mark)
+
+  marksByIssueId.set(issue.id, [mark])
+  issuesById.set(issue.id, issue)
+  return true
+}
+
 // issue.input_text와 일치하는 구간을 찾아 하이라이트한다. 매치가 텍스트 노드 하나에 다 들어있으면
 // <mark> 하나로 감싸고, 라벨+뱃지처럼 여러 노드에 걸쳐 있으면 겹치는 구간마다 각각 <mark>로 감싸서
 // (같은 issue id를 공유) 이어 붙은 것처럼 보이게 한다 — Range.surroundContents는 엘리먼트 경계를
@@ -136,7 +181,7 @@ function setActiveMark(issueId: string): void {
 function wrapIssue(issue: OverlayIssue): boolean {
   const { fullText, spans } = collectTextSpans()
   const match = buildLooseTextRegex(issue.input_text).exec(fullText)
-  if (!match) return false
+  if (!match) return wrapIssueByLocationHeading(issue)
 
   const matchStart = match.index
   const matchEnd = match.index + match[0].length
@@ -152,24 +197,12 @@ function wrapIssue(issue: OverlayIssue): boolean {
     range.setEnd(span.node, overlapEnd - span.start)
 
     const mark = document.createElement('mark')
-    mark.className = HIGHLIGHT_CLASS
-    mark.dataset.sunnicIssueId = issue.id
+    attachIssueMarkHandlers(mark, issue)
     range.surroundContents(mark)
-    mark.addEventListener('click', (event) => {
-      event.stopPropagation()
-      // 이미 이 이슈의 말풍선이 떠 있는 채로 같은 박스를 다시 누르면 닫는다(토글) — 다른 이슈를
-      // 보다가 이 박스를 누른 거면 그냥 새로 연다.
-      if (activeTooltip?.dataset.sunnicForIssue === issue.id) closeTooltip()
-      else showTooltip(mark, issue)
-      setActiveMark(issue.id)
-      chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
-        // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
-      })
-    })
     marks.push(mark)
   }
 
-  if (marks.length === 0) return false
+  if (marks.length === 0) return wrapIssueByLocationHeading(issue)
   marksByIssueId.set(issue.id, marks)
   issuesById.set(issue.id, issue)
   return true

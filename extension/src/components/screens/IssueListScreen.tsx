@@ -123,7 +123,7 @@ export function IssueListScreen() {
     try {
       const result = await api.checkEditSimilarity(issue.suggestion, draftText)
       if (!result.matches_closely) {
-        setSimilarityWarning(`AI 제안(${issue.suggestion})과 다소 달라요 (유사도 ${Math.round(result.similarity * 100)}%).`)
+        setSimilarityWarning(`AI 제안 "${issue.suggestion}"과 다소 달라요 (유사도 ${Math.round(result.similarity * 100)}%).`)
         setWarningAcknowledged(true)
         return
       }

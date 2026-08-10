@@ -61,6 +61,9 @@ class FakeAnthropicClient:
             # list first for this document may or may not be MI, so this test double must
             # handle it regardless (dedicated tests exercise the actual filtering behavior).
             return {"actually_missing": True, "reason": "테스트 더블 기본 응답"}
+        if '"actually_ambiguous"' in system:
+            # _verify_ae_finding's follow-up check — same reasoning as actually_missing above.
+            return {"actually_ambiguous": True, "reason": "테스트 더블 기본 응답"}
         if '"candidates"' in system:
             rule_match = _RULE_ID_LINE_RE.search(prompt)
             chunk_match = _CHUNK_ZERO_RE.search(prompt)
@@ -434,6 +437,80 @@ def test_verify_mi_finding_fails_safe_on_malformed_response() -> None:
     llm = _StubVerifyLLM("not a dict")
 
     assert qa_jobs._verify_mi_finding("문서 전문", _mi_issue(), llm) is True
+
+
+def _ae_issue(original_text: str = "적당한 기간 내에 처리한다") -> qa_jobs.ReviewIssue:
+    return qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="AE-03",
+        location="4. 처리 정책",
+        description="판단 기준이 불명확함",
+        original_text=original_text,
+        rationale="구체적 기준이 없음",
+    )
+
+
+# AE(모호한 표현)에서도 MI와 같은 패턴의 과탐지가 실사용 중 재보고됨(2026-08-11) — AE-01/AE-04
+# 예외조건이 둘 다 "문서 다른 곳에 정의/참조돼 있으면 예외"라 좁은 chunk만 본 confirm이 그 정의를
+# 놓치고 오판할 수 있음. MI와 동일한 문서 전체 재검증 로직을 추가함.
+def test_verify_ae_finding_keeps_the_issue_when_verification_confirms_it_is_ambiguous() -> None:
+    llm = _StubVerifyLLM({"actually_ambiguous": True, "reason": "정말 모호함"})
+
+    assert qa_jobs._verify_ae_finding("문서 전문", _ae_issue(), llm) is True
+
+
+def test_verify_ae_finding_drops_the_issue_when_verification_finds_it_defined_elsewhere() -> None:
+    llm = _StubVerifyLLM({"actually_ambiguous": False, "reason": "3장에 기준이 정의돼 있음"})
+
+    assert qa_jobs._verify_ae_finding("문서 전문", _ae_issue(), llm) is False
+
+
+def test_verify_ae_finding_fails_safe_by_keeping_the_issue_on_llm_error() -> None:
+    llm = _StubVerifyLLM(None)
+
+    assert qa_jobs._verify_ae_finding("문서 전문", _ae_issue(), llm) is True
+
+
+def test_verify_ae_finding_fails_safe_on_malformed_response() -> None:
+    llm = _StubVerifyLLM("not a dict")
+
+    assert qa_jobs._verify_ae_finding("문서 전문", _ae_issue(), llm) is True
+
+
+def test_run_review_sync_drops_ae_false_positive_but_keeps_other_issues(monkeypatch) -> None:
+    ae_issue = _ae_issue()
+    other_issue = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="TC-01",
+        location="1. 목적",
+        description="d",
+        original_text="x",
+        rationale="r",
+    )
+
+    def fake_review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm):
+        return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(ae_issue, other_issue))
+
+    verify_calls: list[str] = []
+
+    class _FakeConfirmClient(FakeAnthropicClient):
+        def complete_json(self, *, system: str, prompt: str, cache_prefix: str | None = None) -> Any:
+            if '"actually_ambiguous"' in system:
+                verify_calls.append(prompt)
+                return {"actually_ambiguous": False, "reason": "실제로는 다른 곳에 정의됨"}
+            return super().complete_json(system=system, prompt=prompt, cache_prefix=cache_prefix)
+
+    monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", _FakeConfirmClient)
+
+    rulebook = qa_jobs._load_rulebook()
+    result = qa_jobs._run_review_sync("DOC-TEST", _TEST_DOCUMENT, rulebook)
+
+    assert [issue.rule_id for issue in result.issues] == ["TC-01"]
+    assert len(verify_calls) == 1
+    assert _TEST_DOCUMENT in verify_calls[0]
 
 
 def test_run_review_sync_drops_mi_false_positive_but_keeps_other_issues(monkeypatch) -> None:

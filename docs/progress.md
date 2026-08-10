@@ -1510,3 +1510,13 @@ tier를 병렬로 처리하며 붙인 순서, 문서 위치와 무관) 이슈를
   파일의 docstring, `document.py`의 중복된 주석 문구(upstream 자체의 복붙 흔적으로 보임) — 전부
   `review_agent/**` 안의 upstream 코드라 로컬에서 고치지 않음.
 - 검증: 백엔드 126개 전부 통과, ruff 클린.
+
+## 2026-08-10 — 수정 저장 시 유사도 경고 문구에서 괄호 제거
+
+`IssueListScreen.tsx`의 유사도 경고("AI 제안(...)과 다소 달라요")가 AI 제안 문구를 괄호로 감싸고
+있던 걸 큰따옴표로 바꿈 — "AI 제안 "...".과 다소 달라요 (유사도 N%)." 형태로, 뒤에 남은 유사도
+퍼센트 괄호는 그대로 둠.
+
+- **`extension/src/components/screens/IssueListScreen.tsx`**: `handleSaveClick`의
+  `setSimilarityWarning` 문구 수정.
+- 검증: 확장 72개 전부 통과, lint/tsc/build 클린.

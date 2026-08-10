@@ -1404,3 +1404,90 @@ tier를 병렬로 처리하며 붙인 순서, 문서 위치와 무관) 이슈를
 ### Next
 
 - 사용자 재검증 대기 — 실제 컨플루언스에서 복제본을 만들어 제목 시각이 맞는지 확인 필요.
+
+## 2026-08-10 — review-agent 재벤더링: `category_screen` → `bundled_screen_hybrid`
+
+"planqa-agent 모델 변경됐어 이걸로 하고 우리 .env는 유지해" 요청. upstream이 구조를 또 한 번
+바꿨음 — `structures/category_screen.py`가 사라지고 `structures/bundled_screen_hybrid.py`로
+교체(+새 데이터 파일 `structures/fewshot_bank.py`, 룰별 위반/예외 퓨샷 예시 모음). 상세 변경
+근거/버전별 diff는 `docs/adr/0001-...`의 이번 업데이트 섹션 참고. 요약:
+
+- **4개 동시 tier → 2개 순차 패스로 단순화**: Paragraph 패스(대부분 카테고리) → Document 패스
+  (관계형 LG/LF/GA + 부재확인형 LG-01/TC-02)만 순서대로 돈다. **`LLMClient.clone()`이 아예
+  없어져서** 지난 재벤더링 때 만든 `_ScopedClient` 우회 코드가 통째로 필요 없어짐 —
+  `AnthropicClient`를 그냥 직접 생성하도록 단순화(`qa_jobs.py::_run_review_sync`).
+- **진행률 체크리스트도 새 구조에 맞게 다시 짬**: 예전 4그룹(Document/Logical Unit/Paragraph/
+  Sentence) 체계는 이제 Logical Unit/Sentence가 아예 안 쓰이는 위계라 실제와 안 맞았음 —
+  Paragraph/Document 2그룹으로 교체하고, "동시 실행"이 아니라 "진짜 순차 실행"이 됐으니 lockstep
+  대신 **실행 순서대로**(Paragraph가 먼저 100% 찬 뒤에야 Document가 움직이기 시작) 채우도록 함.
+- **JSON 파싱이 더 견고해짐**: `llm/base.py`에 `_repair_json`(잘못된 백슬래시/trailing comma
+  복구)이 새로 생겼고, `AnthropicClient`가 깨지거나 빈 응답이 와도 한 번 더 재시도함 — 2026-08-09
+  Claude 전환 항목에서 관찰만 하고 넘어갔던 "Paragraph 위계 malformed JSON" 이슈를 upstream이
+  직접 고친 셈.
+- **`.env`/API 키 구성은 그대로 유지** — upstream에 새로 생긴 `llm/factory.py`(환경변수
+  `PLANQA_LLM_BACKEND`로 백엔드를 고르는 CLI용 헬퍼)는 벤더링하지 않음. 여전히 `settings`(pydantic-
+  settings, `.env` 기반)에서 읽은 키로 `AnthropicClient`를 직접 생성.
+- 벤더링 파일: `document.py`(신규 `resolve_reported_level` 포함), `dedupe.py`, `verifier.py`,
+  `tiers.py`, `pipeline.py`(여전히 `ReviewResult`만 씀), `instrumentation.py`, `llm/base.py`,
+  `llm/anthropic.py`, `planqa_schemas/rulebook.py`, `structures/bundled_screen_hybrid.py`(신규),
+  `structures/fewshot_bank.py`(신규) — `llm/gemini.py`/`structures/category_screen.py`는 삭제.
+- 검증: 벤더링 테스트 재동기화(`test_bundled_screen_hybrid.py` 신규, `test_fewshot_bank.py` 신규,
+  나머지 import 경로만 갱신) + 우리 쪽 테스트(`FakeAnthropicClient`를 새 프롬프트/응답 형식에 맞게
+  수정, 진행률 체크리스트 테스트 2개 재작성) 포함 백엔드 126개 전부 통과, ruff 클린.
+
+### Next
+
+- 진행률 체크리스트가 실제로 Paragraph → Document 순서로 차오르는 것처럼 보이는지 실사용 확인.
+
+## 2026-08-10 — bundled_screen_hybrid 실제 Claude API로 라이브 검증 + 진행률 상수 재보정
+
+병합 전에 "이거 다 작동할까?" 질문 — 지금까지는 스크립트 응답(mock)으로만 검증했었어서, 실제
+`.env`의 Claude 키로 `review_document()`를 직접 돌려 라이브 검증함(DOC-001 fixture).
+
+- **결과**: 120.3초, **4개 이슈**, `tier_errors: ()`(파싱 에러 0건). 이전 4-tier 조합들(Gemini
+  22~44개, Claude 12개)보다 훨씬 적고, CLI 기준값이었던 "6개"에 더 가까워짐 — 여전히 정확히
+  일치하진 않지만 방향은 맞는 쪽. 새로 생긴 `resolve_reported_level`도 실제로 작동 확인: MI-06
+  이슈가 Paragraph 청크에서 스캔됐지만 confirm이 "Logical Unit"으로 승격 보고해서 그대로 반영됨
+  (설계대로).
+- **부작용 발견 및 수정**: 소요 시간이 이전 4-tier 동시 실행 버전(66.1초)의 거의 2배(120.3초)로
+  늘어남 — 동시성 이점이 없어진 데다(2패스 순차) 프롬프트에 룰 텍스트+퓨샷 예시가 통째로 들어가
+  호출 자체도 무거워진 탓. 방금 재보정했던 `_ESTIMATED_DURATION_SECONDS`(20s, 66초 기준)가 이
+  새 실측치엔 다시 안 맞아서(완료 훨씬 전에 90%에 도달해 오래 멈춰 있는 것처럼 보임) 35s로 재조정.
+- 검증: 백엔드 126개 전부 통과(상수 변경만이라 신규 테스트 없음), ruff 클린.
+
+### Next
+
+- 데이터 포인트가 아직 하나뿐 — 여러 문서/여러 회 실행으로 이슈 개수·소요 시간 편차를 더 확인하면
+  좋음.
+
+## 2026-08-10 — review-agent가 bundled_screen_hybrid를 다시 병렬화 (2패스 동시 실행으로 재동기화)
+
+방금 순차 실행으로 재벤더링했는데, review-agent 쪽에서 바로 이어서 그 2패스(Paragraph/Document)를
+동시 실행으로 병렬화하는 PR을 올리고 병합함(`sunic5-planqa/planqa-agent` PR #23~#25,
+`https://github.com/sunic5-planqa/planqa-agent`). 다시 재벤더링.
+
+- **`instrumentation.py`**: `isolate_client(llm, *, key=None)`으로 시그니처 변경 — `llm`에
+  `isolate(key)` 메서드가 있으면(테스트 더블처럼 응답을 분기별로 라우팅해야 하는 경우) 그걸 쓰고,
+  없으면(실제 백엔드) 그냥 `copy.copy()` + 새 usage 리스트로 폴백. **덕분에 우리 쪽
+  `AnthropicClient`는 `isolate()`를 따로 구현할 필요가 전혀 없음** — `copy.copy()` 폴백이 알아서
+  처리해줌(같은 HTTP 클라이언트를 참조로 공유, usage 리스트만 분리).
+- **`bundled_screen_hybrid.py`**: 각 패스를 `_run_pass()`로 뽑아내고, 두 패스가 모두 있으면
+  `ThreadPoolExecutor`로 동시 실행(하나만 있으면 그냥 직접 호출, 스레드풀 오버헤드 안 씀).
+- **`qa_jobs.py`는 무변경** — `_run_review_sync`가 `AnthropicClient`를 그냥 생성만 하면 되는
+  구조라(지난 재벤더링 때 이미 그렇게 단순화해둠), 이번 병렬화도 별도 대응 코드 없이 그대로 호환됨.
+- **진행률 체크리스트를 다시 lockstep으로 되돌림** — 방금 "순차 실행" 가정으로 바꿨던 걸(Paragraph
+  먼저 100%) 원래의 "모든 그룹 동시 진행" 방식으로 원복. 실측도 다시 확인(DOC-001, Claude
+  Haiku→Sonnet 조합): **63.1초**(순차 버전 120.3초 대비 거의 절반, 원래 4-tier 버전 66.1초와
+  거의 동일) — `_ESTIMATED_DURATION_SECONDS`도 35s→20s로 원복.
+- **테스트 더블도 동기화**: `conftest.py`의 `ScriptedLLM`이 `tier_responses`/`clone()`(죽은 코드)
+  대신 `keyed_responses`/`isolate()`를 구현 — key 없이 `isolate()`가 호출되면(테스트 더블에
+  `keyed_responses`를 안 주고 병렬 구조를 테스트하려 한 경우) 애매하게 넘어가지 않고 명확한
+  에러를 던짐(공유 이터레이터 레이스를 나중에 조용히 재현하는 대신 지금 바로 잡아냄).
+- 검증: 벤더링 테스트 재동기화(`test_bundled_screen_hybrid.py`가 `keyed_responses` 기반으로,
+  신규 "plain ScriptedLLM 오용 시 명확한 에러" 테스트 포함) + 우리 진행률 테스트 lockstep으로
+  원복, 백엔드 126개 전부 통과, ruff 클린. 실제 API로도 재검증(4개 이슈, 에러 0건, 63.1초).
+
+### Next
+
+- upstream이 짧은 주기로 계속 구조를 바꾸고 있어 재벤더링이 반복되는 중 — 당분간 병합 전마다
+  `sunic5-planqa/planqa-agent`의 최신 상태를 확인하는 습관이 필요.

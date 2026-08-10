@@ -264,6 +264,28 @@ describe('applyIssueEdit', () => {
     const putBody = JSON.parse(putCall?.[1]?.body as string)
     expect(putBody.body.storage.value).toBe(`<ul><li>${newText}</li><li></li></ul>`)
   })
+
+  it('finds text split by a <strong> close tag and a <br> inside one <p> (real DOC-001 shape)', async () => {
+    // 실제 DOC-001 페이지에서 재현된 구조 그대로 — 볼드로 감싼 구절 뒤에 <br>로 줄바꿈하고 이어지는
+    // 문장이 붙는 흔한 패턴("**핵심 지표**\n근거: ...")이 서로 다른 텍스트 노드로 쪼개진다.
+    const oldText =
+      '홈 UV (Unique Visitor) 월 2만명 달성근거: 구매 전환율 1.5% 목표 달성을 위해 장바구니 유입 최소 1,000명 필요.'
+    const newText = '실제 퍼널 수치를 재계산하여 일관된 근거로 제시'
+    const fragment =
+      '<li><p><strong>홈 UV (Unique Visitor) 월 2만명 달성</strong><br>근거: 구매 전환율 1.5% 목표 달성을 위해 ' +
+      '장바구니 유입 최소 1,000명 필요. 홈→장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>'
+    const fetchMock = stubConfluenceFetch({ duplicateBody: fragment })
+
+    const result = await applyIssueEdit('issue-strong-br', oldText, newText)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    // <strong>/<br> 태그 자체는 건드리지 않고, 그 사이에 있던 텍스트 노드 내용만 치환된다.
+    expect(putBody.body.storage.value).toBe(
+      `<li><p><strong>${newText}</strong><br> 홈→장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>`,
+    )
+  })
 })
 
 describe('scrollToIssue', () => {

@@ -162,7 +162,11 @@ function wrapIssueByLocationHeading(issue: OverlayIssue): boolean {
   const target = normalizeHeadingText(issue.location?.split('>').pop() ?? '')
   if (!target) return false
 
-  const heading = Array.from(document.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')).find(
+  // h1은 일부러 뺀다 — review-agent의 Document 위계(문서 전체를 대상으로 한 판정) 이슈는
+  // location이 곧 "문서 제목"이라서(백엔드 document.py의 _doc_title), 여길 막지 않으면 컨플루언스
+  // 페이지 자체의 제목(h1)을 감싸버려 "제목이 문제"인 것처럼 보이는 엉뚱한 하이라이트가 된다(실제
+  // 사용자 보고). 본문 소제목(h2~h6)만 유효한 폴백 대상 — 못 찾으면 하이라이트 없이 넘어간다.
+  const heading = Array.from(document.querySelectorAll<HTMLElement>('h2, h3, h4, h5, h6')).find(
     (h) => !isInsideOverlayNode(h) && normalizeHeadingText(h.textContent ?? '') === target,
   )
   if (!heading) return false
@@ -458,6 +462,25 @@ export function __resetDuplicateSessionForTests(): void {
   duplicateSession = null
 }
 
+// timeZone: 'Asia/Seoul'을 명시한 toLocaleString도 실제 서비스 환경에서 여전히 몇 시간씩
+// 어긋난다는 보고가 있었다(Intl 구현/브라우저 설정에 따라 달라질 수 있는 여지가 남아있는 듯) —
+// 그래서 Intl에 아예 기대지 않는 방식으로 바꾼다. Date.getTime()의 epoch ms는 시간대와 무관한
+// 절대 시각이므로, 여기에 KST 오프셋(UTC+9, 서머타임이 없어 연중 고정)을 직접 더한 뒤 UTC
+// getter로 값을 읽으면 실행 환경(Intl 지원 수준, 시스템 시간대 설정)에 전혀 의존하지 않는 순수
+// 산술 계산만으로 항상 정확한 한국 시각을 얻는다.
+export function formatKstTimestamp(date: Date): string {
+  const KST_OFFSET_MS = 9 * 60 * 60 * 1000
+  const kst = new Date(date.getTime() + KST_OFFSET_MS)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const hour24 = kst.getUTCHours()
+  const ampm = hour24 < 12 ? '오전' : '오후'
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12
+  return (
+    `${kst.getUTCFullYear()}. ${kst.getUTCMonth() + 1}. ${kst.getUTCDate()}. ` +
+    `${ampm} ${hour12}:${pad(kst.getUTCMinutes())}:${pad(kst.getUTCSeconds())}`
+  )
+}
+
 async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: true; pageId: string } | { ok: false; error: string }> {
   if (duplicateSession) return { ok: true, pageId: duplicateSession.pageId }
 
@@ -473,11 +496,7 @@ async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: tru
   }
   if (!original.space?.key) return { ok: false, error: '스페이스 정보를 확인하지 못했습니다.' }
 
-  // 'ko-KR' 로케일은 표기 형식(연월일 순서, 오전/오후 등)만 한국식으로 바꿀 뿐 시간대는 실행 환경의
-  // 시스템 설정을 그대로 따라간다 — timeZone을 명시하지 않으면 브라우저/시스템 시간대가 KST가
-  // 아닐 때 실제 시각과 몇 시간씩 어긋나 보일 수 있어, Asia/Seoul을 직접 고정한다.
-  const timestamp = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
-  const title = `${original.title} (QA 검토 수정본 ${timestamp})`
+  const title = `${original.title} (QA 검토 수정본 ${formatKstTimestamp(new Date())})`
   const createRes = await fetch(`${location.origin}/wiki/rest/api/content`, {
     method: 'POST',
     credentials: 'include',

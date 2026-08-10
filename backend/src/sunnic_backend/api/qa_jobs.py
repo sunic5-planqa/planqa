@@ -3,6 +3,7 @@ import hashlib
 import math
 import re
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,11 +23,9 @@ from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import (
     Issue as ReviewIssue,
 )
-from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Level
-from sunnic_backend.qa_engine.review_agent.structures.category_screen import (
+from sunnic_backend.qa_engine.review_agent.structures.bundled_screen_hybrid import (
     review_document,
 )
-from sunnic_backend.qa_engine.review_agent.tiers import TIER_CATEGORIES
 from sunnic_backend.storage.store import store
 
 router = APIRouter(tags=["qa-jobs"])
@@ -85,12 +84,23 @@ def _frame_type(category: str, related_location: str | None) -> FrameType:
     return FrameType.OBJECT
 
 
-# SCREEN 02 groups categories by review tier — these four map 1:1 to tiers.TIER_ORDER.
-_TIER_GROUPS: tuple[tuple[Level, str, str], ...] = (
-    (Level.DOCUMENT, "documents", "Documents"),
-    (Level.LOGICAL_UNIT, "logical_chapter", "Logical Chapter"),
-    (Level.PARAGRAPH, "detailed_chapter", "Detailed Chapter"),
-    (Level.SENTENCE, "sentence", "Sentence"),
+# SCREEN 02 groups categories by review pass. bundled_screen_hybrid.review_document()
+# (2026-08-10 재벤더링) only runs two passes now — Paragraph (most categories) and Document
+# (relational categories that need whole-document visibility, same set as _RANGE_CATEGORIES
+# above) — replacing the old 4-tier structure (Document/Logical Unit/Paragraph/Sentence),
+# where Logical Unit and Sentence aren't queried by this structure at all anymore. Reusing
+# _RANGE_CATEGORIES here (rather than a second frozenset) keeps this in lockstep with
+# _frame_type's own notion of "relational" automatically.
+#
+# Known imprecision: bundled_screen_hybrid also routes two *individual* rule_ids
+# (tiers.ABSENCE_CHECK_RULE_IDS — LG-01, TC-02) into the Document pass regardless of their
+# category, but this checklist only has per-*category* granularity — so the "TC" item still
+# shows under Paragraph as a whole (accurate for TC-01/03/04/05, technically early for the
+# single rule TC-02) rather than splitting one category across two groups. Not worth the
+# added complexity for a cosmetic, already-fake progress signal (see docs/adr/0001-...).
+_PROGRESS_GROUPS: tuple[tuple[str, str], ...] = (
+    ("paragraph", "Paragraph"),
+    ("document", "Document"),
 )
 
 
@@ -103,24 +113,23 @@ def _category_label_by_prefix(rulebook: RuleBook) -> dict[str, str]:
 
 def _build_tier_groups(rulebook: RuleBook) -> list[tuple[str, str, list[tuple[str, str]]]]:
     # Static per-rulebook structure (doesn't change per job): (group_key, group_label,
-    # [(category_prefix, category_label), ...]) for every tier that actually has categories.
+    # [(category_prefix, category_label), ...]) for every pass that actually has categories.
     labels = _category_label_by_prefix(rulebook)
-    groups = []
-    for level, key, label in _TIER_GROUPS:
-        items = [(prefix, labels[prefix]) for prefix in TIER_CATEGORIES.get(level, ()) if prefix in labels]
-        if items:
-            groups.append((key, label, items))
-    return groups
+    by_group: dict[str, list[tuple[str, str]]] = {"paragraph": [], "document": []}
+    for prefix, label in labels.items():
+        by_group["document" if prefix in _RANGE_CATEGORIES else "paragraph"].append((prefix, label))
+    return [(key, label, by_group[key]) for key, label in _PROGRESS_GROUPS if by_group[key]]
 
 
 def _categories_for_progress(rulebook: RuleBook, progress: int) -> tuple[list[ProgressCategoryOut], str | None]:
     # No per-category completion signal exists (see docs/adr/0001-...), so this is still a
-    # cosmetic checklist derived from the same fake progress % the ticker computes — but
-    # category_screen.review_document() now runs all 4 tiers *concurrently* (2026-08-10
-    # re-sync), not one after another, so every group has to advance in lockstep here too.
-    # Walking through tiers sequentially (the original version of this function) would show
-    # e.g. "Documents 100% done, Sentence 0%" long after Sentence's screen call actually
-    # already fired — visibly wrong once tiers stopped being sequential.
+    # cosmetic checklist derived from the same fake progress % the ticker computes. Briefly
+    # (right after the bundled_screen_hybrid re-sync, before its own follow-up parallelization
+    # landed upstream) the two passes ran strictly sequentially and this filled Paragraph to
+    # 100% before Document moved at all — but review-agent's own "perf: run bundled_screen_
+    # hybrid's 2 passes concurrently" update (2026-08-10) means they're back to running at the
+    # same time via ThreadPoolExecutor, so every group has to advance in lockstep again, same
+    # reasoning as the original 4-tier-concurrent version of this function.
     groups = _build_tier_groups(rulebook)
     if not groups:
         return [], None
@@ -170,32 +179,65 @@ class IssueResponse(BaseModel):
     related_location: str | None
 
 
+_MI_VERIFY_SYSTEM = (
+    "You are double-checking a document-review agent's claim that specific information is "
+    "missing from a document — this exact failure mode (claiming X is missing when X is "
+    "actually stated elsewhere in the document, because the agent's own review only saw one "
+    "narrow chunk of it) has been observed live in production. You will be given the FULL "
+    "document text and the agent's claim. Re-read the ENTIRE document carefully, not just "
+    "whatever section the agent focused on, before deciding.\n"
+    'Respond with JSON only: {"actually_missing": <bool>, "reason": "<one short sentence>"}'
+)
+
+
+# MI(정보 누락) 카테고리에서, 문서에 실제로 있는 정보를 "없다"고 잘못 주장하는 오탐이 실사용 중
+# 확인됨(DOC-001 "8. 런칭 계획"의 날짜 — 파서는 정확히 뽑아냈는데 confirm이 좁은 chunk만 보고
+# 놓침, 2026-08-10). planqa-agent의 services/eval-service(judge.py)로 걸러볼 수 있는지 먼저
+# 검토했으나, 그건 문서 원문 없이 에이전트 본인의 근거/이유만 재검토하는 reference-free 구조라
+# (judge_review_result가 document_text를 아예 안 받음) "근거 자체는 논리적이지만 전제가 문서와
+# 안 맞는" 이런 유형은 애초에 못 잡는다 — 그래서 대신 여기서 문서 전체를 다시 보여주고 재확인한다.
+# MI만 검증하는 이유: 이 실패 유형("없다"는 주장)이 정의상 부분적 컨텍스트에서 특히 취약하고,
+# 실제로 관찰된 오탐도 전부 MI였다 — 모든 카테고리에 걸면 비용/시간이 크게 늘어난다.
+def _verify_mi_finding(document_text: str, issue: ReviewIssue, llm: AnthropicClient) -> bool:
+    prompt = (
+        f"Full document:\n{document_text}\n\n"
+        f"Agent's claim — location: {issue.location!r}\n"
+        f"  what's allegedly missing: {issue.description!r}\n"
+        f"  rationale: {issue.rationale!r}\n"
+        f"  quoted context: {issue.original_text!r}\n\n"
+        "Return the JSON."
+    )
+    try:
+        response = llm.complete_json(system=_MI_VERIFY_SYSTEM, prompt=prompt)
+    except Exception:  # noqa: BLE001 - a verification failure must not block/hide the original finding
+        return True
+    if not isinstance(response, dict):
+        return True
+    return bool(response.get("actually_missing", True))
+
+
 def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> ReviewResult:
     # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
     # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
     #
-    # category_screen.review_document() runs the 4 tiers concurrently via LLMClient.clone()
-    # (one client per tier, since record_call()'s usage-diffing races if threads share one
-    # client's usage list) — the base class's default clone() re-reads credentials from
-    # os.environ instead of reusing the api_key passed at construction, which we don't set
-    # process-wide (settings come from .env via pydantic-settings, not the real environment).
-    # Wrap whatever AnthropicClient currently resolves to (module-level name, so tests can
-    # still monkeypatch it) in a subclass that threads the explicit key through clone() instead.
-    base_cls = AnthropicClient
-
-    class _ScopedClient(base_cls):  # type: ignore[misc, valid-type]
-        def clone(self, *, tier: object | None = None) -> "AnthropicClient":
-            return _ScopedClient(
-                model=self.model,
-                api_key=settings.anthropic_api_key,
-                temperature=self._temperature,
-                max_tokens=self._max_tokens,
-            )
-
+    # bundled_screen_hybrid.review_document() (2026-08-10 재벤더링) calls screen_llm/confirm_llm
+    # directly and sequentially (Paragraph pass, then Document pass) — unlike the old
+    # category_screen structure, nothing here runs concurrently, so LLMClient.clone() is never
+    # called and the _ScopedClient workaround built for it (see docs/adr/0001-...) is gone —
+    # explicit api_key= is threaded straight through the constructor, same as before.
     # 1차 스크리닝(저비용, over-flag 의도) = Haiku, 2차 정밀검증(고비용, 정밀) = Sonnet.
-    screen_llm = _ScopedClient(model=settings.sunnic_haiku_model, api_key=settings.anthropic_api_key)
-    confirm_llm = _ScopedClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
-    return review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
+    screen_llm = AnthropicClient(model=settings.sunnic_haiku_model, api_key=settings.anthropic_api_key)
+    confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
+    result = review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
+
+    verified_issues = tuple(
+        issue
+        for issue in result.issues
+        if (rule := rulebook.rule(issue.rule_id)) is None
+        or rule.category != "MI"
+        or _verify_mi_finding(document_text, issue, confirm_llm)
+    )
+    return replace(result, issues=verified_issues)
 
 
 # 이슈 목록을 "문서 본문 순서"로 보여주려면(SCREEN 02 "다음"/오버뷰가 왼쪽 원본을 위→아래로 훑도록)
@@ -240,12 +282,11 @@ def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue:
     )
 
 
-# 4개 tier가 순차 실행이던 시절(예전 벤더링) 기준으로 잡았던 상수(45s)가 그대로 남아 있었다 —
-# 2026-08-10 재벤더링 이후로는 4개가 ThreadPoolExecutor로 동시에 돌아서 실제로 훨씬 빨리
-# 끝나는데(Claude Haiku→Sonnet 조합 실측 66.1초, DOC-001), 곡선은 여전히 "45초짜리 작업"
-# 기준으로 늘어져서 체감상 진행바가 계속 느려 보였다. 실측치 기준으로 t=완료 시점 즈음엔 90%
-# 근처까지 거의 다 차 있도록(더 이상 "끝났는데도 한참 밑에 머물러 있는" 느낌이 안 나도록) 시간
-# 상수를 다시 잡음 — 20s면 t=66s에 86%까지 올라온다(예전 45s 기준으로는 69%에 그쳤음).
+# 20s → 4-tier 동시 실행(category_screen) 시절 실측(66.1초) 기준. bundled_screen_hybrid로
+# 재벤더링한 직후엔 2패스가 순차 실행이라 120.3초로 늘어나서 35s로 잠깐 올렸었는데, review-agent가
+# 곧이어 그 2패스를 다시 동시 실행으로 병렬화해서(2026-08-10) 실측이 63.1초로 원래 값 근처로
+# 돌아왔다 — 20s로 원복(t=63.1s일 때 진행률 ≈86%, 35s로 두면 이번엔 반대로 완료 훨씬 전에 90%를
+# 넘겨 오차가 커짐).
 _ESTIMATED_DURATION_SECONDS = 20.0
 
 

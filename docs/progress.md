@@ -1792,3 +1792,27 @@ AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(Re
 - 나머지 피드백(4~9번: 유사도 검사가 지시형 제안엔 안 맞는 문제/넘버링 재설계/관계형 이슈 다중
   위치 편집/삽입형 프레이밍 확장/MI 과탐지/QA완료 뒤 뒤로가기)은 사용자 확인 후 순서대로 진행 예정 —
   특히 7번(삽입형 프레이밍)은 사용자가 언급한 노션 문서 내용을 아직 못 받아서 착수 보류.
+
+## 2026-08-11 — "cross-world extension resource mismatch" 로딩 오류 수정
+
+두 명이 사이드패널이 아예 안 열린다고 보고. 어제 "Chrome Canary 채널 버그라 우리 쪽에서 못 고친다"고
+안내했는데, 이번 제보자는 `chrome://version`에 `cohort: Stable`(151.0.7922.76, 정식 버전)로 찍혀
+있어 그 진단이 틀렸음이 확인됨 — 우리 빌드 쪽 문제였다.
+
+- **원인**: Vite가 기본으로 진입점 HTML에 `<link rel="modulepreload" crossorigin href="...">`를
+  자동 삽입하는데, MV3 확장 페이지에서 이 태그가 일부 Chrome(버전 무관, Canary 한정 아니었음)에서
+  "cross-world extension resource mismatch"라는 실제 크로미움 버그를 유발함 — 정확히 같은 에러가
+  MetaMask에서도 보고됨([MetaMask/metamask-extension#44792](https://github.com/MetaMask/metamask-extension/issues/44792)).
+  이 오류가 나면 `src/sidepanel/index.html` 자체가 못 뜨니 사이드패널이 완전히 먹통이 된다.
+- **`vite.config.ts`**: `build.modulePreload: false` 추가 — modulepreload는 순수 성능 힌트일 뿐,
+  꺼도 진입 스크립트가 네이티브 ES `import`로 청크를 정상적으로 가져오니 기능 손실 없음. 빌드된
+  `dist/src/sidepanel/index.html`에서 해당 `<link>` 태그가 완전히 사라진 것 확인.
+- 검증: `typecheck`/`lint`/`vitest` 88개 전부 통과(모듈 프리로드 제거는 런타임 동작과 무관해 신규
+  테스트 없음). `sunnic-extension.zip` 재빌드 완료 — 재배포 필요.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 이 오류를 실제로 겪었던 두 명이 새 zip으로 다시 로드했을 때
+  사이드패널이 정상적으로 뜨는지 확인 필요. 이 버그는 재현이 간헐적이었을 가능성도 있어(크로미움
+  버그 자체가 어떤 조건에서 트리거되는지 불명확), 100% 해소를 장담하긴 어려움 — 계속 재현되면
+  추가 보고 필요.

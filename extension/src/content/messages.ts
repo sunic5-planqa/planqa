@@ -31,6 +31,10 @@ export interface OverlayIssue {
   criteria: string
   reason: string
   suggestion: string
+  // "정보 누락(MI)"처럼 애초에 원문에 없는 걸 지적하는 이슈는 input_text로 문서 안에서 찾을 대상 자체가
+  // 없다 — 그럴 때 이 이슈가 속한 위계(예: "6. 프로덕트 기능 > 6-1. 메인 배너")의 제목으로라도 찾아가
+  // 하이라이트할 수 있도록 폴백 근거로 쓴다.
+  location: string
 }
 
 export interface ShowIssueOverlayRequest {

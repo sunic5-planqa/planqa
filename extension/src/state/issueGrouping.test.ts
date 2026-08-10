@@ -10,6 +10,8 @@ function makeIssue(overrides: Partial<IssueResponse>): IssueResponse {
     criteria: 'criteria',
     reason: 'reason',
     suggestion: 'suggestion',
+    frame_type: 'object',
+    related_location: null,
     ...overrides,
   }
 }

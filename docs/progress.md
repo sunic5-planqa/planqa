@@ -641,3 +641,674 @@ Overview 카드로 이슈를 옮겨다닐 때도 자동으로 뜨도록 확장 �
   원문만 보여줄지 원문+수정본을 같이 보여줄지"로 스코프를 좁혀 구현함 — 다른 의도(예: 원본 컨플루언스
   페이지로 직접 이동)였다면 다시 조정 필요.
 - QA 엔진 핵심 로직 — 여전히 최우선 순위.
+
+## 2026-08-08 — QA 엔진 코어 연결 (`sunic5-planqa/planqa-agent` review-agent 도입)
+
+여러 세션째 "최우선 순위"로 밀려 있던 QA 엔진 코어를 드디어 붙였다. 자체 구현 대신, 별도 저장소
+(`planqa-agent`, `feature/review-agent` 브랜치)에서 이미 완성돼 테스트까지 붙어있던 룰북 기반 검토
+파이프라인을 가져와 벤더링했다 — 처음부터 다시 짜는 대신 검증된 걸 재사용하는 쪽으로 판단.
+
+- **벤더링 범위**: `planqa-agent`의 `review-agent/src/planqa_review/`에서 실행 경로에 필요한 것만
+  골라 `backend/src/sunnic_backend/qa_engine/review_agent/`로 복사 — `schema`/`document`/`rulebook`/
+  `tiers`/`dedupe`/`instrumentation`/`verifier`/`pipeline`/`llm/{base,gemini}`/
+  `models/gemini_lite/*`. CLI(`cli.py`)와 벤치마크/실험/스코어링 도구(`benchmark.py`, `experiment.py`,
+  `diff_report.py`, `run_stats.py`, `scoring.py`, `llm/{factory,ollama}.py`, `openpyxl`/`python-dotenv`
+  의존성)는 이 백엔드가 서빙 전용이라 제외 — 그 결과 새 의존성 추가가 하나도 필요 없었음(이미 있던
+  `google-genai`로 충분). 룰북 원본(`rulebook_v1.0.md`)도 패키지 안에 함께 복사해 cwd에 의존하지
+  않게 함(`Path(__file__)` 기준 경로).
+  같이 딸려온 테스트 8개(`test_dedupe`/`document`/`instrumentation`/`llm_base`/`pipeline`/`screener`/
+  `confirmer`/`tiers`) + trimmed `conftest.py`도 `backend/tests/qa_engine/review_agent/`로 이식,
+  `document.py`의 실제 문서 회귀 테스트가 쓰는 `DOC-001` 샘플 하나만 `fixtures/`에 별도로 챙김(전체
+  40개 벤치마크 문서셋은 원본 저장소에만 있음).
+- **기존 반쪽짜리 `qa_engine/llm/{base,gemini}.py` 삭제**: 예전에 async `google-genai` 클라이언트로
+  시작했다가 스크리너/컨펌어/파이프라인 없이 멈춰 있던 코드 — 아무 데서도 안 쓰이던 죽은 코드였고,
+  review-agent 쪽 동기 클라이언트가 스크리닝→검증 로직과 이미 세트로 맞물려 있어서 그대로 대체.
+- **`qa_jobs.py`**: 3개 501 스텁을 실구현으로 교체.
+  - `POST /documents/{id}/qa-jobs`: `QAJob(status=running)` 저장 후 `BackgroundTasks`로 실제 검토를
+    백그라운드에 태움, 응답은 즉시 `job_id`만 반환.
+  - review-agent의 `GeminiClient`는 동기/블로킹(429 재시도에 `time.sleep` 사용)이라, FastAPI 이벤트
+    루프를 막지 않도록 `review_document(...)` 호출 전체를 `asyncio.to_thread`로 감쌈 — review-agent
+    코드 자체는 손대지 않고 격리.
+  - `review_document`의 `ReviewIssue`(`rule_id`/`original_text`/`rationale`/`fix_direction` 등)를
+    백엔드 `Issue` 모델(`criteria`/`input_text`/`reason`/`suggestion`)로 매핑: `criteria`는 룰북에서
+    `rule_id`로 찾은 카테고리 라벨("용어 및 단어의 일관성" 등, Figma SCREEN 04 목업의 "검증기준"
+    문구와 같은 형태), `reason`은 `rationale`(없으면 `description`), `suggestion`은 `fix_direction`.
+    `start`/`end`는 원문에서 `input_text` 위치를 best-effort로 찾아 채움(API 응답엔 노출 안 되지만
+    내부 모델 필드라 채워둠).
+  - 진행률/카테고리는 이번 스코프에서 단순화 — `review_document`가 전체를 한 번에 돌려주는 구조라
+    타이어별 콜백이 없음. `RUNNING(0%)` → `DONE(100%)`/`FAILED(100%)`만 보고, `current_category`는
+    계속 `null`. 타이어별 실시간 진행률을 보여주려면 파이프라인 내부에 콜백 훅을 추가해야 하는데,
+    이번엔 벤더링한 코드를 upstream과 최대한 diffable하게 유지하는 쪽을 택해 보류.
+  - `PATCH /issues/{id}`, `GET /documents/{id}/export`는 이번 스코프 밖 — 지금 실제 편집 흐름은
+    `issueOverlay.ts`가 컨플루언스 API로 직접 처리하는 복제본 저장 방식이라 이 두 엔드포인트는 애초에
+    쓰이지 않음(구 "복붙 export" 시절 잔재), 그대로 501 유지.
+- **`config.py`**: `qa_screen_model`/`qa_confirm_model`(둘 다 기본값 빈 문자열 → review-agent의
+  `DEFAULT_MODEL`, 현재 `gemini-2.5-flash`) 추가 — 스크리닝/정밀검증에 다른 모델을 쓰고 싶을 때
+  `.env`로 오버라이드 가능.
+- **`pyproject.toml`**: 벤더링한 코드는 upstream과 diff 가능하게 그대로 두기 위해
+  `[tool.ruff.lint.per-file-ignores]`로 `qa_engine/review_agent/**`만 `B023`/`UP047` 무시(둘 다
+  `record_call`이 같은 루프 반복 안에서 람다를 즉시 실행해서 실제로는 안전한 false positive).
+- **검증**: 벤더링한 39개 + 기존 17개, 백엔드 `uv run pytest` 총 56개 전부 통과. `ruff check` 클린.
+  `uv run uvicorn`으로 실제 기동해 `POST /documents` → `POST .../qa-jobs` → `GET .../status` →
+  `GET .../issues` 전체 왕복 수동 확인(로컬에 Gemini 키가 없어 파이프라인 자체는 곧바로
+  `RuntimeError`로 실패하지만, `FAILED`/`progress:100`으로 정상 종결되고 404 케이스도 올바르게 처리되는
+  것까지 확인 — 잡(job) 생명주기 배선 자체는 검증됨).
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 `GEMINI_API_KEYS`로 `.env`를 채우고 실제 컨플루언스 문서로 전체
+  파이프라인이 끝까지 도는지(스크리닝→정밀검증→이슈 반환), 그리고 익스텐션 쪽 폴백 로직(`NotImplementedError`
+  잡히면 fixture로 대체)이 더 이상 안 타고 실제 이슈가 표시되는지 확인 필요.
+- 타이어별(문서/논리단위/문단/문장) 실시간 진행률·카테고리 — 지금은 처음부터 끝까지 `running`뿐이라
+  `ProgressScreen`의 `CategoryTree`는 계속 안 뜸(옵셔널이라 깨지진 않음). 필요해지면
+  `pipeline.review_document` 내부에 타이어 완료 콜백을 추가하는 방향으로 확장 가능.
+  이 review-agent 코드는 별도 저장소(`planqa-agent`)에서 관리되므로, 두 저장소가 갈라지지 않게
+  주기적으로 다시 동기화(재벤더링)할 필요가 있음 — 지금은 수동 재복사 방식.
+- `PATCH /issues/{id}`, `GET /documents/{id}/export` — 여전히 501. 지금 실제 편집은 익스텐션이
+  컨플루언스에 직접 쓰는 방식이라 당장 급하지 않지만, 이 두 엔드포인트를 아예 없앨지 다른 용도로
+  바꿀지는 다음에 정리 필요.
+- **QA job 엔드포인트 통합 테스트 추가(`backend/tests/test_api_qa_jobs.py`)**: `qa_jobs.GeminiClient`를
+  스크립트된 페이크로 바꿔치기해서, 진짜 API 키 없이도 엔드포인트 → 백그라운드 태스크 → 실제
+  review-agent 파이프라인 → `_to_issue_record` 매핑 → 저장소까지 전체 경로를 실제 코드로 검증. 이
+  과정에서 `review_document`가 단계별 에러를 내부에서 흡수해 항상 `done`으로 끝난다는 걸 확인 —
+  "failed"가 뜨는 유일한 경로는 파이프라인 진입 전(예: `GeminiClient` 생성 자체가 실패, API 키 없음)
+  뿐이라 그 케이스로 테스트를 다시 맞춤. `criteria`가 원시 rule_id가 아니라 룰북 카테고리 라벨로 잘
+  매핑되는지도 같이 검증. 4개 전부 통과, 백엔드 전체 60개로 증가.
+- **실제 Gemini 키로 라이브 검증**: 사용자가 `.env`에 키 3개를 채운 뒤 직접 `review_document`를
+  돌려봄 — 인증/연결 자체는 정상(에러가 401/403이 아니라 429), 다만 무료 티어 일일 한도(모델당
+  하루 20건)를 세 키 다 이미 소진해 이슈가 0건으로 나옴. 문서 1건 검토에 호출이 5~9번(컨텍스트 1 +
+  위계 4개 × 스크리닝/정밀검증) 들어가서 무료 키 하나로 하루 2~4건이 실질 한계 — 배선 자체는
+  검증됐고 순수 쿼터 문제라 다음 UTC 리셋 이후나 새 키 추가 시 재확인.
+
+## 2026-08-08 — 확장 아이콘 교체
+
+기존 플레이스홀더(단색 원)를 실제 마스코트 기반 아이콘으로 교체.
+
+- Figma에서 "Mascot icon" 라벨 아래에 있던 56×56 아이콘(보라→핑크 그라데이션 rounded square +
+  흰 얼굴판 + 보라 점 눈)을 찾아 처음 적용했으나, 코너에 불투명 흰 배경이 남아있어(Figma 캔버스
+  배경이 그대로 노출) 브라우저 툴바에서 흰 사각형처럼 보이는 문제가 있었음 — 이후 사용자가 코너가
+  이미 투명 처리된 자체 에셋(`Desktop/Background.png`, 112×112, alpha 채널 있음)을 직접 제공해 그걸로
+  최종 교체.
+- `extension/public/icons/icon{16,48,128}.png`를 `sips -z`로 리사이즈해 교체. `manifest.config.ts`의
+  경로 참조는 기존 그대로(변경 없음). `npm run build`로 `dist/manifest.json`과 리사이즈된 PNG들이
+  정상 반영되는 것 확인.
+
+### Next
+
+- 실제 Chrome에 리로드해서 툴바 아이콘이 반투명 배경으로 잘 보이는지(다크 툴바 테마 포함) 확인 필요.
+- QA 엔진 핵심 로직은 이제 배선/검증까지 끝났으니, 다음 최우선순위는 "여전히 최우선"에서 내려와도 됨 —
+  남은 건 위 QA 엔진 섹션의 `### Next`(타이어별 진행률, 재동기화, 무료 쿼터로 인한 실사용 테스트 대기).
+
+## 2026-08-08 — SCREEN 02(QA 진행) 실제 반영 + 마스코트가 진행률 바 위를 걷게
+
+사용자가 "진행 경과 시간이 흐르는데 퍼센트가 하나도 안 참"과 "SCREEN 02 UI가 실제에 반영 안 됨(그라데이션
+바, 지금 어느 룰 체크 중인지)"을 각각 지적 — 둘 다 같은 근본 원인: `QAJobStatusResponse`가 처음부터
+`progress=0`/`categories=None`으로 고정이었고, `review_document()`는 타이어별 콜백이 없어 통째로 끝나야만
+결과가 나온다(ADR 0001에서 이미 알려진 한계). 벤더링한 파이프라인은 그대로 두고, 백엔드에서 진행률과
+카테고리 체크리스트를 **경과 시간 기반으로 그럴듯하게 근사**하는 쪽으로 풀었다.
+
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**:
+  - `_tick_progress`(신규): `_execute_qa_job`이 파이프라인을 `asyncio.to_thread`로 돌리는 동안 1.5초마다
+    `job.progress`를 경과 시간 기반 지수함수(`90 * (1 - e^(-elapsed/45))`)로 갱신 — 실제 완료 전엔 90%를
+    절대 못 넘게 해서 "아직 안 끝났는데 100%로 보임" 오인을 방지, 실제 결과가 오면 `_execute_qa_job`이
+    바로 100으로 점프시킴.
+  - `_categories_for_progress`(신규): 룰북의 진짜 카테고리(8개, `rulebook.rules`에서 실제로 파싱된 것)를
+    `tiers.TIER_CATEGORIES`로 4개 위계(Documents/Logical Chapter/Detailed Chapter/Sentence, SCREEN 02
+    그룹명과 1:1)에 묶고, 방금 그 `progress` 값을 다시 활용해 "지금 몇 번째 위계의 몇 번째 카테고리까지
+    끝났다고 보여줄지"를 결정 — 진짜 완료 신호가 아니라 진행률 하나로 파생시킨 연출이라는 점을 코드
+    주석에 명시.
+  - `_korean_label`(신규): 룰북의 카테고리명이 "한글 설명 + 영문 Title Case"로 붙어있어(예: "용어 및
+    단어의 일관성 Terminology Consistency") 정규식으로 영문 접미사를 잘라 한글만 노출 — SCREEN 02
+    목업도, 기존 이슈의 `criteria` 필드도 한글만 보여주는 게 맞아서 둘 다 이걸 쓰도록 통일(이슈
+    `criteria`가 지금까지 영문까지 붙어 나오던 걸 같이 고침).
+  - `GET /qa-jobs/{id}/status`가 이제 `categories`/`current_category`를 실제로 채워서 반환.
+- **`extension/src/components/screens/ProgressScreen.tsx`**: 진행률 바를 Figma 실측(얇은 8px 그라데이션
+  필 바 + 오른쪽에 별도 `%` 라벨, 기존처럼 바 안에 텍스트 겹쳐 넣지 않음)대로 재구성. 마스코트를
+  `.progress-track` 안에 절대배치해서 `left`를 `(트랙 폭 - 마스코트 폭) × progress/100`으로 계산 —
+  진행률이 오를 때마다 마스코트가 바를 따라 오른쪽으로 걸어가고(`transition: left 1.4s linear`), 100%를
+  넘어 트랙 밖으로 튀어나가지 않게 폭을 고정.
+- **`extension/src/components/progress/CategoryTree.tsx`**: Figma 실측 반영 — `done` 항목도 라벨은
+  회색(포커스는 지금 처리 중인 항목에만), `pending` 항목은 아이콘 없이 회색 텍스트만(기존엔 `○`를
+  그렸었음), `in_progress` 항목만 보라 그라데이션 필(`rgba(201,169,255,.18)→rgba(255,201,232,.18)`) +
+  진보라 ExtraBold 텍스트로 강조. 그룹 헤더도 지금 처리 중인 위계만 진하게, 나머지는 회색.
+- **`extension/src/styles/global.css`**: `.progress-track`/`.mascot-on-track`/`.progress-bar-track`
+  신규, `.progress-bar`/`.progress-bar-fill`/`.progress-bar-label`/`.category-tree`/`.category-group-
+  toggle`/`.category-item*` 전면 재작성(색상·반경·패딩 전부 Figma 실측값).
+- 검증: 백엔드 `_categories_for_progress`를 progress 0/10/30/50/89/100으로 수동 실행해 위계가 순서대로
+  넘어가는지, `_korean_label`이 8개 카테고리 전부에서 정규식으로 올바르게 잘리는지 확인(첫 시도는
+  그리디 정규식이라 영문 마지막 단어까지 남는 버그가 있었음 — non-greedy로 수정). 백엔드 60개, 확장
+  `typecheck`/`lint`/`build`/`vitest` 65개 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 Chrome에서 QA 진행 화면을 열어 마스코트가 실제로 바를 따라
+  걷는지, 카테고리 체크리스트가 Figma와 시각적으로 맞아떨어지는지 확인 필요.
+- 카테고리 체크 진행은 여전히 "진짜 신호"가 아니라 progress 값에서 파생된 연출 — 실제 문서마다 위계별
+  소요 시간이 다르면(문장 위계가 챕터 수만큼 커지는 등) 근사가 어긋날 수 있음. 진짜 타이어별 콜백을
+  넣으려면 결국 벤더링한 `pipeline.py`를 건드려야 해서(ADR 0001의 diffable-copy 트레이드오프) 보류.
+
+## 2026-08-09 — SCREEN 03(QA 결과 확인) 배치 정리 + AI 제안 말풍선 안정화
+
+사용자가 "오류 수정하기 버튼을 Figma처럼 배치"와 "AI 제안 말풍선이 어떤 이슈는 뜨고 어떤 건 안 뜸"을
+같이 지적. `get_design_context`로 SCREEN 03(143:5215)를 다시 실측해서 둘 다 고쳤고, 덧붙여 "지금
+오른쪽 패널에서 보고 있는 이슈의 박스"를 문서 위에서도 구분되게 그라데이션 테두리로 강조했다.
+
+- **`오류 수정하기` 배치**: Figma는 "수정제안" 라벨과 "오류 수정하기" 링크를 10px 간격으로 나란히
+  붙여둔다(카드 양 끝으로 벌어지지 않음) — `.issue-suggestion-row`가 `justify-content: space-between`
+  이었던 걸 `gap: 10px`만 남기고 제거해서 고침. 색이모지 "✏️" 대신 Figma 실측 스타일(작은 원 + 연필)에
+  가까운 인라인 SVG 아이콘으로 교체(`currentColor`라 링크 텍스트와 같은 검정).
+- **AI 제안 말풍선이 가끔 안 뜨던 버그의 진짜 원인**: `scrollToIssue()`가 `mark.scrollIntoView({behavior:
+  'smooth'})`를 건 직후 곧바로 `showTooltip()`으로 그 시점의 `getBoundingClientRect()` 좌표에 말풍선을
+  꽂았음 — 스무스 스크롤 애니메이션이 끝나기 *전* 좌표라, 스크롤 거리가 크면 말풍선이 도착지가 아닌
+  엉뚱한 위치(화면 밖일 수도 있음)에 떠서 사용자 눈엔 "안 뜬 것"처럼 보였다. 애니메이션 종료를 감지하는
+  대신, 말풍선이 열려있는 동안 `scroll`(capture:true — 컨플루언스 내부 스크롤 컨테이너까지 잡기 위해)/
+  `resize` 이벤트마다 위치를 계속 재계산하도록 바꿔서, 스무스 스크롤이 언제 끝나든 최종적으로는 항상
+  mark 바로 아래에 자리잡게 함(닫힐 때 리스너 정리).
+- **`extension/src/content/issueOverlay.ts`**: `ACTIVE_CLASS`(신규) — 오른쪽 패널에서 지금 보고 있는
+  이슈의 mark에만 붙는 클래스. `border-image`는 `border-radius`를 무시하는 CSS 한계가 있어서, 대신
+  `padding-box`(투명)/`border-box`(보라→핑크 그라데이션) 이중 `background`로 우회 — 둥근 모서리를
+  유지하면서 테두리만 그라데이션. 클릭과 `scrollToIssue()` 양쪽 경로 모두 `setActiveMark()`를 거쳐서
+  이전에 보던 이슈의 강조는 자동으로 빠짐.
+- 검증: `issueOverlay.test.ts`에 신규 테스트 2개(active 클래스가 이슈 전환 시 정확히 옮겨가는지, mark의
+  `getBoundingClientRect()`가 스크롤 도중 바뀌면 말풍선 위치도 같이 갱신되는지) 추가. 확장
+  `typecheck`/`lint`/`build`/`vitest` 67개 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 DOC-001에서 오른쪽 패널로 이슈를 넘길 때마다 왼쪽 박스가
+  그라데이션으로 바뀌는지, 스크롤 거리가 먼 이슈로 이동해도 말풍선이 매번 정확한 위치에 뜨는지 확인.
+- 오류 수정하기 아이콘은 Figma 원본 에셋(임시 URL, 7일 만료) 대신 간단한 인라인 SVG로 근사함 — 정확한
+  Figma 벡터가 필요하면 나중에 `download_assets`로 실제 아이콘을 받아 교체할 수 있음.
+
+## 2026-08-09 — 컨플루언스 헤딩 평탄화 버그 수정 + "왜 서버 결과가 CLI보다 이슈가 훨씬 많은지" 조사
+
+사용자가 review-agent CLI로 직접 돌린 결과(`review.json`, 6개)와 우리 서버로 같은 문서를 돌린 결과(40여개)가
+왜 이렇게 차이나는지 물어봄 — 두 갈래로 조사했다.
+
+- **찾아서 고친 진짜 버그**: `extension/src/content/confluenceParser.ts`의 `htmlToChapterMarkdown`이
+  컨플루언스의 h1~h6 헤딩을 전부 `##`(챕터) 한 단계로 평탄화하고 있었음 — 이건 예전 백엔드 구조 파서
+  (`#`/`##` 2단계만 이해)에 맞춰 만들어진 로직인데, 지금 QA 엔진(`qa_engine/review_agent/document.py`)은
+  `##`=논리 단위, `###`~`######`=그 안의 문단 경계로 계층을 나눠서 위계별 검토를 한다. 계층을 뭉개면
+  원래 한 논리 단위 안에 중첩됐어야 할 소제목들이 전부 별도의 최상위 논리 단위로 갈라져 나가 검토
+  대상(chunk) 수가 부풀려지고, `dedupe_issues`의 "부모 > 자식" 위치 문자열 겹침 판정도 깨진다 — **실제
+  컨플루언스 문서를 검토할 때만 해당하는 버그**. `h2`→`##`, `h3`→`###`, ... 상대 깊이를 그대로 보존하도록
+  수정(`h6`에서 캡, 페이지 타이틀은 계속 `#` 한 줄 전용이라 본문 h1은 `##`로 취급). 관련 테스트 갱신 +
+  깊이 캡 테스트 1개 추가.
+- **그런데 이게 원인의 전부가 아니었음**: 계층이 멀쩡한 로컬 `.md` 원본(vendored `DOC-001` fixture, 위
+  버그와 무관)을 백엔드 파이프라인으로 직접 돌려봤더니 그래도 **44개**가 나옴 — 완전히 같은 문서·룰북인데
+  CLI의 6개와 여전히 큰 차이. 로그를 까보니 44개 중 23개가 전부 Paragraph 위계의 "MI"(정보 누락)
+  카테고리로, `6-1`~`6-5` 서브섹션마다 거의 기계적으로 반복 검출됨.
+  - **추정 원인**: review-agent는 원래 "저비용 모델이 과하게 flag(스크리닝, 설계상 의도된 동작) →
+    고비용/정밀 모델이 그중 진짜만 확정(정밀검증)"하는 2단계 구조인데, 우리 백엔드는 `qa_screen_model`/
+    `qa_confirm_model` 둘 다 기본값이 같은 `gemini-2.5-flash`라 정밀검증 단계가 스크리닝만큼 약해서
+    over-flag를 거의 그대로 통과시키고 있는 것으로 보임. CLI 쪽(`review.json`)은 `--verify-model`에 더
+    강한 모델을 지정했을 가능성이 높음.
+  - **확실히 검증은 못 함** — 오늘 무료 쿼터를 이 조사로 상당히 써서 재검증이 어려웠음. `.env`에
+    `QA_CONFIRM_MODEL=gemini-2.5-pro`(또는 더 강한 모델)를 지정해서 같은 문서로 다시 돌려보면
+    확인 가능 — 다음 세션 쿼터 리셋 후 시도할 것.
+- 검증: 확장 `typecheck`/`lint`/`build`/`vitest` 68개 전부 통과.
+
+### Next
+
+- **최우선**: `QA_CONFIRM_MODEL`을 정밀 모델로 바꿔서 같은 DOC-001 fixture로 재검토했을 때 이슈 수가
+  CLI의 6개에 가까워지는지 확인 — 이게 맞다면 `.env.example`에도 기본 정밀검증 모델 권장값을 남겨야 함.
+  아니라면(그래도 여전히 많이 나온다면) 스크리닝 자체가 과도하거나, confirm 프롬프트/파싱에 별도
+  문제가 있는지 더 파봐야 함.
+- 컨플루언스 헤딩 평탄화 수정은 실사용(실제 DOC-001)에서 논리 단위/문단 구조가 원문 그대로 나오는지
+  확인 필요 — Claude가 검증 불가능.
+
+## 2026-08-09 — 하이라이트 프레임 유형(`frame_type`) 배선
+
+사용자가 공유한 "Ver.2 - Edit 행위별 프레임 유형 구분" 설계 문서를 기준으로, 문서 위 하이라이트 박스를
+QA 기준에 따라 다르게 그리는 첫 단계(백엔드 배선)를 진행했다. 전체 매트릭스(QA 기준 8개 × Edit 행위
+4개)를 뜯어보니 실제로 행위 분류가 필요한 건 LG/LF/GA 3개뿐이라는 걸 확인 — TC/TM/AE/RD는 허용 행위가
+Replace/Delete뿐이라 항상 객체 프레임, MI는 Insert뿐이라 항상 삽입범위 프레임, rule_id 카테고리만으로
+결정 가능했다.
+
+- **막힌 지점**: LG/LF/GA는 두 위치 간 관계 오류(예: "2-2가 2-1과 다르다")라 범위 프레임을 그리려면
+  두 번째 위치가 필요한데, review-agent의 `Issue` 스키마엔 `location` 하나뿐이라 지금은 만들 수 없음
+  — `related_location: str | None` 필드 추가를 요청하는 이슈를 올림:
+  [sunic5-planqa/planqa-agent#4](https://github.com/sunic5-planqa/planqa-agent/issues/4).
+- **`backend/src/sunnic_backend/models/issue.py`**: `FrameType` StrEnum(`object`/`range`/`insert_range`)
+  추가, `Issue`에 `frame_type`(기본값 `object`)/`related_location` 필드 추가.
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**: `_frame_type(category, related_location)` — MI는
+  무조건 `insert_range`, LG/LF/GA는 `related_location`이 있을 때만 `range`(없으면 `object`로 안전하게
+  폴백), 나머지는 `object`. `_to_issue_record`가 `getattr(issue, "related_location", None)`으로
+  값을 읽음 — 벤더링한 `schema.py`에 아직 그 필드가 없어도 에러 없이 `None`으로 폴백하고, 원작자가
+  필드를 추가해서 재벤더링하면 **코드 변경 없이 자동으로 채워지는 구조**로 만들어둠. `IssueResponse`에도
+  두 필드 추가해서 API로 노출.
+- **`extension/src/api/types.ts`**: `IssueResponse`에 `frame_type`/`related_location` 타입만 동기화 —
+  **실제로 문서 DOM에서 범위/삽입범위 모양대로 박스를 그리는 로직(`issueOverlay.ts`)은 아직 구현 안 함**,
+  지금은 백엔드가 값을 내려주기 시작한 것뿐. 기존 fixture(`fixtures.ts`)/데모 이슈(`demoIssues.ts`)/
+  테스트 헬퍼(`issueGrouping.test.ts`)도 새 필수 필드 때문에 타입 에러 나서 같이 채워넣음.
+- 검증: 백엔드 `_frame_type` 매핑 12개 케이스 파라미터라이즈 테스트 추가, 전체 72개 통과, ruff 클린.
+  확장 `typecheck`/`lint`/`build`/`vitest` 68개 전부 통과.
+
+### Next
+
+- `issueOverlay.ts`에 `insert_range`(위치의 상위 위계 헤딩 구간 전체를 감싸기)와 `range`(location~
+  related_location 두 헤딩 사이 전체를 감싸기) 렌더링 로직 추가 — 지금은 `frame_type`이 뭐든 항상
+  기존 object 방식(정확한 텍스트 매칭)으로만 그려짐. 헤딩 텍스트로 DOM 위치를 찾는 유틸이 새로 필요함.
+- `related_location`은 원작자가 이슈(#4)를 반영해줘야 실제 값이 들어옴 — 그 전까지 LG/LF/GA는 계속
+  object로 폴백.
+
+## 2026-08-09 — 수정 시 왼쪽 문서 덮어쓰기 + 백엔드 문장 유사도 검사
+
+"수정 저장" 흐름에 두 가지를 추가했다: (1) 저장 성공 시 왼쪽 문서 화면에서도 실제로 텍스트가 바뀐 것처럼
+보이게, (2) AI 제안과 많이 다른 내용으로 저장하려 하면 백엔드가 유사도를 계산해 경고하고, "수정 저장"을
+한 번 더 눌러야 그대로 반영되게.
+
+- **왼쪽 문서 덮어쓰기 (`issueOverlay.ts`)**: 지금까지 저장 성공해도 하이라이트 테두리만 초록색으로
+  바뀔 뿐 화면엔 여전히 고치기 전 원문이 남아있었음(실제 쓰기 대상은 복제본이라 지금 보고 있는 원본
+  탭은 안 바뀌니까) — 사용자가 "진짜 저장됐나?" 헷갈릴 수 있어서, 성공 시 `overwriteMarkText()`로
+  mark의 `textContent`를 새 텍스트로 직접 덮어쓴다. 여러 엘리먼트에 걸친 매치(라벨+뱃지 등)는 새
+  텍스트를 정확히 나눠 넣을 방법이 없어 첫 mark로 합치고 나머지는 제거 — 기존 "여러 mark를 각각
+  resolved 처리" 테스트를 "하나로 합쳐지고 새 텍스트를 보여준다"는 검증으로 다시 씀.
+- **`backend/src/sunnic_backend/api/issues.py`**: `POST /issues/similarity-check` 신규 —
+  `difflib.SequenceMatcher`(표준 라이브러리, 외부 API 호출/쿼터 소모 없음)로 AI 제안과 사람이 실제
+  고친 텍스트의 문자열 유사도를 계산해 `{similarity, matches_closely}` 반환. 임계값은 기존 프론트
+  로컬 Levenshtein 체크와 같은 0.3 유지 — 체감 동작이 바뀌지 않게.
+- **`extension/src/state/editValidation.ts`**: 유사도 판단을 백엔드로 옮기면서, 여기 남은 건 네트워크
+  없이 즉시 되는 로컬 체크(수정한 텍스트에 원래 문제 문구가 아직 남아있는지, `isIssueLikelyResolved`)
+  뿐 — 기존 `similarityRatio`/Levenshtein 구현은 제거(더 이상 두 곳에서 서로 다른 유사도를 계산하는
+  걸 피하려고 백엔드를 유일한 판단 주체로 함).
+- **`extension/src/components/screens/IssueListScreen.tsx`**: `handleSaveClick`을 async로 변경 —
+  처음 누르면 (1) 로컬 `isIssueLikelyResolved` 체크 → (2) 통과하면 백엔드
+  `api.checkEditSimilarity()` 호출. 둘 중 하나라도 걸리면 저장 안 하고 경고 문구만 띄운 뒤 리턴,
+  버튼 라벨은 확인 중엔 "확인 중...". 이미 경고를 본 상태(`warningAcknowledged`)에서 다시 누르면
+  재검사 없이 바로 저장 — "한 번 더 누르면 반영" 요구사항 그대로. 백엔드 호출 자체가 실패해도(네트워크
+  등) 저장은 막지 않음 — 유사도 검사는 안전장치일 뿐 필수 게이트가 아니라고 판단.
+- 검증: 백엔드 유사도 엔드포인트 테스트 3개(동일 텍스트/전혀 다른 텍스트/사소한 수정 각각) 추가,
+  전체 75개 통과. 확장 `editValidation.test.ts` 재작성 + `issueOverlay.test.ts` 신규 2개(단일/다중
+  엘리먼트 덮어쓰기) 포함 63개, `typecheck`/`lint`/`build` 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 DOC-001에서 수정 저장 후 왼쪽 문서에 새 텍스트가 바로 보이는지,
+  AI 제안과 많이 다른 내용을 입력했을 때 경고가 뜨고 한 번 더 눌러야 저장되는지 확인.
+- 유사도 검사가 문자열 기반(difflib)이라 의미는 같지만 표현이 많이 다른 수정(동의어 교체 등)은
+  경고가 뜰 수 있음 — 안전장치로 설계했으므로 오탐이 있어도 사용자가 한 번 더 누르면 그냥 진행되는
+  구조라 크게 문제는 아니지만, 필요하면 나중에 임베딩 기반 의미 유사도로 교체 고려 가능.
+
+## 2026-08-10 — review-agent를 `planqa-agent`의 `dev` 브랜치로 재벤더링
+
+사용자가 `sunic5-planqa/planqa-agent`의 `dev` 브랜치로 다시 연결해달라고 요청 — 확인해보니 우리가
+처음 벤더링한 `feature/review-agent` 이후 원작자가 `dev`에서 상당히 진척시켜 놨었다(PR #5~#12).
+가장 중요한 건: **우리가 이슈로 요청했던 `related_location` 필드(sunic5-planqa/planqa-agent#4)가
+실제로 반영됐고**, 검토 위계 4개가 이제 순차가 아니라 **병렬**로 돈다.
+
+- **저장소 구조 변경**: `schema.py`/`rulebook.py`가 별도 `packages/planqa-schemas` 패키지로 분리됐고,
+  `review-agent` 본체는 `services/review-agent`로 이동. 새로 생긴 `structures/category_screen.py`가
+  기존 profile 기반 `pipeline.review_document(..., profile)`을 대체하는 새 진입점 — 우리도 이걸로
+  갈아탐. 스크리닝이 이제 룰 텍스트가 아니라 카테고리 라벨만 보고, 정밀검증 단계에서 그 카테고리의
+  룰 전체 중 구체적 `rule_id`를 직접 고르는 구조로 바뀌었다.
+- **`backend/src/sunnic_backend/qa_engine/review_agent/`**: `models/`(구 profile 기반 스크리너/
+  컨펌어) 전체 삭제, `planqa_schemas/`(신규, schema.py/rulebook.py) 추가, `structures/
+  category_screen.py`(신규) 추가, `document.py`/`dedupe.py`/`instrumentation.py`/`tiers.py`/
+  `verifier.py`/`pipeline.py`/`llm/{base,gemini}.py` 전부 최신으로 교체(import 경로만 재작성).
+  `pipeline.py`는 `review_document` 함수 자체는 이제 안 쓰지만 `ReviewResult` dataclass를 계속
+  가져다 쓰므로 그대로 유지.
+- **`TIER_CATEGORIES`가 원작자 쪽에서 고쳐져 있었음** — 우리가 처음 벤더링했던 버전은 위계별 카테고리
+  배정이 상당히 빠져있었다(예: Document 위계에 TC/TM이 아예 없었음). 재벤더링으로 자동 수정됨 —
+  우리 쪽에서 발견할 수 있는 종류의 문제가 아니었음.
+- **`clone()` 호환성 문제 발견 및 수정**: `LLMClient`에 새로 생긴 `clone(*, tier=...)`(병렬 실행 시
+  위계별로 독립된 클라이언트를 쓰기 위함)의 기본 구현이 생성자에 명시적으로 넘긴 `api_keys`를 재사용하지
+  않고 `os.environ`에서 다시 읽음 — 이 백엔드는 `.env`를 pydantic-settings로만 읽고 프로세스
+  환경변수에는 안 심어서, 그대로 두면 병렬 실행되는 모든 clone이 "키 없음" 에러로 죽는다. 처음엔
+  `os.environ.setdefault(...)`로 채워보려 했으나 **프로세스 전역 상태라 테스트 간에 오염되는 부작용을
+  직접 발견**(`test_config.py`의 "기본값은 빈 리스트" 테스트가 다른 테스트가 심어둔 env var 때문에
+  깨짐) — 대신 `qa_jobs.py`에 로컬 서브클래스(`_ScopedClient`)를 두어 `clone()`이 명시적 키를 그대로
+  물려주도록 오버라이드(벤더링 파일 자체는 안 건드림).
+- **`backend/tests/test_api_qa_jobs.py`의 `FakeGeminiClient`**: 새 프롬프트 형태(스크리닝은
+  `category`만, 정밀검증이 `rule_id`를 직접 지정)에 맞게 정규식/응답 갱신, `clone()` 메서드 추가.
+- **테스트 재벤더링**: `test_confirmer.py`/`test_screener.py`/`test_pipeline.py`(전부 구 profile
+  경로 대상) 삭제, `test_document.py`/`test_dedupe.py`(related_location 관련 케이스 추가)/
+  `test_instrumentation.py`/`test_llm_base.py`/`test_tiers.py`(고쳐진 카테고리 반영)/
+  `test_category_screen.py`(신규) + `conftest.py`(clone 지원 `ScriptedLLM`) 갱신, `source_dir`
+  픽스처는 기존처럼 로컬 `fixtures/`(DOC-001만)로 유지.
+- **실제 Gemini 키로 라이브 검증**: `DOC-001` fixture로 `_run_review_sync` 직접 실행 —
+  22개 이슈, `tier_errors` 없음, LG/LF/GA 이슈에 `related_location`이 실제로 채워지는 것 확인
+  (예: "5. 고려되는 대안"의 LG-05가 "4. 기술적 제약 사항"과 관계있다고 정확히 짚어냄). 재벤더링
+  전 같은 문서·모델로 44개가 나왔던 것과 비교하면 훨씬 정상적인 수치 — 카테고리 기반 스크리닝과
+  고쳐진 `TIER_CATEGORIES` 둘 다 원인일 수 있음(2026-08-09 조사에서 완전히 못 밝혔던 부분과 연결).
+  소요시간 88.8초(대부분 무료 티어 429 재시도 대기로 추정, 병렬화 자체의 체감 효과는 이번 한 번의
+  실행만으로는 정확히 분리 측정 못함).
+- 검증: 백엔드 72개 전부 통과(재벤더링한 테스트 포함), ruff 클린. 확장 쪽은 API 응답 필드(`frame_type`/
+  `related_location`)가 이미 타입에 있어서 변경 없음 — `related_location`이 실제로 채워지기 시작한
+  것뿐이라 프론트가 그 값을 실제로 활용(범위 프레임 렌더링)하는 건 여전히 다음 단계.
+
+### Next
+
+- **최우선**: `issueOverlay.ts`에 실제 `range`/`insert_range` 렌더링 로직 — 이제 `related_location`이
+  진짜 값으로 채워지니 헤딩 텍스트로 두 지점을 찾아 그 사이를 감싸는 로직을 구현할 수 있는 상태가 됨.
+- **Claude가 검증 불가능한 것**: 실제 DOC-001에서 다시 QA를 돌렸을 때 병렬 실행이 체감상 더 빠른지,
+  LG/LF/GA 이슈가 실제 컨플루언스 문서에서도 안정적으로 related_location을 잡아내는지 확인.
+- 6개(CLI) vs 44개(재벤더링 전 서버) 차이가 왜 났는지는 여전히 완전히 설명 못함 — 22개로 줄어든 게
+  좋은 신호이긴 하지만, 더 정밀한 모델(현재는 Claude Sonnet, 아래 항목 참고)로 재검증하는 것도
+  여전히 유효한 다음 실험.
+- 원작자 쪽 저장소가 앞으로도 계속 바뀔 수 있으니, 다음에 다시 크게 벌어지면 또 재벤더링 필요 — 지금은
+  수동 재복사 방식 그대로(ADR 0001 업데이트에 기록).
+
+## 2026-08-10 — QA 엔진을 Gemini에서 Claude(Haiku 스크리닝 → Sonnet 정밀검증)로 전환
+
+사용자가 병렬 실행은 유지하면서 모델을 Claude API로 바꿔달라고 요청 — 1차 스크리닝은 Haiku, 2차
+정밀검증은 Sonnet. 마침 `config.py`엔 2026-08-04부터 `anthropic_api_key`/`sunnic_haiku_model`/
+`sunnic_sonnet_model` 설정이 이미 있었음(그때는 안 쓰이고 있었을 뿐) — 바로 연결하면 됐다.
+
+- **`llm/anthropic.py`(신규 벤더링)**: `planqa-agent` dev의 `AnthropicClient` — 동기 클라이언트,
+  429/5xx/연결오류 재시도, `claude-sonnet-5`는 `temperature` 파라미터 자체를 거부해서 모델별로
+  조건 분기, extended thinking은 고정 스키마 JSON 작업엔 불필요(레이턴시 10배 될 수 있음)해서
+  명시적으로 꺼둠(`thinking: {type: "disabled"}`), 응답에 `ThinkingBlock`이 먼저 와도 첫 번째
+  text 블록을 찾아 파싱. 테스트 11개(재시도/온도 조건분기/thinking 블록 스킵 등)도 같이 벤더링.
+- **`qa_jobs.py`**: `GeminiClient` → `AnthropicClient`로 교체. `_ScopedClient`(clone() 시 명시적
+  키를 다시 물려주는 로컬 서브클래스, Gemini 때와 동일한 이유)도 `api_keys`(리스트) 대신
+  `api_key`(단일 문자열)로 맞춤. `screen_llm`은 `settings.sunnic_haiku_model`, `confirm_llm`은
+  `settings.sunnic_sonnet_model` — 새 설정 추가 없이 기존 필드 그대로 사용.
+- **`config.py`**: 이제 안 쓰는 Gemini 전용 오버라이드 `qa_screen_model`/`qa_confirm_model` 제거
+  (같은 역할을 처음부터 하던 `sunnic_haiku_model`/`sunnic_sonnet_model`과 중복이라 정리). `gemini_
+  api_keys`와 벤더링된 `llm/gemini.py`는 그대로 남겨둠(당장 안 쓰지만 나중에 다시 필요할 수 있어
+  제거는 안 함) — 다만 `qa_jobs.py`에서 더 이상 import 안 됨.
+- 검증: 백엔드 83개 전부 통과(신규 Anthropic 클라이언트 테스트 11개 포함), ruff 클린
+  (`C408`도 벤더링 예외 목록에 추가 — 벤더링 코드를 upstream과 다르게 리팩터링하지 않기 위해,
+  기존 B023/UP047과 같은 이유).
+
+### Next
+
+- **Claude가 검증 불가능한 것**: `.env`에 `ANTHROPIC_API_KEY`가 아직 비어있어서 실제 호출 검증을
+  못 함 — 채운 뒤 DOC-001로 다시 돌려서 (1) Haiku/Sonnet 조합이 실제로 동작하는지, (2) 이슈 수가
+  Gemini 조합(22개) 대비 어떻게 달라지는지, (3) `sunnic_haiku_model` 기본값("claude-haiku-4-5")이
+  실제 Anthropic API가 받는 정확한 모델 ID가 맞는지(날짜 붙은 정식 ID가 필요할 수도 있음) 확인 필요.
+- SCREEN 02의 진행률 카테고리 체크리스트(`_categories_for_progress`)는 여전히 "위계가 순차로 끝난다"고
+  가정하고 만들어짐 — 지금은 Gemini든 Claude든 4개 위계가 실제로는 병렬 실행이라 이 가정이 실제와
+  어긋나 있음(사용자가 직접 지적). 아직 안 고침 — 다음 우선순위.
+
+## 2026-08-10 — 진행률 체크리스트를 병렬 실행에 맞게 수정
+
+바로 위 Next 항목 — `_categories_for_progress`가 "Documents 다 끝나고 → Logical Chapter → ..."
+순서로 하나씩 차오른다고 가정하고 있었는데, `category_screen.review_document()`는 4개 위계를
+동시에 돌리니 실제로는 다 같이 진행되다가 다 같이 끝난다. 사용자가 지적한 그대로 고쳤다.
+
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**: `tier_index`/`band` 기반의 순차 워크스루 로직을
+  제거하고, 모든 그룹이 같은 `fraction = progress / 100`으로 동시에 차오르도록 변경 — 그룹 4개가
+  전부 비슷한 속도로 진행되다가 100%에서 다 같이 완료 처리됨. `current_category`는 그중 맨 처음
+  발견한 "진행 중" 항목 하나를 대표로 반환(여러 그룹이 동시에 in_progress 상태를 가질 수 있어서).
+- 프론트(`CategoryTree.tsx`)는 그룹별로 독립적으로 "이 그룹에 in_progress 항목이 있으면 진하게"
+  판단하는 로직이라 코드 변경 없이 자동으로 4개 그룹이 동시에 강조되게 됨.
+- 검증: 신규 테스트 2개(모든 그룹이 비슷한 속도로 진행되는지, 100%에서 전부 done인지) 추가, 백엔드
+  85개 전부 통과. `progress=0/30/50/89/100`으로 수동 실행해 4개 그룹이 실제로 같이 움직이는 것 확인.
+  확장 `typecheck`/`lint`/`build`/`vitest` 63개(변경 없음, 프론트 코드는 안 건드림) 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 Chrome에서 QA 진행 화면을 열어 4개 그룹이 실제로 동시에
+  체크되는 것처럼 보이는지 확인.
+
+## 2026-08-10 — failed job이 "이슈 없음"으로 오인되던 버그 수정 + Claude 조합 실검증
+
+사용자가 실서버에서 QA를 돌렸는데 "발견된 이슈가 없습니다"만 뜬다고 보고 — 확인해보니
+`ANTHROPIC_API_KEY`가 비어있어 job이 시작하자마자 실패(`failed`)하고 있었는데, 폴링 로직이
+`failed`를 `done`과 똑같이 취급해서 그냥 빈 이슈 목록을 불러오고 있었다. 실제로는 "검토 자체가
+실패"인데 화면엔 "문제 없음"처럼 보이는 게 진짜 버그라 같이 고쳤다.
+
+- **`extension/src/hooks/useQAJobPolling.ts`**: `status === 'failed'`일 때 더 이상 `ISSUES_LOADED`로
+  넘어가지 않고, `SET_ERROR`로 명확한 에러 메시지("QA 검토가 실패했습니다. 서버의 API 키 설정을
+  확인해주세요.")를 띄우도록 분리 — `App.tsx`에 이미 있던 전역 `ErrorBanner`가 자동으로 뜬다(새
+  컴포넌트 필요 없었음). `done`일 때만 기존처럼 이슈 목록을 불러옴.
+- **`.env` 정리**: `ANTHROPIC_API_KEY` 줄이 중복(빈 값 하나 + 실제 키 하나)으로 들어가 있어서 빈
+  줄 제거.
+- **실제 Claude(Haiku→Sonnet) 조합으로 DOC-001 검증**: 66.1초, **12개 이슈** — Gemini 조합(22개)
+  보다 훨씬 적고 CLI 기준(6개)에 더 가까워짐, Sonnet 정밀검증이 더 엄격하게 거른다는 가설과 일치.
+  `tier_errors` 1건(Paragraph 위계에서 Claude가 malformed JSON 응답 — 파이프라인이 그 위계만
+  격리하고 나머지 3개 위계는 정상 진행, 설계대로 동작한 것이지 버그 아님) 확인.
+- 검증: 확장 `typecheck`/`lint`/`build`/`vitest` 63개 전부 통과(신규 테스트는 안 붙임 — 이 훅은
+  기존에도 전용 테스트 파일이 없던 컨벤션 유지).
+
+### Next
+
+- **여전히 남은 조사**: 6개(CLI) vs 12개(Claude 서버) 차이가 여전히 존재 — 헤딩 평탄화 버그도 고쳤고
+  모델도 Sonnet으로 정밀화했는데 아직 2배 차이. 문서 자체(fixture DOC-001)와 CLI 실행 당시 정확히
+  같은 조건이었는지(모델/프롬프트 버전 등) 재확인이 다음 단계로 남음.
+- Paragraph 위계의 malformed JSON 이슈가 반복되면 Claude 쪽 응답 파싱(`parse_json_response`)이나
+  프롬프트 쪽에 더 견고한 처리가 필요할 수 있음 — 지금은 1회성이라 관찰만.
+
+## 2026-08-10 — PR #15 `/code-review` 결과 반영
+
+머지 전 `/code-review`를 돌려서 8개 지적 발견. 그중 우리 코드(`qa_jobs.py`)에 해당하는 진짜 버그
+1개만 고치고, 나머지 6개는 전부 벤더링해온 파일(`review_agent/**`, ADR 0001 정책상 upstream과
+diffable하게 그대로 두기로 한 영역) 안의 지적이라 로컬에서 고치지 않기로 판단 — 대신 upstream에
+알려야 할 사안인지는 별도 검토.
+
+- **고침**: `_ScopedClient.clone()`(qa_jobs.py)이 원본 인스턴스의 `temperature`/`max_tokens`를 안
+  물려주고 매번 기본값으로 리셋되던 버그 — 지금 당장은 둘 다 항상 기본값이라 실제 동작에 영향 없었지만,
+  나중에 `max_tokens`를 조정하면 병렬 실행되는 clone들만 조용히 무시하게 될 뻔했음. 테스트 더블
+  `FakeAnthropicClient`도 `_temperature`/`_max_tokens` 속성을 갖도록 맞춤.
+- **판단 보류(벤더링 정책)**: `pipeline.review_document()`가 이제 죽은 코드라는 지적, `category_screen.py`의
+  category/rule_id 매칭이 완전일치라는 지적, 벤더링한 테스트 파일들의 docstring/순환 검증 등 — 전부
+  `review_agent/**` 안의 upstream 코드라 로컬에서 고치지 않음. `pipeline.review_document()` 건은
+  실제로 유효한 지적이라 `sunic5-planqa/planqa-agent`에 이슈로 알릴지 다음에 검토.
+- 검증: 백엔드 85개 전부 통과, ruff 클린. 확장 63개 전부 통과.
+
+## 2026-08-10 — 수정 저장이 "원문에서 해당 문구를 찾지 못했습니다"로 실패하던 버그 수정
+
+사용자가 실제로 "수정 저장"을 눌렀는데 이 에러가 뜬다고 보고. 원인은 라이브 DOM에서 이슈 위치를
+찾을 때는(2026-08-06에 이미 고친 것처럼) 공백 차이에 관대한 정규식(`buildLooseTextRegex`)을 쓰는데,
+**컨플루언스에 실제로 저장하는 단계(`replaceTextAndSave`)는 여전히 완전 일치(`html.includes`)만
+체크**하고 있었던 것 — 컨플루언스 storage HTML의 줄바꿈/공백이 화면에 렌더링된 것과 완전히 같지
+않은 경우가 흔해서, 화면엔 분명히 보이는 문구인데 저장 단계에서만 못 찾는 비대칭이 있었다.
+
+- **`extension/src/content/issueOverlay.ts`**: `replaceTextAndSave`가 이제 `html.includes(oldText)`
+  대신 `buildLooseTextRegex(oldText)`로 storage HTML을 검색 — 매치 위치를 찾아 `slice`로 직접
+  이어붙여 치환(문자열 `.replace()`의 `$&`/`$1` 같은 특수 치환 패턴 해석 위험도 같이 피함). 표/목록처럼
+  문구 중간에 인라인 태그가 끼어드는 경우는 여전히 못 잡음 — 알려진 한계로 남김.
+- 검증: 신규 테스트 1개(storage HTML의 공백이 다를 때도 저장에 성공하고, 실제 PUT 바디가 정확히
+  치환됐는지) 추가. 확장 `typecheck`/`lint`/`build`/`vitest` 64개 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 DOC-001에서 이번에 "수정 저장"이 정상적으로 성공하는지 확인.
+- 인라인 서식(볼드/링크 등)이 문구 중간에 끼어드는 경우의 저장 실패는 여전히 미해결 — 필요해지면
+  storage HTML을 파싱해서 태그를 건너뛰는 매칭까지 확장을 고려할 수 있음.
+
+## 2026-08-10 — 위 수정으로도 여전히 실패하던 케이스 추가 수정 (목록 항목에 걸친 문구)
+
+실제 DOC-001 페이지에서 검증했더니 위 공백-관대 매칭 수정으로도 여전히 같은 에러가 재현됨. 원인은
+이번엔 공백이 아니라 **완전히 다른 종류의 비대칭**이었다 — 이슈의 `input_text`가 "홈 UV
+(Unique Visitor) 월 2만명 달성" + "근거: 구매 전환율..."처럼 **서로 다른 두 `<li>` 항목의 텍스트가
+공백 하나 없이 이어붙은 것**이었음. 라이브 DOM에서 이슈를 찾는 `wrapIssue`/`collectTextSpans`는
+애초에 텍스트 노드를 구분자 없이 그냥 이어붙여서 이런 경우도 잡아내는데(라벨+뱃지 케이스와 같은
+이유), storage HTML 쪽은 문자열 하나로만 검색했기 때문에 실제 문서에 `</li><li>` 태그가 끼어있으면
+(공백조차 없어서) `buildLooseTextRegex`로도 못 찾았다.
+
+- **`extension/src/content/issueOverlay.ts`**: `replaceInStorageHtml`을 2단계로 분리 —
+  1) 기존처럼 단순 느슨한 정규식으로 원본 문자열 그대로 찾기(되면 나머지 마크업을 전혀 안 건드리는
+  가장 안전한 경로), 2) 그걸로 못 찾으면 `replaceAcrossElements`로 폴백 — storage HTML을
+  `DOMParser`로 파싱해 `collectPlainTextSpans`로 텍스트 노드를 이어붙인 뒤(라이브 DOM의
+  `collectTextSpans`와 같은 방식) 매치 구간에 걸리는 노드들을 원본 문자열 안에서 각각 다시
+  찾아(`indexOf`) 그 부분만 문자열 스플라이스로 치환. 파싱한 트리를 통째로 re-serialize하지 않는
+  이유는 매크로 등 나머지 마크업이 미묘하게 바뀔 위험을 피하기 위함 — 매치 안 걸리는 부분은 원본
+  문자열을 그대로 복사.
+- 검증: 신규 테스트 1개(공백 없이 이어붙은 두 `<li>` 항목에 걸친 문구를 찾아 첫 항목엔 치환문을
+  넣고 나머지는 비우는지) 추가, 기존 22개 포함 전부 통과. 확장 `typecheck`/`lint`/`build`/
+  `vitest` 65개 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 DOC-001에서 이번엔 "수정 저장"이 성공하는지 재확인(브라우저에서
+  확장 리로드 필요).
+- 인라인 서식(볼드/링크 등)처럼 매치 구간 자체가 아니라 그 *안쪽*에 태그가 끼어드는 경우는 여전히
+  다루지 않음 — `collectPlainTextSpans`가 텍스트 노드 단위로만 자르기 때문에, 지금 폴백은 "완전히
+  분리된 여러 노드에 걸친 문구"까지만 커버하고 "한 문구 중간에 서식 태그가 끼어든" 경우는 다음 문제.
+
+## 2026-08-10 — 위 수정을 실제 DOC-001 원문 구조로 재검증
+
+사용자가 리로드 후 다시 테스트했는데도 여전히 같은 에러가 재현된다고 보고. 원인을 추측만 하지 않고
+Atlassian 연동으로 실제 페이지(`gy30356635.atlassian.net`, pageId 229548) 원문을 직접 조회해서
+확인함 — 문제의 문구는 예상했던 "서로 다른 두 `<li>`"가 아니라, **하나의 `<p>` 안에서
+`<strong>...</strong>` 볼드 태그와 `<br>` 줄바꿈을 사이에 두고 이어진 문구**였다:
+`<li><p><strong>홈 UV (Unique Visitor) 월 2만명 달성</strong><br>근거: 구매 전환율...</p></li>`.
+
+바로 직전 세션에서 "인라인 서식이 문구 중간에 끼어드는 경우는 범위 밖"이라고 남겨뒀던 한계 사례가
+실제로 이거였는데, 다시 짚어보니 `collectPlainTextSpans`는 텍스트 노드를 태그 종류와 무관하게(블록
+경계든 인라인 경계든) 그냥 순서대로 이어붙이기 때문에 — 실제로는 이미 이 케이스도 처리될 것으로
+보였음. 실제 원문 구조를 그대로 복제한 격리 테스트를 먼저 돌려 확인: **통과**. 이후 이 재현 케이스를
+정식 회귀 테스트로 `issueOverlay.test.ts`에 추가.
+
+- **결론**: 로직 자체는 이미 이 케이스를 정확히 처리한다(`<strong>`/`<br>` 태그는 그대로 두고 그
+  사이 텍스트 노드 내용만 치환됨을 테스트로 확인). 여전히 실패했다면 가장 유력한 원인은 사용자가
+  테스트한 시점에 확장이 최신 빌드로 리로드되지 않았을 가능성 — 코드 쪽에서 새로 발견된 버그는 없음.
+- 검증: 실제 원문 구조를 그대로 옮긴 신규 테스트 1개 추가, 확장 66개 전부 통과, lint/build 클린.
+
+### Next
+
+- 사용자가 **정확히 이 빌드**(`ca8d702` 이후, 방금 커밋)로 리로드했는지 재확인 후 재시도 필요 —
+  `chrome://extensions` 리로드 + 컨플루언스 탭 새로고침까지 포함해서.
+- 그래도 실패하면 다음 의심 지점: 실제 storage HTML이 이번에 조회한 "HTML+" 표현과 미묘하게 다른
+  직렬화(예: 상태 뱃지가 `<ac:structured-macro>`)일 가능성 — 그땐 REST API로 진짜 `body.storage`
+  원문을 직접 떠서 비교해봐야 함.
+
+## 2026-08-10 — 진짜 원인 확정: HTML 엔티티(`&rarr;`) 때문에 못 찾던 것 + 매칭 방식 재설계
+
+리로드 후에도 재현돼서, 실패 시 실제 원본 조각을 콘솔에 남기는 진단 로그(`logStorageMatchFailure`)를
+추가해 사용자에게 받아봄. 실제 storage HTML:
+
+```
+<strong>홈 UV (Unique Visitor) 월 2만명 달성</strong><br />근거: ... 홈&rarr;장바구니 이탈율 95% ...
+```
+
+"→"가 리터럴 문자가 아니라 **`&rarr;` HTML 엔티티**로 저장돼 있었음. 어제 짠 `replaceAcrossElements`는
+"DOMParser로 디코딩한 텍스트 노드 내용을 원본 문자열 안에서 다시 `indexOf`로 찾는" 방식이었는데,
+디코딩된 텍스트엔 "→"(1글자)가 있고 원본엔 "&rarr;"(6글자)만 있으니 애초에 원본 안에 존재하지 않는
+문자열을 찾으려던 셈 — 항상 실패할 수밖에 없었다. 격리 테스트가 이걸 못 잡은 이유는 테스트 픽스처에
+엔티티 없이 리터럴 "→"를 그대로 넣었기 때문(재현 실패의 재현 실패).
+
+- **근본적으로 다시 짬**: "디코딩 후 원본에서 다시 찾기"(indexOf 기반) 자체를 버리고, storage HTML을
+  한 번만 훑으면서 태그는 건너뛰고 엔티티는 `<textarea>.innerHTML → .value` 트릭으로 디코딩하되, 디코딩된
+  글자 하나하나가 원본의 어느 바이트 구간이었는지 그 자리에서 같이 기록(`decodeStorageHtmlText`)하는
+  방식으로 교체. 매칭도 이 디코딩된 텍스트 기준으로 하고, 매치 구간을 raw 오프셋으로 바로 역산하므로
+  "다시 찾다가 못 찾는" 실패 모드 자체가 사라진다(named entity가 몇 개든 상관없이 동작).
+  - 단, 매치 구간을 무작정 통째로 잘라내고 newText로 바꾸면 `<strong>A</strong><br>B`처럼 매치가
+    태그 경계에 걸친 경우 여는 태그만 남고 닫는 태그가 같이 지워져 마크업이 깨지는 문제가 새로
+    생겨서(직접 겪음, 테스트로 잡음) — 매치 구간 안을 다시 한번 훑어 태그는 전부 보존하고 실제
+    텍스트만 한 곳에 newText로 모으는 2단계 스플라이스로 마무리.
+- `collectPlainTextSpans`/`replaceAcrossElements`는 삭제(새 구현이 그 역할을 전부 포함).
+- 검증: 실제 재현 조각을 그대로 쓴 엔티티 테스트 1개 추가(매치 밖 `&rarr;`는 디코딩되지 않고 그대로
+  보존되는지까지 확인), 기존 23개 포함 전부 통과. 확장 67개 전부 통과, lint/tsc/build 클린.
+
+### Next
+
+- 사용자 재검증 대기 — 이번엔 실제 실패 원문으로 직접 재현/수정한 것이라 확신도가 높음.
+
+## 2026-08-10 — 세 번째 원인: 목록을 쉼표로 이어붙여 실제 존재하지 않는 문구를 만들던 버그
+
+엔티티 수정 후에도 다른 이슈에서 또 실패 보고. 진단 로그를 다시 받아보니 이번엔 `oldText`가
+`"목표 런칭일:, QA 기간:"`인데 — 이건 원문에 있는 문구가 아니라 **`confluenceParser.ts`가 서로 다른
+두 `<li>`("목표 런칭일: ...", "QA 기간: ...")를 `", "`로 이어붙여 만든 가짜 한 줄**이었다. QA 엔진이
+그 가짜 텍스트를 그대로 인용했으니, 아무리 storage HTML 매칭 로직을 다듬어도 애초에 존재하지 않는
+문구를 찾을 방법이 없었다 — 이건 매칭 알고리즘 문제가 아니라 **QA 엔진에 넘기는 입력 자체가
+잘못됐던 것**.
+
+- **`extension/src/content/confluenceParser.ts`**: `htmlToChapterMarkdown`이 `<ul>`/`<ol>`을
+  `items.join(', ')`로 한 줄에 뭉치던 걸, 항목마다 `- 항목`으로 별도 줄에 쓰도록 변경. 벤더링된
+  review-agent의 `document.py`(`_BULLET_LINE = r"^\s*[-*]\s+.+$"`)가 애초에 `- `로 시작하는 줄을
+  불릿(문장 단위) 하나로 인식하도록 짜여 있어서, 이 형식이 원래 review-agent가 기대하던 입력 모양과도
+  더 맞다 — 지금까지는 쉼표로 뭉친 프로즈로 들어가 문장 분리기(`_SENTENCE_END`, 마침표/물음표 등
+  기준)에 그냥 걸려 있었다.
+- **주의**: 이 수정은 **다음 QA 검토부터** 적용된다 — 이미 생성된 이슈(예: 이번에 실패한 "목표
+  런칭일" 이슈)는 여전히 옛날 가짜 텍스트를 물고 있어서 재저장해도 안 됨. 사용자에게 QA 검토를
+  다시 돌려서 새로 생성된 이슈로 테스트해달라고 안내함.
+- 검증: 관련 테스트 갱신(`renders each list item as its own markdown bullet line`), 확장 67개 전부
+  통과, lint/tsc/build 클린.
+
+### Next
+
+- 사용자에게 QA 검토 재실행 후 새 이슈로 재검증 요청 — 특히 목록이 포함된 섹션에서 나온 이슈로.
+- 예전에 열려 있던 "CLI 6개 vs 서버 40+개" 이슈 개수 불일치 조사와 이 버그가 어느 정도 겹칠 가능성
+  있음(가짜 텍스트가 섞인 입력이 이슈 개수/품질에도 영향을 줬을 수 있음) — 재검토 필요.
+
+## 2026-08-10 — 같은 클래스의 버그를 표(테이블)에서도 발견해 같이 고침
+
+사용자가 "그럼 파싱 자체가 잘못되고 있는 거 아냐?"라고 물어서, 목록 말고 다른 곳에도 같은 문제가
+있는지 `confluenceParser.ts` 전체를 다시 훑음. **표(`<table>`) 처리 분기가 아예 없어서** 표 전체가
+"인식 못 한 엘리먼트" fallback으로 떨어져 `textContent`를 셀 구분자 하나 없이 그냥 이어붙이고
+있었다 — 목록의 ", " 이어붙이기보다 더 심한 버전(구분자가 아예 없음). 실제 DOC-001에도 표가 두 개
+(경쟁 분석, 마일스톤) 있어서 지금 당장 영향받는 버그였음.
+
+- **`extension/src/content/confluenceParser.ts`**: `TABLE` 분기 추가 — 각 `tr`을 마크다운 표 문법
+  (`| 셀1 | 셀2 |`)의 별도 줄로 렌더링. `document.py`의 `_TABLE_ROW_LINE`(`^\s*\|.*\|\s*$`)이 이
+  형식의 줄 하나를 행 단위로 인식하도록 이미 짜여 있어서, 목록의 `- ` 불릿과 같은 이유로 이 형식을
+  맞춤(구분선(`|---|---|`) 줄은 안 만듦 — document.py가 skip만 할 뿐 요구하지 않아서 생략 가능).
+- 검증: 표 렌더링 테스트 1개 추가, 확장 68개 전부 통과, lint/tsc/build 클린.
+
+### Next
+
+- 나머지 fallback 경로(정의 목록, 중첩 목록/표, blockquote 등)에도 비슷한 문제가 있을 수 있으나
+  DOC-001엔 없어서 아직 미확인 — 실제로 마주치면 그때 고침.
+- 목록/표 두 버그 모두 고쳤으니, 사용자가 QA 검토를 다시 돌려서 최종 검증 필요.
+
+## 2026-08-10 — 진행률 체감 속도 개선 (fake progress 시간 상수 재조정)
+
+"진행바가 너무 느려, 지금 병렬이니까 계산 방식을 최적화해달라"는 요청. `_tick_progress`의 시간 상수
+(`_ESTIMATED_DURATION_SECONDS`)가 여전히 **4개 tier가 순차 실행이던 시절 기준(45s)** 그대로 남아
+있었음 — 2026-08-10 재벤더링 이후 4개 tier가 `ThreadPoolExecutor`로 동시에 도는데, 곡선은 옛날처럼
+"45초짜리 작업"을 가정하고 늘어져서 실제로는 훨씬 빨리 끝나는데도 체감상 계속 낮은 %에 머물러
+있었다.
+
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**: `_ESTIMATED_DURATION_SECONDS`를 45.0 → 20.0으로
+  재조정. 실측 기준(Claude Haiku→Sonnet 병렬 조합, DOC-001, 66.1초)으로 계산하면 예전 45s
+  상수로는 완료 시점(t=66s)에 진행률이 69%에 그쳤는데, 20s로 바꾸면 같은 시점에 86%까지 올라와서
+  "끝났는데도 한참 밑에 머물러 있는" 느낌이 크게 줄어든다. 여전히 실제 per-tier 완료 신호는 없어서
+  (ADR 0001) 시간 기반 근사인 건 동일 — 상수만 실측치에 맞게 재보정.
+  - 여전히 진짜 신호가 아니라는 점은 그대로 남는 한계 — review-agent 파이프라인에 progress 콜백을
+    붙이려면 벤더링 정책(ADR 0001, diffable copy 유지)을 깨야 해서 보류 중.
+- 검증: 백엔드 85개 전부 통과, ruff 클린(상수 값 외 로직 변경 없음).
+
+### Next
+
+- 실제 사용 중 체감이 여전히 느리면 `_ESTIMATED_DURATION_SECONDS`를 더 낮추거나, 문서 길이에 비례한
+  동적 추정으로 바꾸는 것도 고려할 수 있음(지금은 데이터 포인트가 하나뿐이라 고정 상수로 유지).
+
+## 2026-08-10 — Overview "다음/에러" 클릭 시 일부 이슈에서 문서가 안 움직이던 버그 수정
+
+"오버뷰에서 다음을 눌렀을 때 2개는 움직이는데 단어 누락 같은 에러는 안 움직여"라는 보고. 원인은
+`wrapIssue()`가 `issue.input_text`를 문서 안에서 찾아 `<mark>`로 감싸는데, **"정보 누락(MI)" 같은
+이슈는 애초에 원문에 없는 걸 지적**하므로 `input_text`로 찾을 매치 대상 자체가 없어서 항상 매칭
+실패 → 하이라이트가 생성 안 됨 → `scrollToIssue()`가 감쌀 `<mark>`를 못 찾아 스크롤도 안 됨. 정식
+`range`/`insert_range` 프레임 렌더링(design spec에서 설계만 하고 아직 구현 안 한 부분, 2026-08-09
+`frame_type` 계산 항목 참고)이 아직 없어서 생긴 공백.
+
+- **`extension/src/content/messages.ts`**: `OverlayIssue`에 `location` 필드 추가(`IssueResponse`엔
+  이미 있었지만 content script로 안 넘어가고 있었음).
+- **`extension/src/hooks/useIssueOverlaySync.ts`**: `location`도 같이 전달하도록 매핑 갱신.
+- **`extension/src/content/issueOverlay.ts`**: `wrapIssue()`가 `input_text` 매칭에 실패하면
+  `wrapIssueByLocationHeading()`으로 폴백 — `issue.location`(예: "6. 프로덕트 기능 > 6-1. 메인 배너
+  (캐러셀)")의 가장 안쪽 위계와 텍스트가 일치하는 제목(h1~h6)을 찾아 그 제목 자체를 감싼다.
+  `location`은 `htmlToChapterMarkdown`이 만든 헤딩 텍스트 그대로라 실제 문서 제목과 일치해야 정상.
+  클릭 핸들러 부착 로직을 `attachIssueMarkHandlers()`로 뽑아 기존 경로/폴백 경로가 공유하도록 정리.
+  - **범위 제한**: 이번 수정은 "스크롤·클릭할 대상이 하나는 있게" 하는 최소 안전망이고, 실제
+    range/insert_range 시각적 프레임(구간 전체를 감싸는 등)은 여전히 미구현 — 그건 별도 작업.
+- 검증: 신규 테스트 2개(제목 폴백 성공/실패 케이스) 추가, 확장 70개 전부 통과, lint/tsc/build 클린.
+
+### Next
+
+- range/insert_range의 실제 시각적 프레임(구간 전체 하이라이트) 구현은 여전히 남은 작업.
+- 사용자 재검증 대기.
+
+## 2026-08-10 — 위 수정 직후 왼쪽 하이라이트/스크롤이 전부 사라진 회귀 수정
+
+바로 다음 리로드에서 "왼쪽 하이라이트 박스랑 스크롤이 사라졌다"는 보고. 원인은
+`applyIssueOverlay`가 `issues.filter(wrapIssue)`로 돌리는데, 이슈 하나에서라도 `wrapIssue`가
+예외를 던지면 **`filter()` 전체가 그 자리에서 멈춰서 뒤에 있던 멀쩡한 이슈들까지 전부 하이라이트가
+안 그려지는 것** — 방금 추가한 `wrapIssueByLocationHeading()`이 `issue.location.split('>')`을
+그대로 호출해서, `location`이 없는 이슈(이 필드가 추가되기 전에 만들어진 상태 등)를 만나면 바로
+`TypeError`를 던졌다.
+
+- **`extension/src/content/issueOverlay.ts`**: 두 겹으로 방어 — (1) `wrapIssueByLocationHeading`이
+  `issue.location?.split('>')`로 옵셔널 체이닝해서 애초에 안 던지게, (2) `applyIssueOverlay`가
+  `wrapIssue` 호출을 이슈별로 try/catch로 감싸서, 앞으로 비슷한 종류의(예상 못 한) 에러가 또 나도
+  그 이슈 하나만 매칭 실패로 처리되고 나머지는 영향받지 않게.
+- 검증: 신규 회귀 테스트 1개(location 없는 이슈가 섞여도 나머지 이슈는 정상 하이라이트되는지) 추가,
+  확장 71개 전부 통과, lint/tsc/build 클린.
+
+### Next
+
+- 사용자 재검증 대기 — 이번엔 하이라이트/스크롤 자체가 다시 보이는지부터.

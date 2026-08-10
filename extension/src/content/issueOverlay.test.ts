@@ -8,6 +8,7 @@ const ISSUE: OverlayIssue = {
   criteria: '용어 및 단어의 일관성',
   reason: '테스트용 이유',
   suggestion: '4사만 지원, 페이코 미지원',
+  location: '결제 수단',
 }
 
 const ORIGINAL_PAGE_ID = '482910'
@@ -85,6 +86,48 @@ describe('applyIssueOverlay', () => {
     expect(document.querySelector('.sunnic-issue-highlight')?.textContent).toBe('3사만 지원, 페이코 미지원')
   })
 
+  it('falls back to highlighting the location heading when input_text has no match (e.g. missing-info issues)', () => {
+    // "정보 누락(MI)" 같은 이슈는 애초에 원문에 없는 걸 지적하니 input_text로 찾을 대상 자체가
+    // 없다 — 그럴 때도 "다음"으로 넘기면 문서가 스크롤돼야 어디를 고쳐야 하는지 알 수 있다.
+    document.body.innerHTML =
+      '<main><h2>6. 프로덕트 기능</h2><h3>6-1. 메인 배너 (캐러셀)</h3><p>최대 5개 슬라이드로 구성.</p></main>'
+    const issue: OverlayIssue = {
+      ...ISSUE,
+      input_text: '자동 슬라이드 전환 간격',
+      location: '6. 프로덕트 기능 > 6-1. 메인 배너 (캐러셀)',
+    }
+
+    const result = applyIssueOverlay([issue])
+
+    expect(result).toEqual({ matched: 1, total: 1 })
+    const mark = document.querySelector('.sunnic-issue-highlight')
+    expect(mark?.textContent).toBe('6-1. 메인 배너 (캐러셀)')
+    expect(mark?.closest('h3')).not.toBeNull()
+  })
+
+  it('still highlights the other issues even if one has no location and cannot be matched', () => {
+    // wrapIssue()가 이슈 하나에서 예외를 던지면 filter() 전체가 멈춰서 뒤에 있던 멀쩡한 이슈들까지
+    // 하이라이트가 안 그려지는 사고로 이어졌었다(location이 없는 예전 데이터가 섞인 경우 등).
+    document.body.innerHTML = `<main>${PAGE_HTML}</main>`
+    const brokenIssue = { ...ISSUE, id: 'broken', input_text: '문서에 없는 문구', location: undefined as unknown as string }
+    const goodIssue: OverlayIssue = { ...ISSUE, id: 'issue-2' }
+
+    const result = applyIssueOverlay([brokenIssue, goodIssue])
+
+    expect(result).toEqual({ matched: 1, total: 2 })
+    expect(document.querySelector('[data-sunnic-issue-id="issue-2"]')).not.toBeNull()
+  })
+
+  it('reports 0 matched when neither input_text nor the location heading exist in the document', () => {
+    document.body.innerHTML = '<main><h2>다른 제목</h2></main>'
+    const issue: OverlayIssue = { ...ISSUE, input_text: '문서에 없는 문구', location: '문서에 없는 제목' }
+
+    const result = applyIssueOverlay([issue])
+
+    expect(result).toEqual({ matched: 0, total: 1 })
+    expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
+  })
+
   it('wraps every matching issue at once, not just one', () => {
     document.body.innerHTML =
       '<main><p>간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원 안내.</p>' +
@@ -112,17 +155,29 @@ describe('applyIssueOverlay', () => {
     expect(Array.from(marks).map((m) => m.textContent).join('')).toBe('상태: 검토 중')
   })
 
-  it('resolves every mark of a multi-element match together', async () => {
+  it('merges every mark of a multi-element match into one on apply, showing the new text', async () => {
     stubConfluenceFetch({ duplicateBody: '<p>상태: 검토 중</p>' })
     document.body.innerHTML = '<p>상태: <span class="lozenge">검토 중</span></p>'
     const issue: OverlayIssue = { ...ISSUE, input_text: '상태: 검토 중' }
     applyIssueOverlay([issue])
+    expect(document.querySelectorAll('.sunnic-issue-highlight').length).toBeGreaterThanOrEqual(2)
 
     await applyIssueEdit(issue.id, issue.input_text, '검토 완료')
 
     const marks = document.querySelectorAll('.sunnic-issue-highlight')
-    expect(marks.length).toBeGreaterThanOrEqual(2)
-    expect(Array.from(marks).every((m) => m.classList.contains('sunnic-issue-resolved'))).toBe(true)
+    expect(marks.length).toBe(1)
+    expect(marks[0].classList.contains('sunnic-issue-resolved')).toBe(true)
+    expect(marks[0].textContent).toBe('검토 완료')
+  })
+
+  it('overwrites the mark text in place after a single-element apply', async () => {
+    stubConfluenceFetch()
+    applyIssueOverlay([ISSUE])
+
+    await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+
+    const mark = document.querySelector('.sunnic-issue-highlight')
+    expect(mark?.textContent).toBe(ISSUE.suggestion)
   })
 
   it('clicking a highlight shows a read-only AI 제안 bubble and focuses the sidepanel on it', () => {
@@ -224,6 +279,79 @@ describe('applyIssueEdit', () => {
 
     expect(result).toEqual({ ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' })
   })
+
+  it('still finds the text in storage HTML when its whitespace differs from the live DOM', async () => {
+    // storage HTML의 줄바꿈/연속 공백이 화면에 렌더링된 것과 완전히 같지 않은 흔한 경우 — 예전엔
+    // 여기서만 완전 일치(includes)로 찾아서, 화면엔 분명히 보이는 문구인데 저장이 실패했었다.
+    const fetchMock = stubConfluenceFetch({ duplicateBody: '<p>3사만  지원,\n페이코 미지원</p>' })
+
+    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    expect(putBody.body.storage.value).toBe(`<p>${ISSUE.suggestion}</p>`)
+  })
+
+  it('finds and replaces text that spans two separate list items with no whitespace between them', async () => {
+    // 사람 눈엔 한 문장처럼 붙어 보여도, 실제 storage HTML에서는 서로 다른 <li> 태그에 나뉘어
+    // 있고 그 사이에 공백조차 없는 경우 — 공백만 관대하게 봐주는 단순 정규식으로는 못 찾는다.
+    const oldText = '홈 UV 달성근거: 구매 전환율 필요'
+    const newText = '실제 퍼널 수치 재계산'
+    const fetchMock = stubConfluenceFetch({ duplicateBody: '<ul><li>홈 UV 달성</li><li>근거: 구매 전환율 필요</li></ul>' })
+
+    const result = await applyIssueEdit('issue-multi-li', oldText, newText)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    expect(putBody.body.storage.value).toBe(`<ul><li>${newText}</li><li></li></ul>`)
+  })
+
+  it('finds text split by a <strong> close tag and a <br> inside one <p> (real DOC-001 shape)', async () => {
+    // 실제 DOC-001 페이지에서 재현된 구조 그대로 — 볼드로 감싼 구절 뒤에 <br>로 줄바꿈하고 이어지는
+    // 문장이 붙는 흔한 패턴("**핵심 지표**\n근거: ...")이 서로 다른 텍스트 노드로 쪼개진다.
+    const oldText =
+      '홈 UV (Unique Visitor) 월 2만명 달성근거: 구매 전환율 1.5% 목표 달성을 위해 장바구니 유입 최소 1,000명 필요.'
+    const newText = '실제 퍼널 수치를 재계산하여 일관된 근거로 제시'
+    const fragment =
+      '<li><p><strong>홈 UV (Unique Visitor) 월 2만명 달성</strong><br>근거: 구매 전환율 1.5% 목표 달성을 위해 ' +
+      '장바구니 유입 최소 1,000명 필요. 홈→장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>'
+    const fetchMock = stubConfluenceFetch({ duplicateBody: fragment })
+
+    const result = await applyIssueEdit('issue-strong-br', oldText, newText)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    // <strong>/<br> 태그 자체는 건드리지 않고, 그 사이에 있던 텍스트 노드 내용만 치환된다.
+    expect(putBody.body.storage.value).toBe(
+      `<li><p><strong>${newText}</strong><br> 홈→장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>`,
+    )
+  })
+
+  it('still matches when an unrelated part of the document has an HTML entity like &rarr;', async () => {
+    // 실제 DOC-001에서 재현된 그대로 — "→"가 storage HTML에는 &rarr; 엔티티로 저장돼 있었다. 매치
+    // 구간 자체는 그 엔티티 앞에서 끝나지만, 예전 구현(디코딩한 텍스트를 원본에서 다시 찾는 방식)은
+    // 이 엔티티 때문에 그 엘리먼트의 전체 텍스트를 원본에서 못 찾아 실패했었다.
+    const oldText =
+      '홈 UV (Unique Visitor) 월 2만명 달성근거: 구매 전환율 1.5% 목표 달성을 위해 장바구니 유입 최소 1,000명 필요.'
+    const newText = '실제 퍼널 수치를 재계산하여 일관된 근거로 제시'
+    const fragment =
+      '<li><p><strong>홈 UV (Unique Visitor) 월 2만명 달성</strong><br />근거: 구매 전환율 1.5% 목표 달성을 위해 ' +
+      '장바구니 유입 최소 1,000명 필요. 홈&rarr;장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>'
+    const fetchMock = stubConfluenceFetch({ duplicateBody: fragment })
+
+    const result = await applyIssueEdit('issue-entity', oldText, newText)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    // 매치 밖에 있던 &rarr; 엔티티는 그대로(디코딩되지 않고) 보존돼야 한다.
+    expect(putBody.body.storage.value).toBe(
+      `<li><p><strong>${newText}</strong><br /> 홈&rarr;장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>`,
+    )
+  })
 })
 
 describe('scrollToIssue', () => {
@@ -254,5 +382,39 @@ describe('scrollToIssue', () => {
 
     const tooltip = document.querySelector('.sunnic-issue-tooltip')
     expect(tooltip?.textContent).toContain(ISSUE.suggestion)
+  })
+
+  it('marks the scrolled-to issue as active (gradient highlight) and clears it from the previous one', () => {
+    const other: OverlayIssue = { ...ISSUE, id: 'issue-2', input_text: '결제 실패 원인' }
+    document.body.innerHTML = `<main>${PAGE_HTML}<p>결제 실패 원인</p></main>`
+    applyIssueOverlay([ISSUE, other])
+    const marks = document.querySelectorAll<HTMLElement>('.sunnic-issue-highlight')
+    for (const mark of marks) mark.scrollIntoView = vi.fn()
+
+    scrollToIssue(ISSUE.id)
+    expect(document.querySelector(`[data-sunnic-issue-id="${ISSUE.id}"]`)?.classList.contains('sunnic-issue-active')).toBe(true)
+
+    scrollToIssue(other.id)
+    expect(document.querySelector(`[data-sunnic-issue-id="${ISSUE.id}"]`)?.classList.contains('sunnic-issue-active')).toBe(false)
+    expect(document.querySelector(`[data-sunnic-issue-id="${other.id}"]`)?.classList.contains('sunnic-issue-active')).toBe(true)
+  })
+
+  it('keeps the AI 제안 bubble tracking the mark position as the page keeps scrolling', () => {
+    applyIssueOverlay([ISSUE])
+    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
+    if (!mark) throw new Error('mark not found')
+    mark.scrollIntoView = vi.fn()
+    mark.getBoundingClientRect = vi.fn().mockReturnValue({ top: 500, bottom: 520, left: 10, right: 100 } as DOMRect)
+
+    scrollToIssue(ISSUE.id)
+    const tooltip = document.querySelector<HTMLElement>('.sunnic-issue-tooltip')
+    expect(tooltip?.style.top).toBe('526px')
+
+    // scrollIntoView's smooth animation lands the mark somewhere else by the time scrolling settles —
+    // the bubble must follow, not stay pinned to the pre-scroll position.
+    mark.getBoundingClientRect = vi.fn().mockReturnValue({ top: 120, bottom: 140, left: 10, right: 100 } as DOMRect)
+    window.dispatchEvent(new Event('scroll'))
+
+    expect(tooltip?.style.top).toBe('146px')
   })
 })

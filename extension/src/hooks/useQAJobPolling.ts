@@ -28,7 +28,15 @@ export function useQAJobPolling(jobId: string | null): void {
       try {
         const status = await api.getQAJobStatus(jobId)
         dispatch({ type: 'JOB_STATUS_UPDATED', status })
-        if (status.status === 'done' || status.status === 'failed') {
+        if (status.status === 'failed') {
+          // 이슈 0건으로 끝나는 실제 "문제 없음" 케이스와 구분해야 한다 — 예전엔 failed도 done과
+          // 똑같이 취급해서 그냥 빈 이슈 목록을 불러왔는데, 그러면 "AI 키 설정을 안 해서 검토
+          // 자체가 실패"한 것도 화면엔 "발견된 이슈가 없습니다"로 보여서 구분이 안 됐다.
+          stop()
+          dispatch({ type: 'SET_ERROR', error: 'QA 검토가 실패했습니다. 서버의 API 키 설정을 확인해주세요.' })
+          return
+        }
+        if (status.status === 'done') {
           stop()
           const issues = await api.listQAJobIssues(jobId)
           dispatch({ type: 'ISSUES_LOADED', issues })

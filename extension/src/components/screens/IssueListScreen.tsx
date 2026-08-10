@@ -3,7 +3,7 @@ import { api } from '../../api/client'
 import { NotImplementedError } from '../../api/errors'
 import type { ApplyIssueEditRequest, ApplyIssueEditResponse } from '../../content/messages'
 import { OverviewPanel } from '../issues/OverviewPanel'
-import { validateEdit } from '../../state/editValidation'
+import { isIssueLikelyResolved } from '../../state/editValidation'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { Button } from '../common/Button'
 
@@ -26,6 +26,8 @@ export function IssueListScreen() {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [warningAcknowledged, setWarningAcknowledged] = useState(false)
+  const [similarityWarning, setSimilarityWarning] = useState<string | null>(null)
+  const [checkingSimilarity, setCheckingSimilarity] = useState(false)
 
   if (!issue) {
     return (
@@ -39,18 +41,19 @@ export function IssueListScreen() {
   const isResolved = RESOLVED_ACTIONS.has(issueEdits[issue.id]?.action ?? '')
   const suggestion = issueEdits[issue.id]?.editedText ?? issue.suggestion
   const draftText = draft?.issueId === issue.id ? draft.text : suggestion
-  const validation = isEditing ? validateEdit(issue, draftText) : null
-  const hasWarning = validation ? !validation.issueLikelyResolved || !validation.matchesSuggestionClosely : false
+  const issueLikelyResolved = isEditing ? isIssueLikelyResolved(issue.input_text, draftText) : true
 
   const startEdit = () => {
     setSaveError(null)
     setWarningAcknowledged(false)
+    setSimilarityWarning(null)
     dispatch({ type: 'START_EDIT_ISSUE', issueId: issue.id })
   }
 
   const cancelEdit = () => {
     setDraft(null)
     setSaveError(null)
+    setSimilarityWarning(null)
     dispatch({ type: 'STOP_EDIT_ISSUE' })
   }
 
@@ -94,11 +97,37 @@ export function IssueListScreen() {
     }
   }
 
-  const handleSaveClick = () => {
-    if (hasWarning && !warningAcknowledged) {
+  // 처음 누르면: (1) 원래 문제 문구가 아직 남아있는지(로컬, 즉시) → (2) AI 제안과 비슷한지(백엔드
+  // 유사도 검사, /issues/similarity-check) 순서로 확인한다. 둘 중 하나라도 걸리면 저장하지 않고
+  // 경고만 띄운 채 리턴 — 사용자가 "수정 저장"을 한 번 더 눌러야(warningAcknowledged) 그대로 반영된다.
+  // 백엔드 호출이 실패해도(네트워크 문제 등) 저장 자체를 막지는 않는다 — 유사도 검사는 안전장치일 뿐
+  // 필수 게이트가 아니기 때문.
+  const handleSaveClick = async () => {
+    if (warningAcknowledged) {
+      void saveEdit()
+      return
+    }
+
+    if (!issueLikelyResolved) {
+      setSimilarityWarning(null)
       setWarningAcknowledged(true)
       return
     }
+
+    setCheckingSimilarity(true)
+    try {
+      const result = await api.checkEditSimilarity(issue.suggestion, draftText)
+      if (!result.matches_closely) {
+        setSimilarityWarning(`AI 제안(${issue.suggestion})과 다소 달라요 (유사도 ${Math.round(result.similarity * 100)}%).`)
+        setWarningAcknowledged(true)
+        return
+      }
+    } catch {
+      // 유사도 검사 실패는 무시하고 저장은 계속 진행한다.
+    } finally {
+      setCheckingSimilarity(false)
+    }
+
     void saveEdit()
   }
 
@@ -134,7 +163,14 @@ export function IssueListScreen() {
                   <span className="resolved-badge">✓ 수정완료</span>
                 ) : (
                   <button type="button" className="issue-fix-link" onClick={startEdit}>
-                    오류 수정하기 ✏️
+                    <span className="issue-fix-link-text">오류 수정하기</span>
+                    <svg className="issue-fix-link-icon" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                      <circle cx="6" cy="6" r="5.25" stroke="currentColor" strokeWidth="1" />
+                      <path
+                        d="M4.4 7.6 7.3 4.7a.5.5 0 0 1 .7 0l.3.3a.5.5 0 0 1 0 .7L5.4 8.6l-1.2.3.2-1.3Z"
+                        fill="currentColor"
+                      />
+                    </svg>
                   </button>
                 ))}
             </div>
@@ -145,6 +181,7 @@ export function IssueListScreen() {
                 onChange={(e) => {
                   setDraft({ issueId: issue.id, text: e.target.value })
                   setWarningAcknowledged(false)
+                  setSimilarityWarning(null)
                 }}
                 rows={4}
                 autoFocus
@@ -172,8 +209,13 @@ export function IssueListScreen() {
             <button type="button" className="issue-edit-cancel" onClick={cancelEdit} disabled={saving}>
               수정 복구 ✕
             </button>
-            <button type="button" className="issue-edit-save" onClick={handleSaveClick} disabled={saving}>
-              {saving ? '저장 중...' : '수정 저장 ✓'}
+            <button
+              type="button"
+              className="issue-edit-save"
+              onClick={() => void handleSaveClick()}
+              disabled={saving || checkingSimilarity}
+            >
+              {saving ? '저장 중...' : checkingSimilarity ? '확인 중...' : '수정 저장 ✓'}
             </button>
           </div>
         ) : (
@@ -194,11 +236,13 @@ export function IssueListScreen() {
           </div>
         )}
 
-        {isEditing && validation && !validation.issueLikelyResolved && (
-          <p className="issue-edit-notice">원래 문제였던 표현이 아직 남아있어요. 정말 해결됐는지 다시 확인해주세요.</p>
+        {isEditing && warningAcknowledged && !issueLikelyResolved && (
+          <p className="issue-edit-notice">
+            원래 문제였던 표현이 아직 남아있어요. 정말 해결됐으면 "수정 저장"을 한 번 더 눌러주세요.
+          </p>
         )}
-        {isEditing && validation && !validation.matchesSuggestionClosely && (
-          <p className="issue-edit-notice">AI 제안({issue.suggestion})과 많이 달라요. 의도한 수정이 맞는지 확인해주세요.</p>
+        {isEditing && similarityWarning && (
+          <p className="issue-edit-notice">{similarityWarning} 의도한 수정이 맞으면 "수정 저장"을 한 번 더 눌러주세요.</p>
         )}
         {isEditing && saveError && <p className="issue-edit-notice issue-edit-notice-error">{saveError}</p>}
       </div>

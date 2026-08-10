@@ -25,11 +25,15 @@ export function IssueListScreen() {
   // 두면 섹션 제목이 "이 정보를 추가하세요" 같은 제안 문구로 통째로 덮어써지는 사고가 난다.
   const isInsertRangeIssue = issue?.frame_type === 'insert_range'
   const isEditing = !isInsertRangeIssue && issue !== undefined && editingIssueId === issue.id
+  // LG/LF/GA는 두 위치 간 관계 오류라 두 번째 위치(related_original_text)도 있으면 독립적으로
+  // 편집·저장할 수 있게 한다 — 없으면(모델이 못 찾은 경우) 지금까지처럼 첫 번째 위치만 편집 가능.
+  const isRelationalIssue = issue?.frame_type === 'range' && !!issue.related_original_text
 
-  // 렌더 중에 파생시키는 초안 — draft.issueId가 지금 보고 있는 이슈와 다르면(편집을 처음 시작했거나
-  // "수정 복구"로 초기화한 경우) AI 제안으로 폴백한다. useEffect로 props→state를 동기화하지 않아도 돼서
-  // 더 단순하고, 렌더 중 setState를 유발하지 않는다.
-  const [draft, setDraft] = useState<{ issueId: string; text: string } | null>(null)
+  // 렌더 중에 파생시키는 초안 — draft.issueId/target이 지금 편집 중인 것과 다르면(편집을 처음
+  // 시작했거나 "수정 복구"로 초기화한 경우) 기존 제안/원문으로 폴백한다. useEffect로 props→state를
+  // 동기화하지 않아도 돼서 더 단순하고, 렌더 중 setState를 유발하지 않는다.
+  const [editingTarget, setEditingTarget] = useState<'primary' | 'related'>('primary')
+  const [draft, setDraft] = useState<{ issueId: string; target: 'primary' | 'related'; text: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [warningAcknowledged, setWarningAcknowledged] = useState(false)
@@ -45,12 +49,25 @@ export function IssueListScreen() {
     )
   }
 
-  const isResolved = RESOLVED_ACTIONS.has(issueEdits[issue.id]?.action ?? '')
-  const suggestion = issueEdits[issue.id]?.editedText ?? issue.suggestion
-  const draftText = draft?.issueId === issue.id ? draft.text : suggestion
-  const issueLikelyResolved = isEditing ? isIssueLikelyResolved(issue.input_text, draftText) : true
+  const primaryResolved = issueEdits[issue.id]?.editedText !== undefined
+  const relatedResolved = issueEdits[issue.id]?.relatedEditedText !== undefined
 
-  const startEdit = () => {
+  const suggestion = issueEdits[issue.id]?.editedText ?? issue.suggestion
+  // 관련 위치엔 AI가 준 "제안" 자체가 없다(모델이 두 번째 위치의 원문만 인용해줄 뿐) — 그래서
+  // 사용자가 그 원문에서부터 직접 고쳐나가는 게 시작점이다.
+  const relatedSuggestion = issueEdits[issue.id]?.relatedEditedText ?? issue.related_original_text ?? ''
+
+  const isEditingPrimary = isEditing && editingTarget === 'primary'
+  const isEditingRelated = isEditing && editingTarget === 'related'
+  const draftText = draft?.issueId === issue.id && draft.target === 'primary' ? draft.text : suggestion
+  const relatedDraftText =
+    draft?.issueId === issue.id && draft.target === 'related' ? draft.text : relatedSuggestion
+  const activeOldText = editingTarget === 'related' ? issue.related_original_text ?? '' : issue.input_text
+  const activeDraftText = editingTarget === 'related' ? relatedDraftText : draftText
+  const issueLikelyResolved = isEditing ? isIssueLikelyResolved(activeOldText, activeDraftText) : true
+
+  const startEdit = (target: 'primary' | 'related') => {
+    setEditingTarget(target)
     setSaveError(null)
     setWarningAcknowledged(false)
     setSimilarityWarning(null)
@@ -77,8 +94,8 @@ export function IssueListScreen() {
       const response = await chrome.tabs.sendMessage<ApplyIssueEditRequest, ApplyIssueEditResponse>(tab.id, {
         type: 'APPLY_ISSUE_EDIT',
         issueId: issue.id,
-        oldText: issue.input_text,
-        newText: draftText,
+        oldText: activeOldText,
+        newText: activeDraftText,
       })
 
       if (!response.ok) {
@@ -86,15 +103,22 @@ export function IssueListScreen() {
         return
       }
 
-      dispatch({ type: 'STAGE_ISSUE_EDIT', issueId: issue.id, action: 'edit', editedText: draftText })
+      dispatch({
+        type: 'STAGE_ISSUE_EDIT',
+        issueId: issue.id,
+        action: 'edit',
+        target: editingTarget,
+        editedText: activeDraftText,
+      })
       dispatch({ type: 'STOP_EDIT_ISSUE' })
       setDraft(null)
       // 저장 성공 시 다음 이슈로 자동 이동 — 마지막 이슈였으면 NAVIGATE_ISSUE가 범위를 clamp해서
-      // 그냥 제자리에 머문다(appReducer.ts), 별도 경계 처리 필요 없음.
+      // 그냥 제자리에 머문다(appReducer.ts), 별도 경계 처리 필요 없음. 관계형 이슈에서 한쪽만
+      // 고치고 다른 쪽도 마저 고치고 싶으면 "이전"으로 돌아와 나머지를 편집하면 된다.
       dispatch({ type: 'NAVIGATE_ISSUE', direction: 'next' })
 
       try {
-        await api.updateIssue(issue.id, { action: 'edit', edited_text: draftText })
+        await api.updateIssue(issue.id, { action: 'edit', edited_text: activeDraftText })
       } catch (err) {
         if (!(err instanceof NotImplementedError)) {
           dispatch({ type: 'SET_ERROR', error: err instanceof Error ? err.message : String(err) })
@@ -111,7 +135,8 @@ export function IssueListScreen() {
   // 실질적으로 해결하는지(백엔드 LLM 판단, /issues/similarity-check) 순서로 확인한다. 둘 중
   // 하나라도 걸리면 저장하지 않고 경고만 띄운 채 리턴 — 사용자가 "수정 저장"을 한 번 더 눌러야
   // (warningAcknowledged) 그대로 반영된다. 백엔드 호출이 실패해도(네트워크 문제 등) 저장 자체를
-  // 막지는 않는다 — 이 검사는 안전장치일 뿐 필수 게이트가 아니기 때문.
+  // 막지는 않는다 — 이 검사는 안전장치일 뿐 필수 게이트가 아니기 때문. 관련 위치 편집은 비교
+  // 기준이 될 "AI 제안"이 애초에 없어서(원문에서 바로 고치는 것 자체가 목적) 이 검사를 건너뛴다.
   const handleSaveClick = async () => {
     if (warningAcknowledged) {
       void saveEdit()
@@ -124,6 +149,11 @@ export function IssueListScreen() {
       return
     }
 
+    if (editingTarget === 'related') {
+      void saveEdit()
+      return
+    }
+
     setCheckingSimilarity(true)
     try {
       const result = await api.checkEditSimilarity({
@@ -131,7 +161,7 @@ export function IssueListScreen() {
         criteria: issue.criteria,
         reason: issue.reason,
         suggestion: issue.suggestion,
-        editedText: draftText,
+        editedText: activeDraftText,
       })
       if (!result.addresses_issue) {
         setSimilarityWarning(result.reason || 'AI 제안과 다소 달라요.')
@@ -176,15 +206,15 @@ export function IssueListScreen() {
             <p className="issue-detail-value">{issue.input_text}</p>
           </div>
 
-          <div className={`issue-suggestion-box ${isEditing ? 'issue-suggestion-box-editing' : ''}`.trim()}>
+          <div className={`issue-suggestion-box ${isEditingPrimary ? 'issue-suggestion-box-editing' : ''}`.trim()}>
             <div className="issue-suggestion-row">
               <span className="issue-detail-label">수정제안</span>
               {!isEditing &&
                 !isInsertRangeIssue &&
-                (isResolved ? (
+                (primaryResolved ? (
                   <span className="resolved-badge">✓ 수정완료</span>
                 ) : (
-                  <button type="button" className="issue-fix-link" onClick={startEdit}>
+                  <button type="button" className="issue-fix-link" onClick={() => startEdit('primary')}>
                     <span className="issue-fix-link-text">오류 수정하기</span>
                     <svg className="issue-fix-link-icon" viewBox="0 0 12 12" fill="none" aria-hidden="true">
                       <circle cx="6" cy="6" r="5.25" stroke="currentColor" strokeWidth="1" />
@@ -196,12 +226,12 @@ export function IssueListScreen() {
                   </button>
                 ))}
             </div>
-            {isEditing ? (
+            {isEditingPrimary ? (
               <textarea
                 className="issue-edit-textarea"
                 value={draftText}
                 onChange={(e) => {
-                  setDraft({ issueId: issue.id, text: e.target.value })
+                  setDraft({ issueId: issue.id, target: 'primary', text: e.target.value })
                   setWarningAcknowledged(false)
                   setSimilarityWarning(null)
                 }}
@@ -220,6 +250,44 @@ export function IssueListScreen() {
               </p>
             )}
           </div>
+
+          {isRelationalIssue && (
+            <div className={`issue-suggestion-box ${isEditingRelated ? 'issue-suggestion-box-editing' : ''}`.trim()}>
+              <div className="issue-suggestion-row">
+                <span className="issue-detail-label">관련 위치 원문</span>
+                {!isEditing &&
+                  (relatedResolved ? (
+                    <span className="resolved-badge">✓ 수정완료</span>
+                  ) : (
+                    <button type="button" className="issue-fix-link" onClick={() => startEdit('related')}>
+                      <span className="issue-fix-link-text">오류 수정하기</span>
+                      <svg className="issue-fix-link-icon" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <circle cx="6" cy="6" r="5.25" stroke="currentColor" strokeWidth="1" />
+                        <path
+                          d="M4.4 7.6 7.3 4.7a.5.5 0 0 1 .7 0l.3.3a.5.5 0 0 1 0 .7L5.4 8.6l-1.2.3.2-1.3Z"
+                          fill="currentColor"
+                        />
+                      </svg>
+                    </button>
+                  ))}
+              </div>
+              {isEditingRelated ? (
+                <textarea
+                  className="issue-edit-textarea"
+                  value={relatedDraftText}
+                  onChange={(e) => {
+                    setDraft({ issueId: issue.id, target: 'related', text: e.target.value })
+                    setWarningAcknowledged(false)
+                    setSimilarityWarning(null)
+                  }}
+                  rows={4}
+                  autoFocus
+                />
+              ) : (
+                <p className="issue-suggestion-text">{relatedSuggestion}</p>
+              )}
+            </div>
+          )}
 
           <hr className="issue-detail-divider" />
 

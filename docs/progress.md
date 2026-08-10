@@ -1870,3 +1870,34 @@ AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(Re
   따라 Actions의 `contents: write` 권한이 막혀있을 가능성도 있음 — 그러면 워크플로 파일에
   `permissions: contents: write`을 이미 명시해뒀지만 그래도 실패하면 저장소 Settings →
   Actions → General에서 "Workflow permissions"를 Read and write로 바꿔야 함).
+
+## 2026-08-11 — 진행률 체크리스트에 Logical Unit 세 번째 그룹 추가
+
+사용자가 "진행바 UI에서 로지컬 유닛이 빠졌다"고 전달. 처음엔 "지금 구조엔 Logical Unit 자체가 없다"고
+답했다가, "만든 사람이 있다는데?"라는 되물음에 다시 확인 — 부정확했음을 인정하고 코드로 재검증.
+
+- **정정된 사실관계**: `bundled_screen_hybrid.review_document()`는 여전히 `Level.PARAGRAPH`/
+  `Level.DOCUMENT` 청크만 모델에 직접 dispatch한다(Logical Unit 청크를 입력으로 주는 패스는 없음).
+  하지만 `_CONFIRM_HYBRID_SYSTEM` 프롬프트가 confirm에게 `"level": "Logical Unit"`으로 승격 주장할
+  권한을 명시적으로 주고, `resolve_reported_level`이 이를 받아들이면 **결과 Issue.level에 실제로
+  "Logical Unit"이 찍힌다** — 패스로서는 없지만 결과 값으로는 실재함. `tiers.TIER_CATEGORIES`
+  (rulebook §2 원본)에도 Logical Unit이 버젓이 한 위계로 올라가 있고, 8개 카테고리 전부를 커버함
+  (Document는 AE 제외 7개, Paragraph는 GA 제외 7개 — Logical Unit만 전체를 커버).
+- 사용자 요청: Paragraph/Document와 똑같은 방식으로 Logical Unit도 3번째 그룹으로 병렬(lockstep)
+  진행하게 보여달라고 함.
+- **`qa_jobs.py`**: `_PROGRESS_GROUPS`를 2개(paragraph/document) → 3개(document/logical_unit/
+  paragraph)로 확장, 각 그룹을 `_RANGE_CATEGORIES`라는 이 파일 전용 ad-hoc 프로존셋 대신
+  **`tiers.TIER_CATEGORIES`(원본 §2 매핑)로 직접 구성**하도록 `_build_tier_groups`를 재작성 — 이제
+  진짜 rulebook 위계 테이블과 100% 일치한다. 카테고리 하나가 여러 그룹에 동시에 나타날 수 있음(예:
+  LG는 Document/Logical Unit/Paragraph 셋 다에 나옴) — §2 자체가 다위계 룰을 허용하므로 정상.
+  `_categories_for_progress`의 lockstep 채움 로직은 그룹 개수와 무관하게 이미 범용이라 코드 변경
+  없이 3그룹에도 그대로 적용됨.
+- 테스트 2개 추가: 그룹이 정확히 `["document","logical_unit","paragraph"]` 3개인지,
+  logical_unit 그룹이 실제로 8개 카테고리 전부를 커버하는지. 검증: 백엔드 137개 전부 통과, ruff 클린.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 QA 진행 화면에서 체크리스트가 Document/Logical Unit/
+  Paragraph 3개 그룹으로 뜨고, 다같이 같은 속도로 차오르는지 확인 필요.
+- Logical Unit엔 실제 dispatch 패스가 없어서 "진행 중" 표시가 진짜 API 호출과 무관한 완전 코스메틱
+  값이라는 점은 기존 2그룹 때와 동일하게 유지됨 — 이 UI 전체가 원래 진짜 진행률이 아니었음(ADR 0001).

@@ -225,6 +225,7 @@ function wrapIssue(issue: OverlayIssue): boolean {
 
 let activeTooltip: HTMLElement | null = null
 let activeAnchorMark: HTMLElement | null = null
+let repositionRafId: number | null = null
 
 function closeTooltip(): void {
   activeTooltip?.remove()
@@ -232,6 +233,29 @@ function closeTooltip(): void {
   activeAnchorMark = null
   window.removeEventListener('scroll', repositionActiveTooltip, true)
   window.removeEventListener('resize', repositionActiveTooltip)
+  if (repositionRafId !== null) {
+    cancelAnimationFrame(repositionRafId)
+    repositionRafId = null
+  }
+}
+
+// scroll 이벤트만 믿고 재계산하면, scrollIntoView가 시작되기도 전(같은 틱)에 읽은 첫 rect가
+// "스크롤 전 옛 위치" 그대로 굳어버리는 경우가 있다 — 어떤 스크롤 컨테이너를 컨플루언스가 쓰든,
+// 애니메이션이 스크롤 이벤트를 우리가 잡을 수 있는 타이밍/방식으로 안 낼 수도 있어서. 이벤트에
+// 의존하는 대신 열리고 나서 한동안(smooth scrollIntoView가 끝나기 충분한 시간) 매 프레임 강제로
+// 다시 계산해 최종적으로는 항상 실제 위치에 맞게 만든다.
+function startContinuousReposition(durationMs: number): void {
+  if (repositionRafId !== null) cancelAnimationFrame(repositionRafId)
+  const deadline = performance.now() + durationMs
+  const tick = () => {
+    if (!activeTooltip || !activeAnchorMark) {
+      repositionRafId = null
+      return
+    }
+    positionNear(activeTooltip, activeAnchorMark)
+    repositionRafId = performance.now() < deadline ? requestAnimationFrame(tick) : null
+  }
+  repositionRafId = requestAnimationFrame(tick)
 }
 
 // scrollToIssue()가 scrollIntoView({behavior:'smooth'})로 스크롤을 걸어 놓고 바로 이어서 말풍선을
@@ -290,6 +314,9 @@ function showTooltip(mark: HTMLElement, issue: OverlayIssue): void {
   activeAnchorMark = mark
   window.addEventListener('scroll', repositionActiveTooltip, true)
   window.addEventListener('resize', repositionActiveTooltip)
+  // smooth scrollIntoView는 보통 500ms 안팎에 끝난다 — 800ms면 여유 있게 덮는다. 그 이후로도
+  // 열려 있는 동안의 스크롤/리사이즈는 위 이벤트 리스너가 계속 처리한다.
+  startContinuousReposition(800)
 }
 
 export function applyIssueOverlay(issues: OverlayIssue[]): { matched: number; total: number } {

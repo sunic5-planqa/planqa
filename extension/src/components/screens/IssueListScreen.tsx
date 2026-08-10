@@ -6,6 +6,7 @@ import { OverviewPanel } from '../issues/OverviewPanel'
 import { isIssueLikelyResolved } from '../../state/editValidation'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { Button } from '../common/Button'
+import { QuoteHighlightedText } from '../common/QuoteHighlightedText'
 
 const RESOLVED_ACTIONS = new Set(['apply', 'edit'])
 
@@ -196,7 +197,9 @@ export function IssueListScreen() {
                 autoFocus
               />
             ) : (
-              <p className="issue-suggestion-text">{suggestion}</p>
+              <p className="issue-suggestion-text">
+                <QuoteHighlightedText text={suggestion} quoteClassName="gradient-quote" />
+              </p>
             )}
             {isInsertRangeIssue && (
               <p className="issue-suggestion-hint">
@@ -215,7 +218,9 @@ export function IssueListScreen() {
 
           <div className="issue-detail-block">
             <span className="issue-detail-label">검증이유</span>
-            <p className="issue-reason-text">{issue.reason}</p>
+            <p className="issue-reason-text">
+              <QuoteHighlightedText text={issue.reason} quoteClassName="gradient-quote" />
+            </p>
           </div>
         </div>
 

@@ -422,12 +422,17 @@ textarea {
   flex-shrink: 0;
 }
 
-/* Figma 실측 — "수정제안" 값은 보라→핑크 그라데이션 텍스트(플레인 검정이 아님). */
+/* 문장 전체를 다 그라데이션 처리하면 오히려 핵심(따옴표로 감싼 구체적 대안·인용구)이 안 보여서,
+   그 부분만 .gradient-quote로 강조하고 나머지는 일반 텍스트로 둔다(검증이유도 동일). */
 .issue-suggestion-text {
   margin: 0;
   font-size: 0.78rem;
   font-weight: 700;
   line-height: 1.55;
+  color: var(--text-heading);
+}
+
+.gradient-quote {
   background: linear-gradient(90deg, #b583f0, #e8639f);
   -webkit-background-clip: text;
   background-clip: text;

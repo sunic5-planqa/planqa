@@ -1604,3 +1604,57 @@ input_text를 못 찾을 때 location과 이름이 같은 제목이라도 감싸
 ### Next
 
 - 사용자 재검증 대기 — 이번엔 Intl 자체를 안 쓰니 환경 의존성 문제는 원천적으로 없어야 함.
+
+## 2026-08-10 — AI 제안 말풍선에서 따옴표로 감싼 구체적 제안치만 그라데이션 강조
+
+"AI 제안 말풍선에서 중요한 단어에 그라데이션 글씨 넣어" 요청 — 문장 전체를 다 강조하면 오히려
+핵심이 안 보여서, 따옴표로 감싼 부분(구체적 대안/인용구, 예: `'핵클 SDK 연동'으로 수정`)만 골라
+강조하기로 함.
+
+- **`extension/src/content/issueOverlay.ts`**: `highlightQuotedSpans()` 추가 — 작은따옴표/큰따옴표로
+  감싼 구간을 정규식으로 찾아 `.sunnic-tooltip-quote`(보라→핑크 그라데이션, `ACTIVE_CLASS`와 같은
+  135deg 팔레트로 통일) span으로 감싼다. 겸사겸사 `issue.suggestion`을 그동안 이스케이프 없이
+  `innerHTML`에 그대로 꽂고 있던 것도 `escapeHtml()`로 고침(LLM 응답에 `<`/`&` 같은 문자가 섞이면
+  마크업으로 잘못 해석될 수 있었던 잠재 위험).
+- 검증: 신규 테스트 2개(따옴표 강조 확인, HTML 이스케이프 확인) 추가, 확장 78개 전부 통과,
+  lint/tsc/build 클린.
+
+## 2026-08-10 — 오른쪽 패널(수정제안/검증이유)에도 따옴표 그라데이션 강조 확장
+
+"말풍선처럼 오른쪽 패널 수정제안도, 검증이유도 중요한 글자만 그라데이션으로" 요청 — 방금 만든
+AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(React)에도 그대로 확장.
+
+- **`extension/src/utils/quoteSegments.ts`**(신규): `splitQuotedSegments()` — 따옴표 구간 분리
+  정규식 로직을 content script와 사이드패널이 공유하도록 뽑아냄(렌더링 방식은 각자 다름 — HTML
+  문자열 조립 vs React 엘리먼트). `issueOverlay.ts`의 `highlightQuotedSpans()`도 이걸 쓰도록 리팩터.
+- **`extension/src/components/common/QuoteHighlightedText.tsx`**(신규): 위 분리 로직을 React
+  엘리먼트로 렌더링하는 공용 컴포넌트.
+- **`extension/src/components/screens/IssueListScreen.tsx`**: `수정제안`/`검증이유` 텍스트를
+  `QuoteHighlightedText`로 감싸서 따옴표 구간만 강조.
+- **`extension/src/styles/global.css`**: `.issue-suggestion-text`가 문장 전체를 그라데이션 처리하던
+  걸(Figma 초기 실측 스타일) 일반 텍스트로 바꾸고, 공용 `.gradient-quote` 클래스를 새로 추가 —
+  수정제안/검증이유 둘 다 이 클래스로 따옴표 구간만 강조.
+- 검증: `splitQuotedSegments` 단위 테스트 6개 추가, 확장 84개 전부 통과, lint/tsc/build 클린.
+
+## 2026-08-10 — 같은 문구에 여러 룰이 충돌할 때 더 시급한 카테고리만 남기기
+
+실사용 중 확인된 사례: 같은 입력내용("Q. 당일 배송은 어떤 지역에서 가능한가요? A. ...")에
+"용어 오용(TM)"과 "상위 목표와의 정합성(GA)"이 동시에 걸려 카드 두 개로 중복 표시됨. "카테고리별
+고정 우선순위로 더 시급한 것 하나만" 방향으로 진행(사용자 확인).
+
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**: `_CATEGORY_PRIORITY` 신규 — GA(상위 목표
+  충돌) > LG(논리비약) > LF(논리흐름) > MI(정보 누락) > RD(불필요한 중복) > AE(모호한 표현) >
+  TM(용어 오용) > TC(용어 일관성) 순으로 시급도 배치(구조적 문제 > 정보 완결성 > 표현 품질 —
+  정답이 하나로 정해진 값은 아니라 팀 판단이 바뀌면 순서만 조정하면 됨). `_dedupe_conflicting_
+  categories()`가 같은 (location, original_text) 조합을 가진 이슈들 중 우선순위가 가장 높은
+  카테고리 하나만 남김. 벤더링된 `dedupe.py::dedupe_issues()`는 "같은 rule_id + 겹치는 위치"만
+  접도록 의도적으로 짜여 있어서(다른 rule_id는 별개로 보존) 이건 그 위에 얹는 우리 쪽 후처리.
+  MI처럼 인용문(`original_text`)이 없는 이슈는 "같은 문구"인지 판단할 근거가 없어 손대지 않음
+  (잘못 묶으면 서로 다른 결측 항목이 하나로 사라질 위험).
+- 검증: 신규 테스트 4개(우선순위대로 남김, 입력 순서 무관, 위치/문구 다르면 둘 다 보존, 인용문
+  없으면 안 건드림) 추가, 백엔드 135개 전부 통과, ruff 클린.
+
+### Next
+
+- 실제 서버에서 카테고리 충돌 사례로 재검증 필요(이번 건 순수 후처리 로직이라 LLM 호출 없이도
+  결정적으로 검증 가능해서 라이브 재현은 생략함).

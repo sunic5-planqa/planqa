@@ -216,6 +216,50 @@ def _verify_mi_finding(document_text: str, issue: ReviewIssue, llm: AnthropicCli
     return bool(response.get("actually_missing", True))
 
 
+# 관계형·상위목표충돌(GA/LG/LF)이 자구단위 문제(TC/TM)보다 실제 서비스에 미치는 영향이 커서 더
+# 시급하다고 보고, 나머지는 대략 "구조적 문제 > 정보 완결성 > 표현 품질" 순으로 배치했다 — 정답이
+# 하나로 정해진 값은 아니라 팀 판단이 바뀌면 순서만 조정하면 됨(카테고리 코드는 rulebook_v1.0.md
+# §1~8 순서, 이 딕셔너리는 그와 무관하게 시급도로 재배열한 것).
+_CATEGORY_PRIORITY: dict[str, int] = {
+    "GA": 0,  # 상위 목표와 세부 내용의 정합성 — 문서 자체 목적과 충돌
+    "LG": 1,  # 논리비약
+    "LF": 2,  # 논리흐름
+    "MI": 3,  # 정보 누락
+    "RD": 4,  # 불필요한 중복
+    "AE": 5,  # 모호한 표현
+    "TM": 6,  # 용어 오용
+    "TC": 7,  # 용어 및 단어의 일관성
+}
+
+
+def _category_priority(rule_id: str, rulebook: RuleBook) -> int:
+    rule = rulebook.rule(rule_id)
+    if rule is None:
+        return len(_CATEGORY_PRIORITY)
+    return _CATEGORY_PRIORITY.get(rule.category, len(_CATEGORY_PRIORITY))
+
+
+# 같은 문구(위치+인용문)에 서로 다른 카테고리의 룰이 동시에 걸리는 경우가 실사용 중 확인됨(예:
+# "용어 오용"과 "상위 목표와의 정합성"이 완전히 같은 입력내용을 가리킴) — 사용자에게 같은 문제를
+# 카드 두 개로 중복해서 보여주는 대신, _CATEGORY_PRIORITY로 더 시급한 것 하나만 남긴다. 벤더링된
+# dedupe.py의 dedupe_issues()는 "같은 rule_id + 겹치는 위치"만 접도록 의도적으로 짜여 있어서(서로
+# 다른 rule_id는 별개 이슈로 보존) 이건 그 위에 얹는 우리 쪽 후처리다.
+def _dedupe_conflicting_categories(issues: tuple[ReviewIssue, ...], rulebook: RuleBook) -> tuple[ReviewIssue, ...]:
+    best_by_key: dict[tuple[str, str], ReviewIssue] = {}
+    passthrough: list[ReviewIssue] = []
+    for issue in issues:
+        if not issue.original_text:
+            # MI(정보 누락) 등 원문 인용이 없는 이슈는 "같은 문구"를 판단할 근거가 없다 — 잘못
+            # 묶으면 서로 다른 결측 항목이 하나로 사라질 수 있어 건드리지 않는다.
+            passthrough.append(issue)
+            continue
+        key = (issue.location, issue.original_text)
+        existing = best_by_key.get(key)
+        if existing is None or _category_priority(issue.rule_id, rulebook) < _category_priority(existing.rule_id, rulebook):
+            best_by_key[key] = issue
+    return tuple(best_by_key.values()) + tuple(passthrough)
+
+
 def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> ReviewResult:
     # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
     # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
@@ -237,7 +281,8 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
         or rule.category != "MI"
         or _verify_mi_finding(document_text, issue, confirm_llm)
     )
-    return replace(result, issues=verified_issues)
+    deduped_issues = _dedupe_conflicting_categories(verified_issues, rulebook)
+    return replace(result, issues=deduped_issues)
 
 
 # 이슈 목록을 "문서 본문 순서"로 보여주려면(SCREEN 02 "다음"/오버뷰가 왼쪽 원본을 위→아래로 훑도록)

@@ -156,7 +156,10 @@ function normalizeHeadingText(text: string): string {
 // 문서 제목과 일치해야 정상이다. 이렇게라도 하이라이트가 있어야 "다음"으로 넘겼을 때 문서가 스크롤돼
 // 어느 부분을 고쳐야 하는지 보여줄 수 있다 — 정밀한 range/insert_range 프레임 렌더링은 아직 없음.
 function wrapIssueByLocationHeading(issue: OverlayIssue): boolean {
-  const target = normalizeHeadingText(issue.location.split('>').pop() ?? '')
+  // location이 없는 이슈(예: 이 필드가 추가되기 전에 저장/캐시된 예전 데이터)가 섞여 들어와도 여기서
+  // 죽지 않게 방어한다 — 이 함수 하나가 던지면 호출부의 filter() 전체가 멈춰서, 뒤에 있던 멀쩡한
+  // 이슈들의 하이라이트까지 통째로 사라지는 사고로 이어진다(실제로 한번 겪음).
+  const target = normalizeHeadingText(issue.location?.split('>').pop() ?? '')
   if (!target) return false
 
   const heading = Array.from(document.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')).find(
@@ -265,7 +268,16 @@ function showTooltip(mark: HTMLElement, issue: OverlayIssue): void {
 export function applyIssueOverlay(issues: OverlayIssue[]): { matched: number; total: number } {
   ensureStyleInjected()
   clearIssueOverlay()
-  const matched = issues.filter(wrapIssue).length
+  // 이슈 하나에서 예상 못 한 에러가 나도(예: 데이터 이상) filter() 전체를 멈추지 않게 감싼다 —
+  // 그러지 않으면 그 이슈 뒤에 있는 멀쩡한 이슈들까지 전부 하이라이트가 안 그려진다.
+  const matched = issues.filter((issue) => {
+    try {
+      return wrapIssue(issue)
+    } catch (error) {
+      console.warn('[SunniC] 이슈 하이라이트 실패:', issue.id, error)
+      return false
+    }
+  }).length
   return { matched, total: issues.length }
 }
 

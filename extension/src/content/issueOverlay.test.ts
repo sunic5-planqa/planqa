@@ -105,6 +105,19 @@ describe('applyIssueOverlay', () => {
     expect(mark?.closest('h3')).not.toBeNull()
   })
 
+  it('still highlights the other issues even if one has no location and cannot be matched', () => {
+    // wrapIssue()가 이슈 하나에서 예외를 던지면 filter() 전체가 멈춰서 뒤에 있던 멀쩡한 이슈들까지
+    // 하이라이트가 안 그려지는 사고로 이어졌었다(location이 없는 예전 데이터가 섞인 경우 등).
+    document.body.innerHTML = `<main>${PAGE_HTML}</main>`
+    const brokenIssue = { ...ISSUE, id: 'broken', input_text: '문서에 없는 문구', location: undefined as unknown as string }
+    const goodIssue: OverlayIssue = { ...ISSUE, id: 'issue-2' }
+
+    const result = applyIssueOverlay([brokenIssue, goodIssue])
+
+    expect(result).toEqual({ matched: 1, total: 2 })
+    expect(document.querySelector('[data-sunnic-issue-id="issue-2"]')).not.toBeNull()
+  })
+
   it('reports 0 matched when neither input_text nor the location heading exist in the document', () => {
     document.body.innerHTML = '<main><h2>다른 제목</h2></main>'
     const issue: OverlayIssue = { ...ISSUE, input_text: '문서에 없는 문구', location: '문서에 없는 제목' }

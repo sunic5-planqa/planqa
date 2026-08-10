@@ -3,6 +3,7 @@ import hashlib
 import math
 import re
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -178,6 +179,43 @@ class IssueResponse(BaseModel):
     related_location: str | None
 
 
+_MI_VERIFY_SYSTEM = (
+    "You are double-checking a document-review agent's claim that specific information is "
+    "missing from a document — this exact failure mode (claiming X is missing when X is "
+    "actually stated elsewhere in the document, because the agent's own review only saw one "
+    "narrow chunk of it) has been observed live in production. You will be given the FULL "
+    "document text and the agent's claim. Re-read the ENTIRE document carefully, not just "
+    "whatever section the agent focused on, before deciding.\n"
+    'Respond with JSON only: {"actually_missing": <bool>, "reason": "<one short sentence>"}'
+)
+
+
+# MI(정보 누락) 카테고리에서, 문서에 실제로 있는 정보를 "없다"고 잘못 주장하는 오탐이 실사용 중
+# 확인됨(DOC-001 "8. 런칭 계획"의 날짜 — 파서는 정확히 뽑아냈는데 confirm이 좁은 chunk만 보고
+# 놓침, 2026-08-10). planqa-agent의 services/eval-service(judge.py)로 걸러볼 수 있는지 먼저
+# 검토했으나, 그건 문서 원문 없이 에이전트 본인의 근거/이유만 재검토하는 reference-free 구조라
+# (judge_review_result가 document_text를 아예 안 받음) "근거 자체는 논리적이지만 전제가 문서와
+# 안 맞는" 이런 유형은 애초에 못 잡는다 — 그래서 대신 여기서 문서 전체를 다시 보여주고 재확인한다.
+# MI만 검증하는 이유: 이 실패 유형("없다"는 주장)이 정의상 부분적 컨텍스트에서 특히 취약하고,
+# 실제로 관찰된 오탐도 전부 MI였다 — 모든 카테고리에 걸면 비용/시간이 크게 늘어난다.
+def _verify_mi_finding(document_text: str, issue: ReviewIssue, llm: AnthropicClient) -> bool:
+    prompt = (
+        f"Full document:\n{document_text}\n\n"
+        f"Agent's claim — location: {issue.location!r}\n"
+        f"  what's allegedly missing: {issue.description!r}\n"
+        f"  rationale: {issue.rationale!r}\n"
+        f"  quoted context: {issue.original_text!r}\n\n"
+        "Return the JSON."
+    )
+    try:
+        response = llm.complete_json(system=_MI_VERIFY_SYSTEM, prompt=prompt)
+    except Exception:  # noqa: BLE001 - a verification failure must not block/hide the original finding
+        return True
+    if not isinstance(response, dict):
+        return True
+    return bool(response.get("actually_missing", True))
+
+
 def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> ReviewResult:
     # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
     # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
@@ -190,7 +228,16 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
     # 1차 스크리닝(저비용, over-flag 의도) = Haiku, 2차 정밀검증(고비용, 정밀) = Sonnet.
     screen_llm = AnthropicClient(model=settings.sunnic_haiku_model, api_key=settings.anthropic_api_key)
     confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
-    return review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
+    result = review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
+
+    verified_issues = tuple(
+        issue
+        for issue in result.issues
+        if (rule := rulebook.rule(issue.rule_id)) is None
+        or rule.category != "MI"
+        or _verify_mi_finding(document_text, issue, confirm_llm)
+    )
+    return replace(result, issues=verified_issues)
 
 
 # 이슈 목록을 "문서 본문 순서"로 보여주려면(SCREEN 02 "다음"/오버뷰가 왼쪽 원본을 위→아래로 훑도록)

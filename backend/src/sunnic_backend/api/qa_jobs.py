@@ -90,6 +90,13 @@ def _frame_type(category: str, related_location: str | None) -> FrameType:
 # where Logical Unit and Sentence aren't queried by this structure at all anymore. Reusing
 # _RANGE_CATEGORIES here (rather than a second frozenset) keeps this in lockstep with
 # _frame_type's own notion of "relational" automatically.
+#
+# Known imprecision: bundled_screen_hybrid also routes two *individual* rule_ids
+# (tiers.ABSENCE_CHECK_RULE_IDS — LG-01, TC-02) into the Document pass regardless of their
+# category, but this checklist only has per-*category* granularity — so the "TC" item still
+# shows under Paragraph as a whole (accurate for TC-01/03/04/05, technically early for the
+# single rule TC-02) rather than splitting one category across two groups. Not worth the
+# added complexity for a cosmetic, already-fake progress signal (see docs/adr/0001-...).
 _PROGRESS_GROUPS: tuple[tuple[str, str], ...] = (
     ("paragraph", "Paragraph"),
     ("document", "Document"),

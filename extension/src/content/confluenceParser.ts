@@ -21,10 +21,17 @@ export function htmlToChapterMarkdown(pageTitle: string, storageHtml: string): s
     }
 
     if (node.tagName === 'UL' || node.tagName === 'OL') {
+      // 쉼표로 한 줄에 이어붙이면(예전 방식) 실제 문서엔 없는 문구를 만들어내는 셈이라, QA 엔진이
+      // 그 가짜 텍스트를 그대로 인용하면 저장 단계에서 원문을 영영 찾을 수 없다(DOC-001 "목표
+      // 런칭일:, QA 기간:" 케이스로 실제 확인). review-agent의 document.py도 `- `로 시작하는 줄을
+      // 하나의 문장 단위(불릿)로 인식하도록 짜여 있어서, 항목마다 별도 줄의 마크다운 불릿으로 남긴다.
       const items = Array.from(node.querySelectorAll('li'))
         .map((li) => collapseWhitespace(li.textContent ?? ''))
         .filter(Boolean)
-      if (items.length) lines.push('', items.join(', '))
+      if (items.length) {
+        lines.push('')
+        for (const item of items) lines.push(`- ${item}`)
+      }
       continue
     }
 

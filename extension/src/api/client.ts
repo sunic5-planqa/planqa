@@ -50,10 +50,22 @@ export const api = {
 
   exportDocument: (documentId: string) => request<ExportDocumentResponse>(`/documents/${documentId}/export`),
 
-  checkEditSimilarity: (suggestion: string, editedText: string) =>
+  checkEditSimilarity: (args: {
+    originalText: string
+    criteria: string
+    reason: string
+    suggestion: string
+    editedText: string
+  }) =>
     request<SimilarityCheckResponse>('/issues/similarity-check', {
       method: 'POST',
-      body: JSON.stringify({ suggestion, edited_text: editedText }),
+      body: JSON.stringify({
+        original_text: args.originalText,
+        criteria: args.criteria,
+        reason: args.reason,
+        suggestion: args.suggestion,
+        edited_text: args.editedText,
+      }),
     }),
 
   getDocumentCount: () => request<DocumentCountResponse>('/documents/count'),

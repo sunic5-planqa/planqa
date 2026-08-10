@@ -106,11 +106,11 @@ export function IssueListScreen() {
     }
   }
 
-  // 처음 누르면: (1) 원래 문제 문구가 아직 남아있는지(로컬, 즉시) → (2) AI 제안과 비슷한지(백엔드
-  // 유사도 검사, /issues/similarity-check) 순서로 확인한다. 둘 중 하나라도 걸리면 저장하지 않고
-  // 경고만 띄운 채 리턴 — 사용자가 "수정 저장"을 한 번 더 눌러야(warningAcknowledged) 그대로 반영된다.
-  // 백엔드 호출이 실패해도(네트워크 문제 등) 저장 자체를 막지는 않는다 — 유사도 검사는 안전장치일 뿐
-  // 필수 게이트가 아니기 때문.
+  // 처음 누르면: (1) 원래 문제 문구가 아직 남아있는지(로컬, 즉시) → (2) 이 수정이 검증기준을
+  // 실질적으로 해결하는지(백엔드 LLM 판단, /issues/similarity-check) 순서로 확인한다. 둘 중
+  // 하나라도 걸리면 저장하지 않고 경고만 띄운 채 리턴 — 사용자가 "수정 저장"을 한 번 더 눌러야
+  // (warningAcknowledged) 그대로 반영된다. 백엔드 호출이 실패해도(네트워크 문제 등) 저장 자체를
+  // 막지는 않는다 — 이 검사는 안전장치일 뿐 필수 게이트가 아니기 때문.
   const handleSaveClick = async () => {
     if (warningAcknowledged) {
       void saveEdit()
@@ -125,14 +125,20 @@ export function IssueListScreen() {
 
     setCheckingSimilarity(true)
     try {
-      const result = await api.checkEditSimilarity(issue.suggestion, draftText)
-      if (!result.matches_closely) {
-        setSimilarityWarning(`AI 제안과 다소 달라요 (유사도 ${Math.round(result.similarity * 100)}%).`)
+      const result = await api.checkEditSimilarity({
+        originalText: issue.input_text,
+        criteria: issue.criteria,
+        reason: issue.reason,
+        suggestion: issue.suggestion,
+        editedText: draftText,
+      })
+      if (!result.addresses_issue) {
+        setSimilarityWarning(result.reason || 'AI 제안과 다소 달라요.')
         setWarningAcknowledged(true)
         return
       }
     } catch {
-      // 유사도 검사 실패는 무시하고 저장은 계속 진행한다.
+      // 검사 실패는 무시하고 저장은 계속 진행한다.
     } finally {
       setCheckingSimilarity(false)
     }

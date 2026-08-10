@@ -1618,3 +1618,20 @@ input_text를 못 찾을 때 location과 이름이 같은 제목이라도 감싸
   마크업으로 잘못 해석될 수 있었던 잠재 위험).
 - 검증: 신규 테스트 2개(따옴표 강조 확인, HTML 이스케이프 확인) 추가, 확장 78개 전부 통과,
   lint/tsc/build 클린.
+
+## 2026-08-10 — 오른쪽 패널(수정제안/검증이유)에도 따옴표 그라데이션 강조 확장
+
+"말풍선처럼 오른쪽 패널 수정제안도, 검증이유도 중요한 글자만 그라데이션으로" 요청 — 방금 만든
+AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(React)에도 그대로 확장.
+
+- **`extension/src/utils/quoteSegments.ts`**(신규): `splitQuotedSegments()` — 따옴표 구간 분리
+  정규식 로직을 content script와 사이드패널이 공유하도록 뽑아냄(렌더링 방식은 각자 다름 — HTML
+  문자열 조립 vs React 엘리먼트). `issueOverlay.ts`의 `highlightQuotedSpans()`도 이걸 쓰도록 리팩터.
+- **`extension/src/components/common/QuoteHighlightedText.tsx`**(신규): 위 분리 로직을 React
+  엘리먼트로 렌더링하는 공용 컴포넌트.
+- **`extension/src/components/screens/IssueListScreen.tsx`**: `수정제안`/`검증이유` 텍스트를
+  `QuoteHighlightedText`로 감싸서 따옴표 구간만 강조.
+- **`extension/src/styles/global.css`**: `.issue-suggestion-text`가 문장 전체를 그라데이션 처리하던
+  걸(Figma 초기 실측 스타일) 일반 텍스트로 바꾸고, 공용 `.gradient-quote` 클래스를 새로 추가 —
+  수정제안/검증이유 둘 다 이 클래스로 따옴표 구간만 강조.
+- 검증: `splitQuotedSegments` 단위 테스트 6개 추가, 확장 84개 전부 통과, lint/tsc/build 클린.

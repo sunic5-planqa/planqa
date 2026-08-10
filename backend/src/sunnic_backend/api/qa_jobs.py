@@ -3,6 +3,7 @@ import hashlib
 import math
 import re
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -203,15 +204,32 @@ _MI_VERIFY_SYSTEM = (
     'Respond with JSON only: {"actually_missing": <bool>, "reason": "<one short sentence>"}'
 )
 
+_AE_VERIFY_SYSTEM = (
+    "You are double-checking a document-review agent's claim that a specific phrase is "
+    "ambiguous/vague (모호한 표현) — this category is vulnerable to the same narrow-context "
+    "failure mode as missing-information claims: a number, referent, or actor that looks "
+    "unspecified in isolation may actually be defined or referenced elsewhere in the same "
+    "document (e.g. a quantity defined in another section and referenced here per AE-01's own "
+    "exception condition, a pronoun whose antecedent is clear from surrounding context, an "
+    "actor implied by a system-wide policy stated elsewhere per AE-04's exception). You will "
+    "be given the FULL document text and the agent's claim. Re-read the ENTIRE document "
+    "carefully, not just whatever section the agent focused on, before deciding whether the "
+    "flagged text is genuinely ambiguous in context.\n"
+    'Respond with JSON only: {"actually_ambiguous": <bool>, "reason": "<one short sentence>"}'
+)
 
-# MI(정보 누락) 카테고리에서, 문서에 실제로 있는 정보를 "없다"고 잘못 주장하는 오탐이 실사용 중
-# 확인됨(DOC-001 "8. 런칭 계획"의 날짜 — 파서는 정확히 뽑아냈는데 confirm이 좁은 chunk만 보고
-# 놓침, 2026-08-10). planqa-agent의 services/eval-service(judge.py)로 걸러볼 수 있는지 먼저
-# 검토했으나, 그건 문서 원문 없이 에이전트 본인의 근거/이유만 재검토하는 reference-free 구조라
+
+# MI(정보 누락)에서, 문서에 실제로 있는 정보를 "없다"고 잘못 주장하는 오탐이 실사용 중 확인됨
+# (DOC-001 "8. 런칭 계획"의 날짜 — 파서는 정확히 뽑아냈는데 confirm이 좁은 chunk만 보고 놓침,
+# 2026-08-10). planqa-agent의 services/eval-service(judge.py)로 걸러볼 수 있는지 먼저 검토했으나,
+# 그건 문서 원문 없이 에이전트 본인의 근거/이유만 재검토하는 reference-free 구조라
 # (judge_review_result가 document_text를 아예 안 받음) "근거 자체는 논리적이지만 전제가 문서와
 # 안 맞는" 이런 유형은 애초에 못 잡는다 — 그래서 대신 여기서 문서 전체를 다시 보여주고 재확인한다.
-# MI만 검증하는 이유: 이 실패 유형("없다"는 주장)이 정의상 부분적 컨텍스트에서 특히 취약하고,
-# 실제로 관찰된 오탐도 전부 MI였다 — 모든 카테고리에 걸면 비용/시간이 크게 늘어난다.
+# AE(모호한 표현)도 같은 방식으로 추가(2026-08-11, 실사용 과탐지 재보고) — AE-01/AE-04 예외조건이
+# 둘 다 "문서 다른 곳에 정의/참조돼 있으면 예외"라, 좁은 chunk만 본 confirm이 그 정의를 놓치고
+# "모호하다"고 오판하는 게 MI와 정확히 같은 실패 패턴이기 때문. 나머지 카테고리로는 안 넓힘 — 이
+# 둘만 "문서 전체를 봐야 판단 가능한 예외조건"을 갖고 있고, 모든 카테고리에 걸면 비용/시간이
+# 크게 늘어난다.
 def _verify_mi_finding(document_text: str, issue: ReviewIssue, llm: AnthropicClient) -> bool:
     prompt = (
         f"Full document:\n{document_text}\n\n"
@@ -228,6 +246,30 @@ def _verify_mi_finding(document_text: str, issue: ReviewIssue, llm: AnthropicCli
     if not isinstance(response, dict):
         return True
     return bool(response.get("actually_missing", True))
+
+
+def _verify_ae_finding(document_text: str, issue: ReviewIssue, llm: AnthropicClient) -> bool:
+    prompt = (
+        f"Full document:\n{document_text}\n\n"
+        f"Agent's claim — location: {issue.location!r}\n"
+        f"  flagged text: {issue.original_text!r}\n"
+        f"  what's allegedly ambiguous: {issue.description!r}\n"
+        f"  rationale: {issue.rationale!r}\n\n"
+        "Return the JSON."
+    )
+    try:
+        response = llm.complete_json(system=_AE_VERIFY_SYSTEM, prompt=prompt)
+    except Exception:  # noqa: BLE001 - a verification failure must not block/hide the original finding
+        return True
+    if not isinstance(response, dict):
+        return True
+    return bool(response.get("actually_ambiguous", True))
+
+
+_FALSE_POSITIVE_VERIFIERS: dict[str, Callable[[str, ReviewIssue, AnthropicClient], bool]] = {
+    "MI": _verify_mi_finding,
+    "AE": _verify_ae_finding,
+}
 
 
 # 관계형·상위목표충돌(GA/LG/LF)이 자구단위 문제(TC/TM)보다 실제 서비스에 미치는 영향이 커서 더
@@ -292,8 +334,8 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
         issue
         for issue in result.issues
         if (rule := rulebook.rule(issue.rule_id)) is None
-        or rule.category != "MI"
-        or _verify_mi_finding(document_text, issue, confirm_llm)
+        or (verify := _FALSE_POSITIVE_VERIFIERS.get(rule.category)) is None
+        or verify(document_text, issue, confirm_llm)
     )
     deduped_issues = _dedupe_conflicting_categories(verified_issues, rulebook)
     return replace(result, issues=deduped_issues)

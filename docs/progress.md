@@ -1518,5 +1518,7 @@ tier를 병렬로 처리하며 붙인 순서, 문서 위치와 무관) 이슈를
 퍼센트 괄호는 그대로 둠.
 
 - **`extension/src/components/screens/IssueListScreen.tsx`**: `handleSaveClick`의
-  `setSimilarityWarning` 문구 수정.
+  `setSimilarityWarning` 문구 수정 — 처음엔 괄호 대신 큰따옴표로 AI 제안 문구를 감쌌는데, 곧이어
+  "따옴표도 빼고 그냥 짧게" 요청이 와서 AI 제안 문구 자체를 안 보여주고 "AI 제안과 다소 달라요
+  (유사도 N%)."만 남기는 걸로 다시 정리.
 - 검증: 확장 72개 전부 통과, lint/tsc/build 클린.

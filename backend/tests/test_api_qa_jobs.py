@@ -56,6 +56,11 @@ class FakeAnthropicClient:
         self.usage.append(CallStats(elapsed_seconds=0.0, prompt_tokens=None, completion_tokens=None, total_tokens=None))
         if '"summary"' in system:
             return {"summary": "결제 시스템 개선을 다루는 테스트 문서."}
+        if '"actually_missing"' in system:
+            # _verify_mi_finding's follow-up check — whichever rule the rulebook happens to
+            # list first for this document may or may not be MI, so this test double must
+            # handle it regardless (dedicated tests exercise the actual filtering behavior).
+            return {"actually_missing": True, "reason": "테스트 더블 기본 응답"}
         if '"candidates"' in system:
             rule_match = _RULE_ID_LINE_RE.search(prompt)
             chunk_match = _CHUNK_ZERO_RE.search(prompt)
@@ -353,3 +358,89 @@ async def test_qa_job_issues_are_sorted_by_position_in_the_document() -> None:
 
     ids = [issue["id"] for issue in response.json()]
     assert ids == ["early", "middle", "late"]
+
+
+class _StubVerifyLLM:
+    def __init__(self, response: Any | None) -> None:
+        self._response = response
+        self.calls: list[tuple[str, str]] = []
+
+    def complete_json(self, *, system: str, prompt: str, cache_prefix: str | None = None) -> Any:
+        self.calls.append((system, prompt))
+        if self._response is None:
+            raise RuntimeError("boom")
+        return self._response
+
+
+def _mi_issue(original_text: str = "목표 런칭일: - QA 기간: ~") -> qa_jobs.ReviewIssue:
+    return qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="MI-01",
+        location="8. 런칭 계획",
+        description="런칭일/QA 기간이 구체적으로 명시되지 않음",
+        original_text=original_text,
+        rationale="시간 조건이 정의되지 않음",
+    )
+
+
+# MI(정보 누락) 카테고리에서 문서에 실제로 있는 정보를 "없다"고 잘못 주장하는 오탐이 실사용 중
+# 확인됨(DOC-001 "8. 런칭 계획"의 날짜) — confirm이 좁은 chunk만 보고 판단한 게 원인으로 보여,
+# 문서 전체를 다시 보여주고 재확인하는 검증 단계를 추가함.
+def test_verify_mi_finding_keeps_the_issue_when_verification_confirms_it_is_missing() -> None:
+    llm = _StubVerifyLLM({"actually_missing": True, "reason": "정말 없음"})
+
+    assert qa_jobs._verify_mi_finding("문서 전문", _mi_issue(), llm) is True
+
+
+def test_verify_mi_finding_drops_the_issue_when_verification_finds_it_present() -> None:
+    llm = _StubVerifyLLM({"actually_missing": False, "reason": "8장에 날짜가 있음"})
+
+    assert qa_jobs._verify_mi_finding("문서 전문", _mi_issue(), llm) is False
+
+
+def test_verify_mi_finding_fails_safe_by_keeping_the_issue_on_llm_error() -> None:
+    llm = _StubVerifyLLM(None)
+
+    assert qa_jobs._verify_mi_finding("문서 전문", _mi_issue(), llm) is True
+
+
+def test_verify_mi_finding_fails_safe_on_malformed_response() -> None:
+    llm = _StubVerifyLLM("not a dict")
+
+    assert qa_jobs._verify_mi_finding("문서 전문", _mi_issue(), llm) is True
+
+
+def test_run_review_sync_drops_mi_false_positive_but_keeps_other_issues(monkeypatch) -> None:
+    mi_issue = _mi_issue()
+    other_issue = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="TC-01",
+        location="1. 목적",
+        description="d",
+        original_text="x",
+        rationale="r",
+    )
+
+    def fake_review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm):
+        return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(mi_issue, other_issue))
+
+    verify_calls: list[str] = []
+
+    class _FakeConfirmClient(FakeAnthropicClient):
+        def complete_json(self, *, system: str, prompt: str, cache_prefix: str | None = None) -> Any:
+            if '"actually_missing"' in system:
+                verify_calls.append(prompt)
+                return {"actually_missing": False, "reason": "실제로는 문서에 있음"}
+            return super().complete_json(system=system, prompt=prompt, cache_prefix=cache_prefix)
+
+    monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", _FakeConfirmClient)
+
+    rulebook = qa_jobs._load_rulebook()
+    result = qa_jobs._run_review_sync("DOC-TEST", _TEST_DOCUMENT, rulebook)
+
+    assert [issue.rule_id for issue in result.issues] == ["TC-01"]
+    assert len(verify_calls) == 1
+    assert _TEST_DOCUMENT in verify_calls[0]

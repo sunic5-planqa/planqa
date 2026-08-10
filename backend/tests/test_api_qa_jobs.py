@@ -602,3 +602,62 @@ def test_dedupe_conflicting_categories_never_collapses_issues_without_a_quote() 
     kept = qa_jobs._dedupe_conflicting_categories((a, b), rulebook)
 
     assert {issue.rule_id for issue in kept} == {"MI-01", "MI-02"}
+
+
+# 원문 헤딩 자체의 번호는 작성자마다 있기도 없기도 해서 신뢰할 수 없다는 게 실사용 피드백으로
+# 확인됨 — 문서 안 등장 순서를 우리가 직접 세어 번호를 매긴다.
+def test_build_heading_numbers_numbers_logical_units_in_document_order() -> None:
+    document = "# 제목\n\n## 배경\n\n본문1\n\n## 요구사항\n\n본문2\n"
+
+    numbers = qa_jobs._build_heading_numbers(document)
+
+    assert numbers == {"배경": "1", "요구사항": "2"}
+
+
+def test_build_heading_numbers_ignores_the_authors_own_numbering() -> None:
+    # 작성자가 이미 "1. 배경"처럼 번호를 써놨어도, 그 문자열 자체가 location 값이니 그대로 키가
+    # 되고, 우리가 계산한 번호("1")는 그 문자열과 별개의 값으로 나온다 — 프론트가 원문 텍스트를
+    # 그대로 보여주면서 이 숫자를 덧붙이는 방식이라 코드가 원문 번호를 "무시"할 필요는 없다.
+    document = "# 제목\n\n## 1. 배경\n\n본문1\n\n## 2. 요구사항\n\n본문2\n"
+
+    numbers = qa_jobs._build_heading_numbers(document)
+
+    assert numbers == {"1. 배경": "1", "2. 요구사항": "2"}
+
+
+def test_build_heading_numbers_numbers_sub_headings_within_each_unit() -> None:
+    document = (
+        "# 제목\n\n## 배경\n\n### 문제 정의\n\n본문1\n\n### 제안\n\n본문2\n\n"
+        "## 요구사항\n\n### 기능\n\n본문3\n"
+    )
+
+    numbers = qa_jobs._build_heading_numbers(document)
+
+    assert numbers == {
+        "배경": "1",
+        "배경 > 문제 정의": "1-1",
+        "배경 > 제안": "1-2",
+        "요구사항": "2",
+        "요구사항 > 기능": "2-1",
+    }
+
+
+async def test_qa_job_issues_include_location_number_computed_from_heading_order(monkeypatch) -> None:
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+
+    document = "# 제목\n\n## 배경\n\n간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원.\n"
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_response = await client.post("/documents", json={"raw_text": document})
+        document_id = create_response.json()["document_id"]
+        job_response = await client.post(f"/documents/{document_id}/qa-jobs")
+        job_id = job_response.json()["job_id"]
+        issues_response = await client.get(f"/qa-jobs/{job_id}/issues")
+
+    # Document 위계 이슈(location="제목", 문서 전체)는 headings dict에 없는 게 정상이라
+    # location_number가 None이어야 한다 — "배경"(Paragraph/Logical Unit 위계) 이슈만 "1"이 기대값.
+    issues = issues_response.json()
+    assert issues
+    paragraph_issue = next(issue for issue in issues if issue["location"] == "배경")
+    assert paragraph_issue["location_number"] == "1"

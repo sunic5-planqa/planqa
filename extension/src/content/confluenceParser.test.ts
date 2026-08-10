@@ -42,12 +42,26 @@ describe('htmlToChapterMarkdown', () => {
     expect(result).toBe('# 제목\n\n첫번째 문단.\n\n두번째 문단.')
   })
 
-  it('joins list items into a single line', () => {
+  it('renders each list item as its own markdown bullet line', () => {
+    // 쉼표로 한 줄에 이어붙이면 실제 문서엔 없는 문구가 만들어지고(저장 단계에서 원문을 못 찾는
+    // 원인이 됐었다), review-agent의 document.py도 "- "로 시작하는 줄을 불릿 하나로 인식한다.
     const html = '<ul><li>항목 하나</li><li>항목 둘</li></ul>'
 
     const result = htmlToChapterMarkdown('제목', html)
 
-    expect(result).toBe('# 제목\n\n항목 하나, 항목 둘')
+    expect(result).toBe('# 제목\n\n- 항목 하나\n- 항목 둘')
+  })
+
+  it('renders table rows as markdown table lines instead of concatenating every cell', () => {
+    // 분기가 없으면 표 전체 textContent가 셀 구분자 하나 없이 그냥 붙어버려서(목록의 ", "
+    // 이어붙이기보다 더 심함) 실제 문서엔 없는 문구가 만들어졌었다.
+    const html =
+      '<table><thead><tr><th><p>서비스</p></th><th><p>참고</p></th></tr></thead>' +
+      '<tbody><tr><td><p>크림</p></td><td><p>희소성</p></td></tr></tbody></table>'
+
+    const result = htmlToChapterMarkdown('제목', html)
+
+    expect(result).toBe('# 제목\n\n| 서비스 | 참고 |\n| 크림 | 희소성 |')
   })
 
   it('best-effort extracts text content from unrecognized elements like macros', () => {

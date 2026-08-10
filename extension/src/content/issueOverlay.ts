@@ -129,6 +129,54 @@ function setActiveMark(issueId: string): void {
   activeIssueId = issueId
 }
 
+function attachIssueMarkHandlers(mark: HTMLElement, issue: OverlayIssue): void {
+  mark.className = HIGHLIGHT_CLASS
+  mark.dataset.sunnicIssueId = issue.id
+  mark.addEventListener('click', (event) => {
+    event.stopPropagation()
+    // 이미 이 이슈의 말풍선이 떠 있는 채로 같은 박스를 다시 누르면 닫는다(토글) — 다른 이슈를
+    // 보다가 이 박스를 누른 거면 그냥 새로 연다.
+    if (activeTooltip?.dataset.sunnicForIssue === issue.id) closeTooltip()
+    else showTooltip(mark, issue)
+    setActiveMark(issue.id)
+    chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
+      // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
+    })
+  })
+}
+
+function normalizeHeadingText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+// input_text로 못 찾을 때의 최후 수단 — "정보 누락(MI)"처럼 애초에 원문에 없는 걸 지적하는 이슈는
+// 매치 대상 자체가 없어서 항상 여기로 온다(그 외 사소한 매칭 실패의 안전망 역할도 겸함). issue.location
+// (예: "6. 프로덕트 기능 > 6-1. 메인 배너 (캐러셀)")의 가장 안쪽 위계와 텍스트가 일치하는 제목(h1~h6)을
+// 찾아 그 제목 자체를 감싼다 — location은 htmlToChapterMarkdown이 만든 헤딩 텍스트 그대로라 실제
+// 문서 제목과 일치해야 정상이다. 이렇게라도 하이라이트가 있어야 "다음"으로 넘겼을 때 문서가 스크롤돼
+// 어느 부분을 고쳐야 하는지 보여줄 수 있다 — 정밀한 range/insert_range 프레임 렌더링은 아직 없음.
+function wrapIssueByLocationHeading(issue: OverlayIssue): boolean {
+  // location이 없는 이슈(예: 이 필드가 추가되기 전에 저장/캐시된 예전 데이터)가 섞여 들어와도 여기서
+  // 죽지 않게 방어한다 — 이 함수 하나가 던지면 호출부의 filter() 전체가 멈춰서, 뒤에 있던 멀쩡한
+  // 이슈들의 하이라이트까지 통째로 사라지는 사고로 이어진다(실제로 한번 겪음).
+  const target = normalizeHeadingText(issue.location?.split('>').pop() ?? '')
+  if (!target) return false
+
+  const heading = Array.from(document.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')).find(
+    (h) => !isInsideOverlayNode(h) && normalizeHeadingText(h.textContent ?? '') === target,
+  )
+  if (!heading) return false
+
+  const mark = document.createElement('mark')
+  attachIssueMarkHandlers(mark, issue)
+  while (heading.firstChild) mark.appendChild(heading.firstChild)
+  heading.appendChild(mark)
+
+  marksByIssueId.set(issue.id, [mark])
+  issuesById.set(issue.id, issue)
+  return true
+}
+
 // issue.input_text와 일치하는 구간을 찾아 하이라이트한다. 매치가 텍스트 노드 하나에 다 들어있으면
 // <mark> 하나로 감싸고, 라벨+뱃지처럼 여러 노드에 걸쳐 있으면 겹치는 구간마다 각각 <mark>로 감싸서
 // (같은 issue id를 공유) 이어 붙은 것처럼 보이게 한다 — Range.surroundContents는 엘리먼트 경계를
@@ -136,7 +184,7 @@ function setActiveMark(issueId: string): void {
 function wrapIssue(issue: OverlayIssue): boolean {
   const { fullText, spans } = collectTextSpans()
   const match = buildLooseTextRegex(issue.input_text).exec(fullText)
-  if (!match) return false
+  if (!match) return wrapIssueByLocationHeading(issue)
 
   const matchStart = match.index
   const matchEnd = match.index + match[0].length
@@ -152,24 +200,12 @@ function wrapIssue(issue: OverlayIssue): boolean {
     range.setEnd(span.node, overlapEnd - span.start)
 
     const mark = document.createElement('mark')
-    mark.className = HIGHLIGHT_CLASS
-    mark.dataset.sunnicIssueId = issue.id
+    attachIssueMarkHandlers(mark, issue)
     range.surroundContents(mark)
-    mark.addEventListener('click', (event) => {
-      event.stopPropagation()
-      // 이미 이 이슈의 말풍선이 떠 있는 채로 같은 박스를 다시 누르면 닫는다(토글) — 다른 이슈를
-      // 보다가 이 박스를 누른 거면 그냥 새로 연다.
-      if (activeTooltip?.dataset.sunnicForIssue === issue.id) closeTooltip()
-      else showTooltip(mark, issue)
-      setActiveMark(issue.id)
-      chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
-        // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
-      })
-    })
     marks.push(mark)
   }
 
-  if (marks.length === 0) return false
+  if (marks.length === 0) return wrapIssueByLocationHeading(issue)
   marksByIssueId.set(issue.id, marks)
   issuesById.set(issue.id, issue)
   return true
@@ -232,7 +268,16 @@ function showTooltip(mark: HTMLElement, issue: OverlayIssue): void {
 export function applyIssueOverlay(issues: OverlayIssue[]): { matched: number; total: number } {
   ensureStyleInjected()
   clearIssueOverlay()
-  const matched = issues.filter(wrapIssue).length
+  // 이슈 하나에서 예상 못 한 에러가 나도(예: 데이터 이상) filter() 전체를 멈추지 않게 감싼다 —
+  // 그러지 않으면 그 이슈 뒤에 있는 멀쩡한 이슈들까지 전부 하이라이트가 안 그려진다.
+  const matched = issues.filter((issue) => {
+    try {
+      return wrapIssue(issue)
+    } catch (error) {
+      console.warn('[SunniC] 이슈 하이라이트 실패:', issue.id, error)
+      return false
+    }
+  }).length
   return { matched, total: issues.length }
 }
 
@@ -268,9 +313,108 @@ function extractPageId(url: string): string | null {
 
 type ApplyResult = { ok: true } | { ok: false; error: string }
 
+// <textarea>.innerHTML → .value 트릭으로 named/numeric HTML 엔티티를 브라우저가 아는 그대로
+// 디코딩한다 — &rarr; 같은 엔티티를 전부 나열한 표를 직접 관리하지 않아도 된다.
+const entityDecoder = document.createElement('textarea')
+function decodeHtmlEntity(raw: string): string {
+  entityDecoder.innerHTML = raw
+  return entityDecoder.value
+}
+
+// storage HTML을 한 번 훑으면서 태그(<...>)는 건너뛰고 텍스트만 이어붙이되, 디코딩된 글자 하나하나가
+// 원본 문자열의 어느 바이트 구간에서 왔는지 같이 기록한다. 예전엔 "디코딩한 텍스트를 원본 문자열
+// 안에서 다시 찾기"(indexOf) 방식이었는데, &rarr; 처럼 엔티티로 인코딩된 문자가 매치 구간 안에 하나만
+// 있어도 디코딩된 문자가 원본에 그대로 존재하지 않아 못 찾는 문제가 있었다(실제 DOC-001에서 확인).
+// 이렇게 스캔과 동시에 오프셋을 기록해두면 나중엔 역산만 하면 되니 그 문제 자체가 생기지 않는다 —
+// 목록/표처럼 문구가 여러 엘리먼트(태그)에 걸친 경우도 태그를 그냥 건너뛰는 것만으로 자연히 처리된다.
+function decodeStorageHtmlText(html: string): { fullText: string; rawRanges: Array<[number, number]> } {
+  let fullText = ''
+  const rawRanges: Array<[number, number]> = []
+  let i = 0
+  while (i < html.length) {
+    const ch = html[i]
+    if (ch === '<') {
+      const close = html.indexOf('>', i)
+      i = close === -1 ? html.length : close + 1
+      continue
+    }
+    if (ch === '&') {
+      const semi = html.indexOf(';', i)
+      if (semi !== -1 && semi - i <= 32) {
+        const raw = html.slice(i, semi + 1)
+        const decoded = decodeHtmlEntity(raw)
+        if (decoded !== raw) {
+          for (const decodedChar of decoded) {
+            fullText += decodedChar
+            rawRanges.push([i, semi + 1])
+          }
+          i = semi + 1
+          continue
+        }
+      }
+    }
+    fullText += ch
+    rawRanges.push([i, i + 1])
+    i += 1
+  }
+  return { fullText, rawRanges }
+}
+
+// storage HTML에서 oldText(공백은 느슨하게)를 찾아 newText로 치환한다. 매치 구간을 raw 오프셋으로
+// 역산한 뒤, 그 구간 [rawStart, rawEnd) 안을 다시 한번 훑어서 태그(<strong>, </li> 등)는 전부 그대로
+// 보존하고 실제 매치된 텍스트만 한 곳에 newText로 몰아 넣는다 — [rawStart, rawEnd)를 통째로 잘라내고
+// newText로 바꿔버리면, <strong>A</strong><br>B처럼 매치가 태그 경계에 걸친 경우 여는 태그만 남고
+// 닫는 태그가 같이 지워져서 마크업이 깨진다.
+function replaceInStorageHtml(html: string, oldText: string, newText: string): string | null {
+  const { fullText, rawRanges } = decodeStorageHtmlText(html)
+  const match = buildLooseTextRegex(oldText).exec(fullText)
+  if (!match || match[0].length === 0) return null
+
+  const matchStart = match.index
+  const matchEnd = match.index + match[0].length
+  const rawStart = rawRanges[matchStart][0]
+  const rawEnd = rawRanges[matchEnd - 1][1]
+
+  let middle = ''
+  let inserted = false
+  let i = rawStart
+  while (i < rawEnd) {
+    if (html[i] === '<') {
+      const close = html.indexOf('>', i)
+      const tagEnd = close === -1 ? rawEnd : Math.min(close + 1, rawEnd)
+      middle += html.slice(i, tagEnd)
+      i = tagEnd
+      continue
+    }
+    if (!inserted) {
+      middle += newText
+      inserted = true
+    }
+    i += 1
+  }
+  if (!inserted) middle += newText
+
+  return html.slice(0, rawStart) + middle + html.slice(rawEnd)
+}
+
+// 매칭이 끝내 실패했을 때, 왜 실패했는지 다음 조사를 위해 콘솔에 실제 원본 조각을 남긴다 — 여기서
+// 계속 실패한다는 보고가 반복되는데 여기 로그가 없으면 실제 storage HTML이 정확히 어떻게 생겼는지
+// 확인할 방법이 없다(엔티티 인코딩, 예상 못 한 태그 등 원격으로는 추측만 가능한 경우들 때문).
+function logStorageMatchFailure(html: string, oldText: string): void {
+  const probe = oldText.slice(0, 15)
+  const probeIndex = html.indexOf(probe)
+  if (probeIndex === -1) {
+    console.warn('[SunniC] 원문 앞부분조차 storage HTML에서 찾지 못함:', { probe, oldTextLength: oldText.length })
+    return
+  }
+  const context = html.slice(Math.max(0, probeIndex - 20), probeIndex + oldText.length + 60)
+  console.warn('[SunniC] 원문 앞부분은 찾았지만 전체 매칭 실패. oldText와 실제 주변 HTML을 비교해보세요:', {
+    oldText,
+    surroundingHtml: context,
+  })
+}
+
 // pageId가 가리키는 페이지의 body.storage에서 oldText → newText로 문자열 치환한 뒤 PUT으로 저장한다.
-// 표/목록처럼 렌더링 시 텍스트가 변형되는 구간은 storage HTML에 그대로 없을 수 있어 실패 처리하고,
-// 문서를 깨뜨리느니 아무것도 안 하는 쪽을 택한다.
 async function replaceTextAndSave(pageId: string, oldText: string, newText: string): Promise<ApplyResult> {
   const getRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=body.storage,version`, {
     credentials: 'include',
@@ -283,7 +427,11 @@ async function replaceTextAndSave(pageId: string, oldText: string, newText: stri
     body: { storage: { value: string } }
   }
   const html = data.body.storage.value
-  if (!html.includes(oldText)) return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
+  const updatedHtml = replaceInStorageHtml(html, oldText, newText)
+  if (updatedHtml === null) {
+    logStorageMatchFailure(html, oldText)
+    return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
+  }
 
   const putRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}`, {
     method: 'PUT',
@@ -293,7 +441,7 @@ async function replaceTextAndSave(pageId: string, oldText: string, newText: stri
       version: { number: data.version.number + 1 },
       title: data.title,
       type: 'page',
-      body: { storage: { value: html.replace(oldText, newText), representation: 'storage' } },
+      body: { storage: { value: updatedHtml, representation: 'storage' } },
     }),
   })
   if (!putRes.ok) return { ok: false, error: `저장에 실패했습니다 (${putRes.status})` }

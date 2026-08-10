@@ -12,7 +12,7 @@ from sunnic_backend.config import settings
 from sunnic_backend.models.issue import FrameType, IssueStatus
 from sunnic_backend.models.issue import Issue as IssueRecord
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
-from sunnic_backend.qa_engine.review_agent.llm.gemini import DEFAULT_MODEL, GeminiClient
+from sunnic_backend.qa_engine.review_agent.llm.anthropic import AnthropicClient
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
     RuleBook,
@@ -173,24 +173,25 @@ class IssueResponse(BaseModel):
 
 
 def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> ReviewResult:
-    # review_agent's GeminiClient is a blocking/sync client (retry backoff uses time.sleep) —
-    # this whole call runs inside asyncio.to_thread so it never blocks the event loop.
+    # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
+    # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
     #
     # category_screen.review_document() runs the 4 tiers concurrently via LLMClient.clone()
     # (one client per tier, since record_call()'s usage-diffing races if threads share one
     # client's usage list) — the base class's default clone() re-reads credentials from
-    # os.environ instead of reusing the api_keys passed at construction, which we don't set
+    # os.environ instead of reusing the api_key passed at construction, which we don't set
     # process-wide (settings come from .env via pydantic-settings, not the real environment).
-    # Wrap whatever GeminiClient currently resolves to (module-level name, so tests can still
-    # monkeypatch it) in a subclass that threads the explicit keys through clone() instead.
-    base_cls = GeminiClient
+    # Wrap whatever AnthropicClient currently resolves to (module-level name, so tests can
+    # still monkeypatch it) in a subclass that threads the explicit key through clone() instead.
+    base_cls = AnthropicClient
 
     class _ScopedClient(base_cls):  # type: ignore[misc, valid-type]
-        def clone(self, *, tier: object | None = None) -> "GeminiClient":
-            return _ScopedClient(model=self.model, api_keys=settings.gemini_api_keys)
+        def clone(self, *, tier: object | None = None) -> "AnthropicClient":
+            return _ScopedClient(model=self.model, api_key=settings.anthropic_api_key)
 
-    screen_llm = _ScopedClient(model=settings.qa_screen_model or DEFAULT_MODEL, api_keys=settings.gemini_api_keys)
-    confirm_llm = _ScopedClient(model=settings.qa_confirm_model or DEFAULT_MODEL, api_keys=settings.gemini_api_keys)
+    # 1차 스크리닝(저비용, over-flag 의도) = Haiku, 2차 정밀검증(고비용, 정밀) = Sonnet.
+    screen_llm = _ScopedClient(model=settings.sunnic_haiku_model, api_key=settings.anthropic_api_key)
+    confirm_llm = _ScopedClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
     return review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
 
 

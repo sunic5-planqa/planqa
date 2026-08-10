@@ -170,3 +170,28 @@ async def test_qa_job_marks_failed_when_llm_client_cannot_be_built(monkeypatch) 
 )
 def test_frame_type_mapping(category: str, related_location: str | None, expected: qa_jobs.FrameType) -> None:
     assert qa_jobs._frame_type(category, related_location) == expected
+
+
+# category_screen.review_document()의 4개 위계가 실제로는 동시에 도니까, 진행률 체크리스트도
+# 한 그룹씩 순서대로가 아니라 모든 그룹이 같은 속도로 같이 차올라야 한다(2026-08-10).
+def test_categories_for_progress_advances_every_group_together() -> None:
+    rulebook = qa_jobs._load_rulebook()
+
+    categories, _ = qa_jobs._categories_for_progress(rulebook, 50)
+
+    assert len(categories) > 1
+    done_fractions = [
+        sum(1 for item in group.items if item.status == "done") / len(group.items) for group in categories
+    ]
+    # 그룹마다 아이템 개수가 달라 정수 반올림 오차는 있지만, 전부 비슷한 진행률(≈0.5)이어야 한다 —
+    # 예전 버전이라면 한 그룹은 1.0(완료), 나머지는 0.0(대기)이었을 것.
+    assert all(abs(fraction - 0.5) < 0.34 for fraction in done_fractions)
+
+
+def test_categories_for_progress_marks_everything_done_at_100() -> None:
+    rulebook = qa_jobs._load_rulebook()
+
+    categories, current_category = qa_jobs._categories_for_progress(rulebook, 100)
+
+    assert current_category is None
+    assert all(item.status == "done" for group in categories for item in group.items)

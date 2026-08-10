@@ -2004,3 +2004,34 @@ AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(Re
 - **Claude가 검증 불가능한 것**: 실제 알파테스트에서 GA/TC/MI 오분류 사례가 줄어드는지 확인
   필요 — upstream도 재현 입력이 없어 라이브 검증을 못 했다고 명시했음, 다음 실사용 관찰이 사실상
   첫 검증.
+
+## 2026-08-11 — 이슈 위치 넘버링(1-a, 2장 형식) 구현
+
+지난번 피드백 5번("1-a, 2장처럼 넘버링 표기가 안 됨") — 원문 헤딩 자체에 번호가 있든 없든
+작성자마다 제각각이라 신뢰할 수 없다는 게 이번 세션에서 여러 번 확인됨. "본문 상단 소주제부터
+등장 순서로 우리가 직접 번호를 매기자"는 사용자 제안대로 구현.
+
+- **`qa_jobs.py`**: `_build_heading_numbers(document_text)` 신규 — 벤더링된 `document.py`의
+  `parse_document()`를 그대로 호출해(그 파일 자체는 안 건드림) `tree.logical_units`를 문서 등장
+  순서로 "1", "2", ...로, 각 유닛 하위의 `tree.paragraphs`(h3~h6 헤딩)를 그 유닛 안에서의 순서로
+  "1-1", "1-2", ...로 번호 매김. `Chunk.location` 문자열(원문 헤딩 텍스트 그대로, 예: "배경" 또는
+  이미 "1. 배경"처럼 작성자가 번호를 붙인 경우도 포함)을 키로 쓰는 dict라, `Issue.location`과
+  정확히 같은 문자열로 조회된다. Document 위계 이슈(location=페이지 제목)는 이 dict에 없어서
+  `location_number`가 자연히 `None`으로 나옴 — 문서 제목엔 번호를 안 붙이는 게 맞는 동작.
+- **`models/issue.py`/`qa_jobs.py`**: `IssueRecord`/`IssueResponse`에 `location_number: str | None`
+  필드 추가. `_execute_qa_job`이 문서당 한 번만 `_build_heading_numbers`를 계산해 모든 이슈에
+  재사용(이슈마다 다시 파싱하지 않음).
+- **확장**: `utils/locationLabel.ts`(신규) — `formatLocationLabel(location, locationNumber)` 순수
+  함수. `location_number`가 있으면 원문 텍스트에 이미 붙어있는 번호(정규식으로 감지 — 숫자 뒤에
+  바로 마침표/공백이 와야 "번호"로 인정, 그냥 `\d+`만으로는 "2024년 정책"의 "2024"까지 오탐해서
+  걷어내 버림)를 걷어내고 우리 번호로 교체, 없으면 원문 그대로. `IssueListScreen.tsx`의
+  `.issue-location`에 적용.
+- 테스트: 백엔드 4개(로직 유닛 순서 번호, 작성자 자체 번호와 무관하게 계산, 하위 헤딩 "N-M" 형식,
+  API 응답에 실제로 흘러들어가는지) + 확장 6개(`formatLocationLabel` 순수함수 유닛 테스트, 특히
+  "2024년" 같은 假번호 오탐 방지 케이스). 검증: 백엔드 148개, 확장 95개 전부 통과,
+  typecheck/lint/build 클린.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 컨플루언스 문서에서 "1", "2-1" 같은 번호가 카드에 정확히
+  붙는지, 작성자가 이미 번호를 붙인 문서에서 중복 표기 없이 잘 나오는지 확인 필요.

@@ -66,6 +66,7 @@ export type FrameType = 'object' | 'range' | 'insert_range'
 export interface IssueResponse {
   id: string
   location: string
+  location_number: string | null
   input_text: string
   criteria: string
   reason: string

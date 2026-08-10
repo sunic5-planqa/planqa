@@ -45,6 +45,7 @@ export const FIXTURE_ISSUES: IssueResponse[] = [
   {
     id: 'fixture-1',
     location: '2장 배경 및 문제 정의',
+    location_number: null,
     input_text: '간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원',
     criteria: '용어 및 단어의 일관성',
     reason:
@@ -56,6 +57,7 @@ export const FIXTURE_ISSUES: IssueResponse[] = [
   {
     id: 'fixture-2',
     location: '2장 배경 및 문제 정의',
+    location_number: null,
     input_text: 'PG사 응답 지연 시 타임아웃 처리 로직 부재',
     criteria: '상위 목표와 세부 내용의 정합성',
     reason: "4장 '실패 처리 개선' 요구사항에는 타임아웃 재시도가 포함되어 있지만, 배경 항목에는 재시도 로직 언급이 빠져 있습니다.",
@@ -66,6 +68,7 @@ export const FIXTURE_ISSUES: IssueResponse[] = [
   {
     id: 'fixture-3',
     location: '3장 목표',
+    location_number: null,
     input_text: '간편결제 지원 수단을 4종에서 7종으로 확대한다',
     criteria: '정보 누락',
     reason: '목표(3장)와 주요 요구사항 표(4장)에 적힌 간편결제 확대 목표 수치가 서로 달라 어느 쪽이 최신 값인지 확인이 필요합니다.',

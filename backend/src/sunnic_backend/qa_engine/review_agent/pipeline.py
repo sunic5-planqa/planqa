@@ -7,8 +7,8 @@ from sunnic_backend.qa_engine.review_agent.dedupe import dedupe_issues
 from sunnic_backend.qa_engine.review_agent.document import parse_document
 from sunnic_backend.qa_engine.review_agent.instrumentation import CallEvent, record_call
 from sunnic_backend.qa_engine.review_agent.llm.base import LLMClient
-from sunnic_backend.qa_engine.review_agent.rulebook import RuleBook
-from sunnic_backend.qa_engine.review_agent.schema import Issue
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import RuleBook
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Issue
 from sunnic_backend.qa_engine.review_agent.tiers import TIER_ORDER, rules_for_tier
 
 

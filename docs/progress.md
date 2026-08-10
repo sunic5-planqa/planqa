@@ -929,3 +929,161 @@ Replace/Delete뿐이라 항상 객체 프레임, MI는 Insert뿐이라 항상 �
 - 유사도 검사가 문자열 기반(difflib)이라 의미는 같지만 표현이 많이 다른 수정(동의어 교체 등)은
   경고가 뜰 수 있음 — 안전장치로 설계했으므로 오탐이 있어도 사용자가 한 번 더 누르면 그냥 진행되는
   구조라 크게 문제는 아니지만, 필요하면 나중에 임베딩 기반 의미 유사도로 교체 고려 가능.
+
+## 2026-08-10 — review-agent를 `planqa-agent`의 `dev` 브랜치로 재벤더링
+
+사용자가 `sunic5-planqa/planqa-agent`의 `dev` 브랜치로 다시 연결해달라고 요청 — 확인해보니 우리가
+처음 벤더링한 `feature/review-agent` 이후 원작자가 `dev`에서 상당히 진척시켜 놨었다(PR #5~#12).
+가장 중요한 건: **우리가 이슈로 요청했던 `related_location` 필드(sunic5-planqa/planqa-agent#4)가
+실제로 반영됐고**, 검토 위계 4개가 이제 순차가 아니라 **병렬**로 돈다.
+
+- **저장소 구조 변경**: `schema.py`/`rulebook.py`가 별도 `packages/planqa-schemas` 패키지로 분리됐고,
+  `review-agent` 본체는 `services/review-agent`로 이동. 새로 생긴 `structures/category_screen.py`가
+  기존 profile 기반 `pipeline.review_document(..., profile)`을 대체하는 새 진입점 — 우리도 이걸로
+  갈아탐. 스크리닝이 이제 룰 텍스트가 아니라 카테고리 라벨만 보고, 정밀검증 단계에서 그 카테고리의
+  룰 전체 중 구체적 `rule_id`를 직접 고르는 구조로 바뀌었다.
+- **`backend/src/sunnic_backend/qa_engine/review_agent/`**: `models/`(구 profile 기반 스크리너/
+  컨펌어) 전체 삭제, `planqa_schemas/`(신규, schema.py/rulebook.py) 추가, `structures/
+  category_screen.py`(신규) 추가, `document.py`/`dedupe.py`/`instrumentation.py`/`tiers.py`/
+  `verifier.py`/`pipeline.py`/`llm/{base,gemini}.py` 전부 최신으로 교체(import 경로만 재작성).
+  `pipeline.py`는 `review_document` 함수 자체는 이제 안 쓰지만 `ReviewResult` dataclass를 계속
+  가져다 쓰므로 그대로 유지.
+- **`TIER_CATEGORIES`가 원작자 쪽에서 고쳐져 있었음** — 우리가 처음 벤더링했던 버전은 위계별 카테고리
+  배정이 상당히 빠져있었다(예: Document 위계에 TC/TM이 아예 없었음). 재벤더링으로 자동 수정됨 —
+  우리 쪽에서 발견할 수 있는 종류의 문제가 아니었음.
+- **`clone()` 호환성 문제 발견 및 수정**: `LLMClient`에 새로 생긴 `clone(*, tier=...)`(병렬 실행 시
+  위계별로 독립된 클라이언트를 쓰기 위함)의 기본 구현이 생성자에 명시적으로 넘긴 `api_keys`를 재사용하지
+  않고 `os.environ`에서 다시 읽음 — 이 백엔드는 `.env`를 pydantic-settings로만 읽고 프로세스
+  환경변수에는 안 심어서, 그대로 두면 병렬 실행되는 모든 clone이 "키 없음" 에러로 죽는다. 처음엔
+  `os.environ.setdefault(...)`로 채워보려 했으나 **프로세스 전역 상태라 테스트 간에 오염되는 부작용을
+  직접 발견**(`test_config.py`의 "기본값은 빈 리스트" 테스트가 다른 테스트가 심어둔 env var 때문에
+  깨짐) — 대신 `qa_jobs.py`에 로컬 서브클래스(`_ScopedClient`)를 두어 `clone()`이 명시적 키를 그대로
+  물려주도록 오버라이드(벤더링 파일 자체는 안 건드림).
+- **`backend/tests/test_api_qa_jobs.py`의 `FakeGeminiClient`**: 새 프롬프트 형태(스크리닝은
+  `category`만, 정밀검증이 `rule_id`를 직접 지정)에 맞게 정규식/응답 갱신, `clone()` 메서드 추가.
+- **테스트 재벤더링**: `test_confirmer.py`/`test_screener.py`/`test_pipeline.py`(전부 구 profile
+  경로 대상) 삭제, `test_document.py`/`test_dedupe.py`(related_location 관련 케이스 추가)/
+  `test_instrumentation.py`/`test_llm_base.py`/`test_tiers.py`(고쳐진 카테고리 반영)/
+  `test_category_screen.py`(신규) + `conftest.py`(clone 지원 `ScriptedLLM`) 갱신, `source_dir`
+  픽스처는 기존처럼 로컬 `fixtures/`(DOC-001만)로 유지.
+- **실제 Gemini 키로 라이브 검증**: `DOC-001` fixture로 `_run_review_sync` 직접 실행 —
+  22개 이슈, `tier_errors` 없음, LG/LF/GA 이슈에 `related_location`이 실제로 채워지는 것 확인
+  (예: "5. 고려되는 대안"의 LG-05가 "4. 기술적 제약 사항"과 관계있다고 정확히 짚어냄). 재벤더링
+  전 같은 문서·모델로 44개가 나왔던 것과 비교하면 훨씬 정상적인 수치 — 카테고리 기반 스크리닝과
+  고쳐진 `TIER_CATEGORIES` 둘 다 원인일 수 있음(2026-08-09 조사에서 완전히 못 밝혔던 부분과 연결).
+  소요시간 88.8초(대부분 무료 티어 429 재시도 대기로 추정, 병렬화 자체의 체감 효과는 이번 한 번의
+  실행만으로는 정확히 분리 측정 못함).
+- 검증: 백엔드 72개 전부 통과(재벤더링한 테스트 포함), ruff 클린. 확장 쪽은 API 응답 필드(`frame_type`/
+  `related_location`)가 이미 타입에 있어서 변경 없음 — `related_location`이 실제로 채워지기 시작한
+  것뿐이라 프론트가 그 값을 실제로 활용(범위 프레임 렌더링)하는 건 여전히 다음 단계.
+
+### Next
+
+- **최우선**: `issueOverlay.ts`에 실제 `range`/`insert_range` 렌더링 로직 — 이제 `related_location`이
+  진짜 값으로 채워지니 헤딩 텍스트로 두 지점을 찾아 그 사이를 감싸는 로직을 구현할 수 있는 상태가 됨.
+- **Claude가 검증 불가능한 것**: 실제 DOC-001에서 다시 QA를 돌렸을 때 병렬 실행이 체감상 더 빠른지,
+  LG/LF/GA 이슈가 실제 컨플루언스 문서에서도 안정적으로 related_location을 잡아내는지 확인.
+- 6개(CLI) vs 44개(재벤더링 전 서버) 차이가 왜 났는지는 여전히 완전히 설명 못함 — 22개로 줄어든 게
+  좋은 신호이긴 하지만, 더 정밀한 모델(현재는 Claude Sonnet, 아래 항목 참고)로 재검증하는 것도
+  여전히 유효한 다음 실험.
+- 원작자 쪽 저장소가 앞으로도 계속 바뀔 수 있으니, 다음에 다시 크게 벌어지면 또 재벤더링 필요 — 지금은
+  수동 재복사 방식 그대로(ADR 0001 업데이트에 기록).
+
+## 2026-08-10 — QA 엔진을 Gemini에서 Claude(Haiku 스크리닝 → Sonnet 정밀검증)로 전환
+
+사용자가 병렬 실행은 유지하면서 모델을 Claude API로 바꿔달라고 요청 — 1차 스크리닝은 Haiku, 2차
+정밀검증은 Sonnet. 마침 `config.py`엔 2026-08-04부터 `anthropic_api_key`/`sunnic_haiku_model`/
+`sunnic_sonnet_model` 설정이 이미 있었음(그때는 안 쓰이고 있었을 뿐) — 바로 연결하면 됐다.
+
+- **`llm/anthropic.py`(신규 벤더링)**: `planqa-agent` dev의 `AnthropicClient` — 동기 클라이언트,
+  429/5xx/연결오류 재시도, `claude-sonnet-5`는 `temperature` 파라미터 자체를 거부해서 모델별로
+  조건 분기, extended thinking은 고정 스키마 JSON 작업엔 불필요(레이턴시 10배 될 수 있음)해서
+  명시적으로 꺼둠(`thinking: {type: "disabled"}`), 응답에 `ThinkingBlock`이 먼저 와도 첫 번째
+  text 블록을 찾아 파싱. 테스트 11개(재시도/온도 조건분기/thinking 블록 스킵 등)도 같이 벤더링.
+- **`qa_jobs.py`**: `GeminiClient` → `AnthropicClient`로 교체. `_ScopedClient`(clone() 시 명시적
+  키를 다시 물려주는 로컬 서브클래스, Gemini 때와 동일한 이유)도 `api_keys`(리스트) 대신
+  `api_key`(단일 문자열)로 맞춤. `screen_llm`은 `settings.sunnic_haiku_model`, `confirm_llm`은
+  `settings.sunnic_sonnet_model` — 새 설정 추가 없이 기존 필드 그대로 사용.
+- **`config.py`**: 이제 안 쓰는 Gemini 전용 오버라이드 `qa_screen_model`/`qa_confirm_model` 제거
+  (같은 역할을 처음부터 하던 `sunnic_haiku_model`/`sunnic_sonnet_model`과 중복이라 정리). `gemini_
+  api_keys`와 벤더링된 `llm/gemini.py`는 그대로 남겨둠(당장 안 쓰지만 나중에 다시 필요할 수 있어
+  제거는 안 함) — 다만 `qa_jobs.py`에서 더 이상 import 안 됨.
+- 검증: 백엔드 83개 전부 통과(신규 Anthropic 클라이언트 테스트 11개 포함), ruff 클린
+  (`C408`도 벤더링 예외 목록에 추가 — 벤더링 코드를 upstream과 다르게 리팩터링하지 않기 위해,
+  기존 B023/UP047과 같은 이유).
+
+### Next
+
+- **Claude가 검증 불가능한 것**: `.env`에 `ANTHROPIC_API_KEY`가 아직 비어있어서 실제 호출 검증을
+  못 함 — 채운 뒤 DOC-001로 다시 돌려서 (1) Haiku/Sonnet 조합이 실제로 동작하는지, (2) 이슈 수가
+  Gemini 조합(22개) 대비 어떻게 달라지는지, (3) `sunnic_haiku_model` 기본값("claude-haiku-4-5")이
+  실제 Anthropic API가 받는 정확한 모델 ID가 맞는지(날짜 붙은 정식 ID가 필요할 수도 있음) 확인 필요.
+- SCREEN 02의 진행률 카테고리 체크리스트(`_categories_for_progress`)는 여전히 "위계가 순차로 끝난다"고
+  가정하고 만들어짐 — 지금은 Gemini든 Claude든 4개 위계가 실제로는 병렬 실행이라 이 가정이 실제와
+  어긋나 있음(사용자가 직접 지적). 아직 안 고침 — 다음 우선순위.
+
+## 2026-08-10 — 진행률 체크리스트를 병렬 실행에 맞게 수정
+
+바로 위 Next 항목 — `_categories_for_progress`가 "Documents 다 끝나고 → Logical Chapter → ..."
+순서로 하나씩 차오른다고 가정하고 있었는데, `category_screen.review_document()`는 4개 위계를
+동시에 돌리니 실제로는 다 같이 진행되다가 다 같이 끝난다. 사용자가 지적한 그대로 고쳤다.
+
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**: `tier_index`/`band` 기반의 순차 워크스루 로직을
+  제거하고, 모든 그룹이 같은 `fraction = progress / 100`으로 동시에 차오르도록 변경 — 그룹 4개가
+  전부 비슷한 속도로 진행되다가 100%에서 다 같이 완료 처리됨. `current_category`는 그중 맨 처음
+  발견한 "진행 중" 항목 하나를 대표로 반환(여러 그룹이 동시에 in_progress 상태를 가질 수 있어서).
+- 프론트(`CategoryTree.tsx`)는 그룹별로 독립적으로 "이 그룹에 in_progress 항목이 있으면 진하게"
+  판단하는 로직이라 코드 변경 없이 자동으로 4개 그룹이 동시에 강조되게 됨.
+- 검증: 신규 테스트 2개(모든 그룹이 비슷한 속도로 진행되는지, 100%에서 전부 done인지) 추가, 백엔드
+  85개 전부 통과. `progress=0/30/50/89/100`으로 수동 실행해 4개 그룹이 실제로 같이 움직이는 것 확인.
+  확장 `typecheck`/`lint`/`build`/`vitest` 63개(변경 없음, 프론트 코드는 안 건드림) 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 Chrome에서 QA 진행 화면을 열어 4개 그룹이 실제로 동시에
+  체크되는 것처럼 보이는지 확인.
+
+## 2026-08-10 — failed job이 "이슈 없음"으로 오인되던 버그 수정 + Claude 조합 실검증
+
+사용자가 실서버에서 QA를 돌렸는데 "발견된 이슈가 없습니다"만 뜬다고 보고 — 확인해보니
+`ANTHROPIC_API_KEY`가 비어있어 job이 시작하자마자 실패(`failed`)하고 있었는데, 폴링 로직이
+`failed`를 `done`과 똑같이 취급해서 그냥 빈 이슈 목록을 불러오고 있었다. 실제로는 "검토 자체가
+실패"인데 화면엔 "문제 없음"처럼 보이는 게 진짜 버그라 같이 고쳤다.
+
+- **`extension/src/hooks/useQAJobPolling.ts`**: `status === 'failed'`일 때 더 이상 `ISSUES_LOADED`로
+  넘어가지 않고, `SET_ERROR`로 명확한 에러 메시지("QA 검토가 실패했습니다. 서버의 API 키 설정을
+  확인해주세요.")를 띄우도록 분리 — `App.tsx`에 이미 있던 전역 `ErrorBanner`가 자동으로 뜬다(새
+  컴포넌트 필요 없었음). `done`일 때만 기존처럼 이슈 목록을 불러옴.
+- **`.env` 정리**: `ANTHROPIC_API_KEY` 줄이 중복(빈 값 하나 + 실제 키 하나)으로 들어가 있어서 빈
+  줄 제거.
+- **실제 Claude(Haiku→Sonnet) 조합으로 DOC-001 검증**: 66.1초, **12개 이슈** — Gemini 조합(22개)
+  보다 훨씬 적고 CLI 기준(6개)에 더 가까워짐, Sonnet 정밀검증이 더 엄격하게 거른다는 가설과 일치.
+  `tier_errors` 1건(Paragraph 위계에서 Claude가 malformed JSON 응답 — 파이프라인이 그 위계만
+  격리하고 나머지 3개 위계는 정상 진행, 설계대로 동작한 것이지 버그 아님) 확인.
+- 검증: 확장 `typecheck`/`lint`/`build`/`vitest` 63개 전부 통과(신규 테스트는 안 붙임 — 이 훅은
+  기존에도 전용 테스트 파일이 없던 컨벤션 유지).
+
+### Next
+
+- **여전히 남은 조사**: 6개(CLI) vs 12개(Claude 서버) 차이가 여전히 존재 — 헤딩 평탄화 버그도 고쳤고
+  모델도 Sonnet으로 정밀화했는데 아직 2배 차이. 문서 자체(fixture DOC-001)와 CLI 실행 당시 정확히
+  같은 조건이었는지(모델/프롬프트 버전 등) 재확인이 다음 단계로 남음.
+- Paragraph 위계의 malformed JSON 이슈가 반복되면 Claude 쪽 응답 파싱(`parse_json_response`)이나
+  프롬프트 쪽에 더 견고한 처리가 필요할 수 있음 — 지금은 1회성이라 관찰만.
+
+## 2026-08-10 — PR #15 `/code-review` 결과 반영
+
+머지 전 `/code-review`를 돌려서 8개 지적 발견. 그중 우리 코드(`qa_jobs.py`)에 해당하는 진짜 버그
+1개만 고치고, 나머지 6개는 전부 벤더링해온 파일(`review_agent/**`, ADR 0001 정책상 upstream과
+diffable하게 그대로 두기로 한 영역) 안의 지적이라 로컬에서 고치지 않기로 판단 — 대신 upstream에
+알려야 할 사안인지는 별도 검토.
+
+- **고침**: `_ScopedClient.clone()`(qa_jobs.py)이 원본 인스턴스의 `temperature`/`max_tokens`를 안
+  물려주고 매번 기본값으로 리셋되던 버그 — 지금 당장은 둘 다 항상 기본값이라 실제 동작에 영향 없었지만,
+  나중에 `max_tokens`를 조정하면 병렬 실행되는 clone들만 조용히 무시하게 될 뻔했음. 테스트 더블
+  `FakeAnthropicClient`도 `_temperature`/`_max_tokens` 속성을 갖도록 맞춤.
+- **판단 보류(벤더링 정책)**: `pipeline.review_document()`가 이제 죽은 코드라는 지적, `category_screen.py`의
+  category/rule_id 매칭이 완전일치라는 지적, 벤더링한 테스트 파일들의 docstring/순환 검증 등 — 전부
+  `review_agent/**` 안의 upstream 코드라 로컬에서 고치지 않음. `pipeline.review_document()` 건은
+  실제로 유효한 지적이라 `sunic5-planqa/planqa-agent`에 이슈로 알릴지 다음에 검토.
+- 검증: 백엔드 85개 전부 통과, ruff 클린. 확장 63개 전부 통과.

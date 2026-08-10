@@ -4,7 +4,10 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from sunnic_backend.qa_engine.review_agent.schema import KOREAN_LEVEL_NAMES, Level
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import (
+    KOREAN_LEVEL_NAMES,
+    Level,
+)
 
 _CATEGORY_HEADING = re.compile(r"(?m)^## \d+\.\s*(.+)$")
 _TABLE_ROW = re.compile(r"(?m)^\|\s*([A-Z]{2}-\d{2})\s*\|(.*)\|\s*$")

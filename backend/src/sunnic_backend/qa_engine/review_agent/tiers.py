@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from sunnic_backend.qa_engine.review_agent.rulebook import RuleBook, RuleDef
-from sunnic_backend.qa_engine.review_agent.schema import Level
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
+    RuleBook,
+    RuleDef,
+)
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Level
 
 # Transcribed from rulebook_v1.0.md §2 "카테고리별 검토 위계". That table's cells contain
 # literal newlines inside a single markdown cell (Notion export artifact), which isn't safe
@@ -12,10 +15,10 @@ from sunnic_backend.qa_engine.review_agent.schema import Level
 # Word tier (5차) has no categories/input unit listed in §2 yet, so it's intentionally
 # excluded from review — see docs/review_agent_architecture.md "확장 포인트".
 TIER_CATEGORIES: dict[Level, tuple[str, ...]] = {
-    Level.DOCUMENT: ("LG", "LF", "TC", "MI", "RD", "GA"),
-    Level.LOGICAL_UNIT: ("LG", "LF", "TM", "AE", "MI"),
-    Level.PARAGRAPH: ("TM", "MI"),
-    Level.SENTENCE: ("TM", "AE"),
+    Level.DOCUMENT: ("LG", "LF", "TC", "TM", "MI", "RD", "GA"),
+    Level.LOGICAL_UNIT: ("LG", "LF", "TC", "TM", "AE", "MI", "RD", "GA"),
+    Level.PARAGRAPH: ("LG", "LF", "TC", "TM", "AE", "MI", "RD"),
+    Level.SENTENCE: ("LG", "TC", "TM", "AE", "MI"),
 }
 
 # Review call order — coarse-to-fine, matching the 1차~4차 sequence in §2.

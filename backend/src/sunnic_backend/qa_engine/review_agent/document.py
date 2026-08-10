@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from sunnic_backend.qa_engine.review_agent.schema import Level
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Level
 
 _H1 = re.compile(r"(?m)^#\s+(.+?)\s*$")
 _HEADING = re.compile(r"(?m)^(#{2,6})\s+(.+?)\s*$")

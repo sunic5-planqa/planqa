@@ -269,8 +269,11 @@ function extractPageId(url: string): string | null {
 type ApplyResult = { ok: true } | { ok: false; error: string }
 
 // pageId가 가리키는 페이지의 body.storage에서 oldText → newText로 문자열 치환한 뒤 PUT으로 저장한다.
-// 표/목록처럼 렌더링 시 텍스트가 변형되는 구간은 storage HTML에 그대로 없을 수 있어 실패 처리하고,
-// 문서를 깨뜨리느니 아무것도 안 하는 쪽을 택한다.
+// storage HTML의 공백/줄바꿈이 화면에 렌더링된 것과 완전히 같지 않은 경우가 흔해서, wrapIssue()가
+// 라이브 DOM에서 찾을 때와 똑같이 공백만 느슨하게 허용하는 정규식(buildLooseTextRegex)으로 찾는다 —
+// 예전엔 여기만 완전 일치(`includes`)로 체크해서, 화면에 분명히 보이는 문구인데도 저장 단계에서만
+// "원문에서 찾지 못했습니다"로 실패하는 경우가 있었다. 표/목록처럼 인라인 태그가 문구 중간에 끼어드는
+// 경우까지는 여전히 못 잡는다 — 그런 경우는 계속 실패 처리(문서를 깨뜨리느니 아무것도 안 하는 쪽).
 async function replaceTextAndSave(pageId: string, oldText: string, newText: string): Promise<ApplyResult> {
   const getRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=body.storage,version`, {
     credentials: 'include',
@@ -283,7 +286,9 @@ async function replaceTextAndSave(pageId: string, oldText: string, newText: stri
     body: { storage: { value: string } }
   }
   const html = data.body.storage.value
-  if (!html.includes(oldText)) return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
+  const match = buildLooseTextRegex(oldText).exec(html)
+  if (!match) return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
+  const updatedHtml = html.slice(0, match.index) + newText + html.slice(match.index + match[0].length)
 
   const putRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}`, {
     method: 'PUT',
@@ -293,7 +298,7 @@ async function replaceTextAndSave(pageId: string, oldText: string, newText: stri
       version: { number: data.version.number + 1 },
       title: data.title,
       type: 'page',
-      body: { storage: { value: html.replace(oldText, newText), representation: 'storage' } },
+      body: { storage: { value: updatedHtml, representation: 'storage' } },
     }),
   })
   if (!putRes.ok) return { ok: false, error: `저장에 실패했습니다 (${putRes.status})` }

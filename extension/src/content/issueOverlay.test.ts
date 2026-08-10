@@ -236,6 +236,19 @@ describe('applyIssueEdit', () => {
 
     expect(result).toEqual({ ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' })
   })
+
+  it('still finds the text in storage HTML when its whitespace differs from the live DOM', async () => {
+    // storage HTML의 줄바꿈/연속 공백이 화면에 렌더링된 것과 완전히 같지 않은 흔한 경우 — 예전엔
+    // 여기서만 완전 일치(includes)로 찾아서, 화면엔 분명히 보이는 문구인데 저장이 실패했었다.
+    const fetchMock = stubConfluenceFetch({ duplicateBody: '<p>3사만  지원,\n페이코 미지원</p>' })
+
+    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    expect(putBody.body.storage.value).toBe(`<p>${ISSUE.suggestion}</p>`)
+  })
 })
 
 describe('scrollToIssue', () => {

@@ -1491,3 +1491,22 @@ tier를 병렬로 처리하며 붙인 순서, 문서 위치와 무관) 이슈를
 
 - upstream이 짧은 주기로 계속 구조를 바꾸고 있어 재벤더링이 반복되는 중 — 당분간 병합 전마다
   `sunic5-planqa/planqa-agent`의 최신 상태를 확인하는 습관이 필요.
+
+## 2026-08-10 — 병렬화 재벤더링 PR `/code-review` 결과 반영
+
+6개 지적 중 우리 코드(`qa_jobs.py`)에 해당하는 1개만 고치고, 나머지 5개는 전부 벤더링해온 파일
+(`review_agent/**`, ADR 0001 정책상 upstream과 diffable하게 그대로 두기로 한 영역) 안의 지적이라
+로컬에서 고치지 않음 — 지금까지 반복해온 판단 기준 그대로.
+
+- **고침**: `_build_tier_groups`(진행률 체크리스트)가 `_RANGE_CATEGORIES`(LG/LF/GA)만 보고
+  Paragraph/Document 그룹을 나누는데, 실제 실행 구조(`_paragraph_and_document_rules`)는
+  개별 rule_id(`ABSENCE_CHECK_RULE_IDS` = LG-01, TC-02)도 Document 패스로 보낸다는 걸 놓쳤다는
+  지적 — "TC" 카테고리 전체가 Paragraph 그룹에 표시되는데 그중 TC-02 하나만 실제로는 Document
+  패스에서 검토됨. 체크리스트가 카테고리 단위라 완벽히 정확하게 쪼갤 수 없어서(이미 가짜인 진행률
+  신호에 그 정도 복잡도를 들일 가치가 없다고 판단), 코드를 바꾸는 대신 이 한계를 주석에 정직하게
+  남기는 쪽으로 고침.
+- **판단 보류(벤더링 정책)**: `conftest.py`의 `ScriptedLLM.complete_json`이 `cache_prefix` 파라미터
+  없이 인터페이스에서 벗어났다는 지적, 벤더링 파일 여러 곳의 120자 줄 길이 초과, 벤더링 테스트
+  파일의 docstring, `document.py`의 중복된 주석 문구(upstream 자체의 복붙 흔적으로 보임) — 전부
+  `review_agent/**` 안의 upstream 코드라 로컬에서 고치지 않음.
+- 검증: 백엔드 126개 전부 통과, ruff 클린.

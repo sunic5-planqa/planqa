@@ -1842,3 +1842,31 @@ AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(Re
 - **Claude가 검증 불가능한 것**: 실제로 이 오류를 겪은 사람들이 새 zip으로 `/pages/edit-v2/...`
   URL에서 정상적으로 QA를 시작할 수 있는지 확인 필요. 다른 미확인 URL 변형(예: 스페이스 개요,
   블로그 포스트 등)이 더 있을 수 있어 — 계속 실패 보고가 오면 그 URL을 받아서 추가 대응.
+
+## 2026-08-11 — 수동 zip 배포를 GitHub Release 자동 빌드로 전환
+
+이번 세션 내내 코드 고칠 때마다 로컬에서 `npm run build` → zip → 카카오톡으로 전달을 반복했는데,
+사용자가 "zip 빌드 멈추고 깃허브로 연동하자"고 요청. GitHub Actions로 자동화하기로 함(Chrome 웹
+스토어 비공개 배포는 개발자 등록비/심사 필요해 보류 — Releases 자동화만 우선 진행하기로 사용자가 선택).
+
+- **`.github/workflows/release-extension.yml`(신규)**: `main`에 `extension/**` 변경이 들어갈
+  때마다(+ 수동 `workflow_dispatch`) `VITE_API_BASE_URL=https://sunnic-backend.onrender.com`로
+  빌드 → `dist/`를 zip으로 압축 → `softprops/action-gh-release`로 **항상 같은 태그
+  `extension-latest`를 덮어쓰며** GitHub Release에 `sunnic-extension.zip` 첨부. 매번 새 릴리즈를
+  만드는 대신 하나를 계속 갱신해서, 팀원들이 버전 번호를 신경 안 쓰고 `releases/latest` 링크
+  하나만 북마크해두면 항상 최신 zip을 받을 수 있게 함.
+  `extension/dev-key.public.txt`가 저장소에 커밋돼 있어서(비밀키 아님, 확장 ID 고정용 공개키만)
+  CI가 빌드해도 항상 같은 확장 ID(`chrome-extension://lakdhpgnlleljlkkfobckijbnojlplcf`)가
+  나옴 — Render의 `ALLOWED_ORIGINS`를 다시 바꿀 필요 없음.
+- `docs/deployment.md` 2~4단계를 로컬 빌드 안내에서 "Releases 페이지 링크 공유"로 갱신.
+- 로컬에서 앞으로는 더 이상 수동으로 `sunnic-extension.zip`을 빌드/배포하지 않음 — 이 파일은
+  gitignore된 로컬 산출물로 남지만, 실제 배포 소스는 GitHub Release로 이전.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 이 워크플로가 실제로 main 머지 시 정상적으로 돌아 Release가
+  갱신되는지, 팀원들이 그 링크에서 zip을 정상적으로 받을 수 있는지 확인 필요 — `GITHUB_TOKEN`
+  기본 권한으로 릴리즈 생성이 되는지는 실제 실행 전까진 100% 장담 못 함(조직 저장소 기본 설정에
+  따라 Actions의 `contents: write` 권한이 막혀있을 가능성도 있음 — 그러면 워크플로 파일에
+  `permissions: contents: write`을 이미 명시해뒀지만 그래도 실패하면 저장소 Settings →
+  Actions → General에서 "Workflow permissions"를 Read and write로 바꿔야 함).

@@ -16,29 +16,32 @@
    나옴 — 이 주소를 복사해두기 (2단계에서 씀)
 6. `https://<그 주소>/healthz`로 접속했을 때 `{"status":"ok"}`가 뜨면 정상 배포된 것
 
-## 2. 확장 프로그램 빌드 (그 주소로)
+## 2. 확장 프로그램 빌드 — GitHub이 자동으로 함
 
-```bash
-cd extension
-VITE_API_BASE_URL=https://<1단계에서 복사한 주소> npm run build
-```
-
-`dist/` 폴더가 그 주소를 기본 서버로 쓰도록 빌드됨.
+`main`에 `extension/` 변경이 머지될 때마다 `.github/workflows/release-extension.yml`이 자동으로
+빌드해서(항상 `VITE_API_BASE_URL=https://sunnic-backend.onrender.com`로) GitHub Release
+`extension-latest`에 `sunnic-extension.zip`을 올린다. 수동으로 `npm run build` 할 필요 없음 —
+저장소의 **Releases** 페이지(`github.com/sunic5-planqa/planqa/releases/latest`)에서 항상 최신
+zip을 받을 수 있다.
 
 ## 3. 확장 ID 확인 후 CORS 허용 (한 번만)
 
-1. `chrome://extensions` → "압축해제된 확장 프로그램 로드" → 방금 만든 `extension/dist` 폴더 선택
+1. 위 릴리즈에서 받은 zip 압축 풀고, `chrome://extensions` → "압축해제된 확장 프로그램 로드"로 그
+   폴더 선택
 2. 카드에 나오는 **ID**(32자리 문자열) 복사
 3. Render 대시보드 → 이 서비스 → **Environment** 탭 → `ALLOWED_ORIGINS` 값을
    `chrome-extension://<복사한 ID>`로 채우고 저장 (자동으로 재배포됨)
 
 > 이 확장 ID는 `extension/dev-key.public.txt`로 고정돼 있어서, **같은 소스로 빌드하는 한 누가
-> 빌드하든 항상 같은 ID**가 나온다 — 한 번만 설정하면 계속 유효함.
+> 빌드하든(자동 빌드 포함) 항상 같은 ID**가 나온다 — 한 번만 설정하면 계속 유효함.
 
 ## 4. 나머지 4명에게 배포
 
-- `extension/dist` 폴더를 압축(zip)해서 전달
-- 각자 압축 풀고 `chrome://extensions` → "압축해제된 확장 프로그램 로드"로 그 폴더 선택
+- `github.com/sunic5-planqa/planqa/releases/latest` 링크만 공유하면 됨 — 각자 그 페이지에서
+  `sunnic-extension.zip`을 직접 받아서 압축 풀고 `chrome://extensions` → "압축해제된 확장 프로그램
+  로드"로 그 폴더 선택
+- 코드가 바뀔 때마다 그 링크로 다시 가서 새 zip을 받으면 됨(항상 최신으로 덮어써짐) — 카카오톡
+  등으로 zip 파일을 직접 주고받을 필요 없음
 - Python/서버 설치 전혀 필요 없음 — 다들 같은 Render 서버를 같이 씀
 
 ## 알아둘 점

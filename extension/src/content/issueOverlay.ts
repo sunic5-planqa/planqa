@@ -205,6 +205,24 @@ function wrapIssueByLocationHeading(issue: OverlayIssue): boolean {
   return true
 }
 
+// 프레이밍(본문 하이라이트) 실패의 정확한 원인은 실사용 보고만으로는 알 수 없다(엔티티 인코딩,
+// 목록/표 합성 기호, 매크로 렌더링 차이 등 여러 후보가 있었고 그때마다 재현 데이터가 있어야
+// 고칠 수 있었다) — 실패 시 콘솔에 실제 본문 텍스트 조각을 남겨서 다음 재현 보고와 함께 바로
+// 진단할 수 있게 한다. logStorageMatchFailure(저장 실패용)와 같은 패턴.
+function logFramingMatchFailure(fullText: string, inputText: string): void {
+  const probe = inputText.slice(0, 15)
+  const probeIndex = fullText.indexOf(probe)
+  if (probeIndex === -1) {
+    console.warn('[SunniC] input_text 앞부분조차 본문에서 찾지 못함:', { probe, inputTextLength: inputText.length })
+    return
+  }
+  const context = fullText.slice(Math.max(0, probeIndex - 20), probeIndex + inputText.length + 60)
+  console.warn('[SunniC] input_text 앞부분은 찾았지만 전체 매칭 실패. input_text와 실제 본문을 비교해보세요:', {
+    inputText,
+    surroundingText: context,
+  })
+}
+
 // issue.input_text와 일치하는 구간을 찾아 하이라이트한다. 매치가 텍스트 노드 하나에 다 들어있으면
 // <mark> 하나로 감싸고, 라벨+뱃지처럼 여러 노드에 걸쳐 있으면 겹치는 구간마다 각각 <mark>로 감싸서
 // (같은 issue id를 공유) 이어 붙은 것처럼 보이게 한다 — Range.surroundContents는 엘리먼트 경계를
@@ -212,7 +230,10 @@ function wrapIssueByLocationHeading(issue: OverlayIssue): boolean {
 function wrapIssue(issue: OverlayIssue): boolean {
   const { fullText, spans } = collectTextSpans()
   const match = buildLooseTextRegex(issue.input_text).exec(fullText)
-  if (!match) return wrapIssueByLocationHeading(issue)
+  if (!match) {
+    if (issue.input_text) logFramingMatchFailure(fullText, issue.input_text)
+    return wrapIssueByLocationHeading(issue)
+  }
 
   const matchStart = match.index
   const matchEnd = match.index + match[0].length
@@ -371,11 +392,12 @@ document.addEventListener('click', (event) => {
   }
 })
 
-// 컨플루언스 URL(/pages/{id}/... 또는 ?pageId=)에서 페이지 id를 뽑는다.
-// confluence-extractor.ts와 동일 로직 — content script 진입점끼리 import로 얽히면 각자 번들에
-// onMessage 리스너가 중복 등록될 위험이 있어 이 작은 순수함수만 그대로 복제해서 둔다.
+// 컨플루언스 URL(/pages/{id}/..., /pages/edit-v2/{id} 등 또는 ?pageId=)에서 페이지 id를 뽑는다.
+// confluence-extractor.ts와 동일 로직(그쪽의 edit-v2 URL 인식 수정과 동기화됨) — content script
+// 진입점끼리 import로 얽히면 각자 번들에 onMessage 리스너가 중복 등록될 위험이 있어 이 작은
+// 순수함수만 그대로 복제해서 둔다.
 function extractPageId(url: string): string | null {
-  const pathMatch = url.match(/\/pages\/(\d+)/)
+  const pathMatch = url.match(/\/pages\/(?:[\w-]+\/)?(\d+)/)
   if (pathMatch) return pathMatch[1]
   const queryMatch = url.match(/[?&]pageId=(\d+)/)
   return queryMatch ? queryMatch[1] : null

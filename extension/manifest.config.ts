@@ -15,6 +15,12 @@ try {
   devKey = undefined
 }
 
+// client.ts가 fetch로 쓰는 것과 같은 변수(VITE_API_BASE_URL)로 백엔드 주소를 지정하면(예: 클라우드에
+// 배포한 주소), 그 origin도 host_permissions에 넣는다 — 안 그러면 MV3가 그 주소로 나가는 요청을
+// 그냥 막아버린다. 로컬 개발용 localhost:8000은 항상 남겨둬서 이 변수를 안 줘도 기존처럼 동작한다.
+const apiBaseUrl = process.env.VITE_API_BASE_URL
+const deployedApiOrigin = apiBaseUrl ? [`${apiBaseUrl}/*`] : []
+
 export default defineManifest({
   manifest_version: 3,
   name: '써니C 기획서 품질 검증 도우미',
@@ -42,6 +48,11 @@ export default defineManifest({
     },
   ],
   permissions: ['sidePanel', 'storage'],
-  host_permissions: ['*://*.atlassian.net/*', 'http://localhost:8000/*', 'http://127.0.0.1:8000/*'],
+  host_permissions: [
+    '*://*.atlassian.net/*',
+    'http://localhost:8000/*',
+    'http://127.0.0.1:8000/*',
+    ...deployedApiOrigin,
+  ],
   ...(devKey ? { key: devKey } : {}),
 })

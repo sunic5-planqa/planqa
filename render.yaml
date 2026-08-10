@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: sunnic-backend
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install uv && uv sync --frozen
+    startCommand: uv run uvicorn sunnic_backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: SUNNIC_HAIKU_MODEL
+        value: claude-haiku-4-5
+      - key: SUNNIC_SONNET_MODEL
+        value: claude-sonnet-5

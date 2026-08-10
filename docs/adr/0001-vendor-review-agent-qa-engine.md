@@ -86,3 +86,63 @@ profile-based `pipeline.review_document(..., profile)` as this backend's call ta
   document/model — see progress.md's 2026-08-09 investigation into that discrepancy, still not
   fully explained, but the corrected `TIER_CATEGORIES` and category-based screening both plausibly
   contribute).
+
+## Update — 2026-08-10 re-sync to `bundled_screen_hybrid`
+
+Upstream swapped its default structure again — `structures/category_screen.py` is gone, replaced by
+`structures/bundled_screen_hybrid.py` (plus a new sibling data file, `structures/fewshot_bank.py`,
+of curated violation/exception examples). Re-vendored the same file set as before, minus `category_screen.py`/
+`llm/gemini.py` (genuinely unused — this backend calls Anthropic directly, not upstream's env-var-driven
+`llm/factory.py`), plus `structures/fewshot_bank.py`:
+
+- **Only two passes now, not four concurrent tiers**: `review_document()` runs a Paragraph pass (most
+  categories) then a Document pass (relational categories LG/LF/GA, plus two specific absence-check
+  rules LG-01/TC-02) — sequentially, not via `ThreadPoolExecutor`. **`LLMClient.clone()` no longer
+  exists at all** — the `_ScopedClient` workaround from the last re-sync (see update above) is gone;
+  `qa_jobs.py` now constructs `AnthropicClient` directly.
+- **`_categories_for_progress` reworked to match** — the old 4-group (Document/Logical Unit/Paragraph/
+  Sentence) cosmetic checklist no longer corresponded to anything real (Logical Unit and Sentence
+  aren't queried by this structure at all). Replaced with 2 groups (Paragraph/Document, split by the
+  same `_RANGE_CATEGORIES` set `_frame_type` already uses) that fill **in real execution order**
+  (Paragraph to 100% before Document starts moving) rather than in lockstep — lockstep was specifically
+  built for the *concurrent* 4-tier case, which no longer applies now that execution really is
+  sequential.
+- **`llm/base.py` gained built-in JSON repair** (`_repair_json` — fixes stray backslashes and trailing
+  commas inside a model's JSON response) and `AnthropicClient.complete_json` now retries once on a
+  malformed/empty response instead of failing the whole call. This directly addresses the "Paragraph
+  tier 위계에서 Claude가 malformed JSON 응답" issue flagged as a live, unresolved observation in
+  progress.md's 2026-08-09 Claude-switch entry.
+- **`document.py` gained `resolve_reported_level()`** — confirm can now report a finding at a *coarser*
+  level than the chunk it was actually scoped to (e.g. a Paragraph-tier candidate whose real scope is
+  the whole Logical Unit), never finer. `_to_issue_record` needed no change — it already just uses
+  whatever `location`/`level` the vendored `Issue` carries.
+- Not vendored (not on this backend's import path): `cli.py`, `run_stats.py`, `diff_report.py`,
+  `eval_service_notify.py`, `llm/factory.py`, `llm/ollama.py`, `models/gemini_lite/*` — this backend
+  imports `bundled_screen_hybrid.review_document` directly (same as it did for `category_screen`
+  before) and never touches upstream's `STRUCTURES` registry, but `structures/__init__.py` is still
+  kept (updated to point at the new module) purely for diffability.
+
+## Update — 2026-08-10 re-sync: bundled_screen_hybrid's 2 passes parallelized
+
+Same day, immediate follow-up upstream (`sunic5-planqa/planqa-agent` PRs #23–#25): the Paragraph and
+Document passes — sequential as of the update above — now run concurrently via `ThreadPoolExecutor`
+(falls back to a direct call when only one pass is actually active, skipping thread-pool overhead).
+
+- **`instrumentation.isolate_client(llm, *, key=None)`** changed shape: calls `llm.isolate(key)` when
+  the client defines one (test doubles that need to route scripted responses by branch identity), else
+  falls back to `copy.copy(llm)` + a fresh `usage` list for real backends. **This backend's
+  `AnthropicClient` needed zero changes** — the `copy.copy()` fallback already does the right thing
+  (shares the underlying `anthropic.Anthropic` HTTP client by reference, isolates only the usage-
+  tracking list), and `qa_jobs.py::_run_review_sync` already just constructs plain `AnthropicClient`
+  instances (simplified in the update above, once `clone()` disappeared) — no `isolate()` override
+  needed there either.
+- `qa_jobs.py::_categories_for_progress` reverted from "fill Paragraph to 100% before Document starts"
+  back to lockstep (all groups advance together) — the sequential-fill logic added in the previous
+  update was correct for that update's sequential execution, but wrong again now that the two passes
+  are concurrent. Re-measured live against DOC-001 (Claude Haiku→Sonnet): 63.1s (vs. 120.3s sequential,
+  vs. 66.1s under the original 4-tier-concurrent `category_screen`) — `_ESTIMATED_DURATION_SECONDS`
+  reverted 35s → 20s to match.
+- Vendored test double (`tests/qa_engine/review_agent/conftest.py::ScriptedLLM`) swapped its dead
+  `tier_responses`/`clone()` shape for `keyed_responses`/`isolate()`, matching the new
+  `isolate_client` contract — `isolate()` now raises a clear error if called with a key but no
+  `keyed_responses` configured, instead of silently falling back to the shared (racy) instance.

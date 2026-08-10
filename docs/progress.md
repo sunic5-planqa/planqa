@@ -1404,3 +1404,203 @@ tier를 병렬로 처리하며 붙인 순서, 문서 위치와 무관) 이슈를
 ### Next
 
 - 사용자 재검증 대기 — 실제 컨플루언스에서 복제본을 만들어 제목 시각이 맞는지 확인 필요.
+
+## 2026-08-10 — review-agent 재벤더링: `category_screen` → `bundled_screen_hybrid`
+
+"planqa-agent 모델 변경됐어 이걸로 하고 우리 .env는 유지해" 요청. upstream이 구조를 또 한 번
+바꿨음 — `structures/category_screen.py`가 사라지고 `structures/bundled_screen_hybrid.py`로
+교체(+새 데이터 파일 `structures/fewshot_bank.py`, 룰별 위반/예외 퓨샷 예시 모음). 상세 변경
+근거/버전별 diff는 `docs/adr/0001-...`의 이번 업데이트 섹션 참고. 요약:
+
+- **4개 동시 tier → 2개 순차 패스로 단순화**: Paragraph 패스(대부분 카테고리) → Document 패스
+  (관계형 LG/LF/GA + 부재확인형 LG-01/TC-02)만 순서대로 돈다. **`LLMClient.clone()`이 아예
+  없어져서** 지난 재벤더링 때 만든 `_ScopedClient` 우회 코드가 통째로 필요 없어짐 —
+  `AnthropicClient`를 그냥 직접 생성하도록 단순화(`qa_jobs.py::_run_review_sync`).
+- **진행률 체크리스트도 새 구조에 맞게 다시 짬**: 예전 4그룹(Document/Logical Unit/Paragraph/
+  Sentence) 체계는 이제 Logical Unit/Sentence가 아예 안 쓰이는 위계라 실제와 안 맞았음 —
+  Paragraph/Document 2그룹으로 교체하고, "동시 실행"이 아니라 "진짜 순차 실행"이 됐으니 lockstep
+  대신 **실행 순서대로**(Paragraph가 먼저 100% 찬 뒤에야 Document가 움직이기 시작) 채우도록 함.
+- **JSON 파싱이 더 견고해짐**: `llm/base.py`에 `_repair_json`(잘못된 백슬래시/trailing comma
+  복구)이 새로 생겼고, `AnthropicClient`가 깨지거나 빈 응답이 와도 한 번 더 재시도함 — 2026-08-09
+  Claude 전환 항목에서 관찰만 하고 넘어갔던 "Paragraph 위계 malformed JSON" 이슈를 upstream이
+  직접 고친 셈.
+- **`.env`/API 키 구성은 그대로 유지** — upstream에 새로 생긴 `llm/factory.py`(환경변수
+  `PLANQA_LLM_BACKEND`로 백엔드를 고르는 CLI용 헬퍼)는 벤더링하지 않음. 여전히 `settings`(pydantic-
+  settings, `.env` 기반)에서 읽은 키로 `AnthropicClient`를 직접 생성.
+- 벤더링 파일: `document.py`(신규 `resolve_reported_level` 포함), `dedupe.py`, `verifier.py`,
+  `tiers.py`, `pipeline.py`(여전히 `ReviewResult`만 씀), `instrumentation.py`, `llm/base.py`,
+  `llm/anthropic.py`, `planqa_schemas/rulebook.py`, `structures/bundled_screen_hybrid.py`(신규),
+  `structures/fewshot_bank.py`(신규) — `llm/gemini.py`/`structures/category_screen.py`는 삭제.
+- 검증: 벤더링 테스트 재동기화(`test_bundled_screen_hybrid.py` 신규, `test_fewshot_bank.py` 신규,
+  나머지 import 경로만 갱신) + 우리 쪽 테스트(`FakeAnthropicClient`를 새 프롬프트/응답 형식에 맞게
+  수정, 진행률 체크리스트 테스트 2개 재작성) 포함 백엔드 126개 전부 통과, ruff 클린.
+
+### Next
+
+- 진행률 체크리스트가 실제로 Paragraph → Document 순서로 차오르는 것처럼 보이는지 실사용 확인.
+
+## 2026-08-10 — bundled_screen_hybrid 실제 Claude API로 라이브 검증 + 진행률 상수 재보정
+
+병합 전에 "이거 다 작동할까?" 질문 — 지금까지는 스크립트 응답(mock)으로만 검증했었어서, 실제
+`.env`의 Claude 키로 `review_document()`를 직접 돌려 라이브 검증함(DOC-001 fixture).
+
+- **결과**: 120.3초, **4개 이슈**, `tier_errors: ()`(파싱 에러 0건). 이전 4-tier 조합들(Gemini
+  22~44개, Claude 12개)보다 훨씬 적고, CLI 기준값이었던 "6개"에 더 가까워짐 — 여전히 정확히
+  일치하진 않지만 방향은 맞는 쪽. 새로 생긴 `resolve_reported_level`도 실제로 작동 확인: MI-06
+  이슈가 Paragraph 청크에서 스캔됐지만 confirm이 "Logical Unit"으로 승격 보고해서 그대로 반영됨
+  (설계대로).
+- **부작용 발견 및 수정**: 소요 시간이 이전 4-tier 동시 실행 버전(66.1초)의 거의 2배(120.3초)로
+  늘어남 — 동시성 이점이 없어진 데다(2패스 순차) 프롬프트에 룰 텍스트+퓨샷 예시가 통째로 들어가
+  호출 자체도 무거워진 탓. 방금 재보정했던 `_ESTIMATED_DURATION_SECONDS`(20s, 66초 기준)가 이
+  새 실측치엔 다시 안 맞아서(완료 훨씬 전에 90%에 도달해 오래 멈춰 있는 것처럼 보임) 35s로 재조정.
+- 검증: 백엔드 126개 전부 통과(상수 변경만이라 신규 테스트 없음), ruff 클린.
+
+### Next
+
+- 데이터 포인트가 아직 하나뿐 — 여러 문서/여러 회 실행으로 이슈 개수·소요 시간 편차를 더 확인하면
+  좋음.
+
+## 2026-08-10 — review-agent가 bundled_screen_hybrid를 다시 병렬화 (2패스 동시 실행으로 재동기화)
+
+방금 순차 실행으로 재벤더링했는데, review-agent 쪽에서 바로 이어서 그 2패스(Paragraph/Document)를
+동시 실행으로 병렬화하는 PR을 올리고 병합함(`sunic5-planqa/planqa-agent` PR #23~#25,
+`https://github.com/sunic5-planqa/planqa-agent`). 다시 재벤더링.
+
+- **`instrumentation.py`**: `isolate_client(llm, *, key=None)`으로 시그니처 변경 — `llm`에
+  `isolate(key)` 메서드가 있으면(테스트 더블처럼 응답을 분기별로 라우팅해야 하는 경우) 그걸 쓰고,
+  없으면(실제 백엔드) 그냥 `copy.copy()` + 새 usage 리스트로 폴백. **덕분에 우리 쪽
+  `AnthropicClient`는 `isolate()`를 따로 구현할 필요가 전혀 없음** — `copy.copy()` 폴백이 알아서
+  처리해줌(같은 HTTP 클라이언트를 참조로 공유, usage 리스트만 분리).
+- **`bundled_screen_hybrid.py`**: 각 패스를 `_run_pass()`로 뽑아내고, 두 패스가 모두 있으면
+  `ThreadPoolExecutor`로 동시 실행(하나만 있으면 그냥 직접 호출, 스레드풀 오버헤드 안 씀).
+- **`qa_jobs.py`는 무변경** — `_run_review_sync`가 `AnthropicClient`를 그냥 생성만 하면 되는
+  구조라(지난 재벤더링 때 이미 그렇게 단순화해둠), 이번 병렬화도 별도 대응 코드 없이 그대로 호환됨.
+- **진행률 체크리스트를 다시 lockstep으로 되돌림** — 방금 "순차 실행" 가정으로 바꿨던 걸(Paragraph
+  먼저 100%) 원래의 "모든 그룹 동시 진행" 방식으로 원복. 실측도 다시 확인(DOC-001, Claude
+  Haiku→Sonnet 조합): **63.1초**(순차 버전 120.3초 대비 거의 절반, 원래 4-tier 버전 66.1초와
+  거의 동일) — `_ESTIMATED_DURATION_SECONDS`도 35s→20s로 원복.
+- **테스트 더블도 동기화**: `conftest.py`의 `ScriptedLLM`이 `tier_responses`/`clone()`(죽은 코드)
+  대신 `keyed_responses`/`isolate()`를 구현 — key 없이 `isolate()`가 호출되면(테스트 더블에
+  `keyed_responses`를 안 주고 병렬 구조를 테스트하려 한 경우) 애매하게 넘어가지 않고 명확한
+  에러를 던짐(공유 이터레이터 레이스를 나중에 조용히 재현하는 대신 지금 바로 잡아냄).
+- 검증: 벤더링 테스트 재동기화(`test_bundled_screen_hybrid.py`가 `keyed_responses` 기반으로,
+  신규 "plain ScriptedLLM 오용 시 명확한 에러" 테스트 포함) + 우리 진행률 테스트 lockstep으로
+  원복, 백엔드 126개 전부 통과, ruff 클린. 실제 API로도 재검증(4개 이슈, 에러 0건, 63.1초).
+
+### Next
+
+- upstream이 짧은 주기로 계속 구조를 바꾸고 있어 재벤더링이 반복되는 중 — 당분간 병합 전마다
+  `sunic5-planqa/planqa-agent`의 최신 상태를 확인하는 습관이 필요.
+
+## 2026-08-10 — 병렬화 재벤더링 PR `/code-review` 결과 반영
+
+6개 지적 중 우리 코드(`qa_jobs.py`)에 해당하는 1개만 고치고, 나머지 5개는 전부 벤더링해온 파일
+(`review_agent/**`, ADR 0001 정책상 upstream과 diffable하게 그대로 두기로 한 영역) 안의 지적이라
+로컬에서 고치지 않음 — 지금까지 반복해온 판단 기준 그대로.
+
+- **고침**: `_build_tier_groups`(진행률 체크리스트)가 `_RANGE_CATEGORIES`(LG/LF/GA)만 보고
+  Paragraph/Document 그룹을 나누는데, 실제 실행 구조(`_paragraph_and_document_rules`)는
+  개별 rule_id(`ABSENCE_CHECK_RULE_IDS` = LG-01, TC-02)도 Document 패스로 보낸다는 걸 놓쳤다는
+  지적 — "TC" 카테고리 전체가 Paragraph 그룹에 표시되는데 그중 TC-02 하나만 실제로는 Document
+  패스에서 검토됨. 체크리스트가 카테고리 단위라 완벽히 정확하게 쪼갤 수 없어서(이미 가짜인 진행률
+  신호에 그 정도 복잡도를 들일 가치가 없다고 판단), 코드를 바꾸는 대신 이 한계를 주석에 정직하게
+  남기는 쪽으로 고침.
+- **판단 보류(벤더링 정책)**: `conftest.py`의 `ScriptedLLM.complete_json`이 `cache_prefix` 파라미터
+  없이 인터페이스에서 벗어났다는 지적, 벤더링 파일 여러 곳의 120자 줄 길이 초과, 벤더링 테스트
+  파일의 docstring, `document.py`의 중복된 주석 문구(upstream 자체의 복붙 흔적으로 보임) — 전부
+  `review_agent/**` 안의 upstream 코드라 로컬에서 고치지 않음.
+- 검증: 백엔드 126개 전부 통과, ruff 클린.
+
+## 2026-08-10 — 수정 저장 시 유사도 경고 문구에서 괄호 제거
+
+`IssueListScreen.tsx`의 유사도 경고("AI 제안(...)과 다소 달라요")가 AI 제안 문구를 괄호로 감싸고
+있던 걸 큰따옴표로 바꿈 — "AI 제안 "...".과 다소 달라요 (유사도 N%)." 형태로, 뒤에 남은 유사도
+퍼센트 괄호는 그대로 둠.
+
+- **`extension/src/components/screens/IssueListScreen.tsx`**: `handleSaveClick`의
+  `setSimilarityWarning` 문구 수정 — 처음엔 괄호 대신 큰따옴표로 AI 제안 문구를 감쌌는데, 곧이어
+  "따옴표도 빼고 그냥 짧게" 요청이 와서 AI 제안 문구 자체를 안 보여주고 "AI 제안과 다소 달라요
+  (유사도 N%)."만 남기는 걸로 다시 정리.
+- 검증: 확장 72개 전부 통과, lint/tsc/build 클린.
+
+## 2026-08-10 — MI(정보 누락) 카테고리 오탐 검증 단계 추가
+
+실제 서버(DOC-001)에서 "8. 런칭 계획"에 목표 런칭일/QA 기간 날짜가 명시돼 있는데도 confirm이
+"정보 누락"으로 잘못 판정하는 오탐 보고. 먼저 우리 쪽 파싱 문제인지 확인 — 실제 storage HTML을
+가져와 `htmlToChapterMarkdown`에 그대로 넣어보니 날짜가 정확히 뽑힘(`- 목표 런칭일: February
+10, 2024` 등). **파서 문제 아님** — confirm이 좁은 chunk만 보고 판단하다 생긴 진짜 hallucination.
+
+`services/eval-service`(`sunic5-planqa/planqa-agent`)를 재사용할 수 있는지 검토 — `judge.py`의
+`judge_review_result()`는 **원본 문서 텍스트를 아예 안 받는** reference-free 구조(에이전트 자신의
+근거/이유만 재검토)라, "근거는 논리적인데 전제가 문서와 안 맞는" 이런 유형은 애초에 못 잡는다는 걸
+확인 — 재사용 불가 판단.
+
+- **`backend/src/sunnic_backend/api/qa_jobs.py`**: `_run_review_sync`에 MI 카테고리 전용 검증
+  단계 추가 — confirm이 낸 MI 판정마다, **문서 전체 텍스트**를 다시 주고 "정말 없는 게 맞냐"고
+  Sonnet으로 재확인(`_verify_mi_finding`). 검증에서 "실제로 있다"고 나오면 그 이슈를 최종 결과에서
+  제외. LLM 호출 실패/응답 이상 시엔 원래 판정을 신뢰(fail-safe, 조용히 숨기지 않음). MI만
+  검증하는 이유: 관찰된 오탐이 전부 MI였고, "없다"는 주장이 정의상 부분 컨텍스트에 특히 취약함 —
+  전체 카테고리에 걸면 비용/시간이 크게 늘어남.
+- 검증: 단위 테스트 4개(검증 통과/탈락/LLM 에러 시 폴백/응답 이상 시 폴백) + 통합 테스트 1개
+  (강제로 오탐 상황을 만들어 실제로 걸러지는지) 추가, 백엔드 131개 전부 통과, ruff 클린. 실제
+  API로 라이브 재검증 2회 — 검증 로직이 실제 MI 판정에 정상적으로 관여하는 것 확인(LLM이
+  결정적이지 않아 정확히 같은 오탐이 매번 재현되진 않았지만, 강제 재현 테스트로 필터링 자체는
+  100% 확인됨).
+
+### Next
+
+- 지금은 MI만 검증 — 다른 카테고리에서도 비슷한 오탐 패턴이 관찰되면 확장 고려.
+- 검증 호출이 추가돼서 MI 이슈 개수만큼 소요 시간이 늘어남 — 체감 속도에 영향 있으면
+  `_ESTIMATED_DURATION_SECONDS`도 재검토 필요.
+
+## 2026-08-10 — Document 위계 이슈가 페이지 제목(h1)을 감싸버리던 버그 수정
+
+"문서 제목에서 그걸 알려준다는 거 자체가 헛소리"라는 보고 — 스크린샷을 보니 논리비약(LG) 이슈의
+하이라이트가 컨플루언스 페이지 자체의 제목을 감싸고 있었음. 원인: review-agent가 Document
+위계(문서 전체를 대상으로 한 판정)로 낸 이슈는 `location`이 곧 **문서 제목**이다(백엔드
+`document.py`의 `_doc_title()` — `htmlToChapterMarkdown`이 페이지 제목만 `#`(h1급)로 쓰고 본문
+소제목은 전부 `##`~`######`로 클램프하기 때문에, Document 위계 청크의 location은 항상 페이지
+제목과 정확히 일치). 그런데 2026-08-10에 추가한 `wrapIssueByLocationHeading` 폴백(본문에서
+input_text를 못 찾을 때 location과 이름이 같은 제목이라도 감싸는 로직)이 h1~h6을 다 검색 대상으로
+삼아서, 이 경우엔 페이지 자체의 제목(h1)을 감싸버렸다.
+
+- **`extension/src/content/issueOverlay.ts`**: `wrapIssueByLocationHeading`의 검색 대상에서
+  **h1을 제외**(h2~h6만) — 본문 소제목만 유효한 폴백 대상. h1만 일치하는 경우(Document 위계
+  이슈)는 하이라이트 없이 넘어간다(엉뚱한 걸 감싸느니 안 감싸는 쪽).
+- 검증: 신규 회귀 테스트 1개(h1만 일치할 때 매칭 실패 확인) 추가, 확장 73개 전부 통과,
+  lint/tsc/build 클린.
+
+### Next
+
+- Document 위계 이슈는 이제 본문에 하이라이트가 아예 안 생길 수 있음(폴백 대상이 없어서) — 사이드
+  패널에서 이슈 자체는 여전히 보이고 판단 가능하지만, "다음"으로 넘겨도 문서가 안 움직일 수 있음.
+  더 나은 폴백(예: 문서 맨 위로 스크롤만)이 필요한지는 실사용 확인 후 판단.
+
+## 2026-08-10 — 수정 저장 성공 시 다음 이슈로 자동 이동
+
+"수정 완료 누르면 다음 에러로 자동으로 내려가게" 요청.
+
+- **`extension/src/components/screens/IssueListScreen.tsx`**: `saveEdit()`이 저장 성공(스테이징 +
+  편집 모드 종료) 직후 `NAVIGATE_ISSUE(direction: 'next')`를 디스패치 — 마지막 이슈였으면
+  `appReducer.ts`의 인덱스 clamp 덕분에 별도 경계 처리 없이 그냥 제자리에 머문다. 왼쪽 문서
+  스크롤/AI 제안 말풍선은 기존 `useIssueOverlaySync`의 `currentIssueId` 변경 감지 로직이 그대로
+  이어받아 처리(추가 배선 불필요) — "이전/다음" 버튼으로 수동 이동할 때와 동일한 경로.
+- 검증: 확장 73개 전부 통과, lint/tsc/build 클린(이 컴포넌트는 React 컴포넌트 테스트 도구가 아직
+  없어 전용 테스트는 기존 컨벤션대로 생략).
+
+## 2026-08-10 — 복제본 제목 시각, Intl 대신 순수 산술 계산으로 재작성
+
+`timeZone: 'Asia/Seoul'`을 명시한 `toLocaleString`으로 고쳤는데도(2026-08-10 앞선 항목) 사용자가
+"여전히 실제 시각과 몇 시간 차이난다"고 재보고 — Intl 구현/브라우저 환경에 남아있을 수 있는 변수
+자체를 없애기로 하고, `Intl`에 전혀 기대지 않는 방식으로 다시 짬.
+
+- **`extension/src/content/issueOverlay.ts`**: `formatKstTimestamp(date)` 신규 — `Date.getTime()`의
+  epoch ms(시간대와 무관한 절대 시각)에 KST 오프셋(UTC+9, 서머타임 없어 연중 고정)을 직접 더한 뒤
+  `getUTC*` getter로 값을 읽어 문자열을 조립. 실행 환경의 Intl 지원 수준이나 시스템 시간대 설정에
+  전혀 의존하지 않는 순수 산술 계산이라, 어떤 환경에서 실행되든 항상 정확하다.
+- 검증: `formatKstTimestamp` 자체의 경계 케이스(정오, 자정 넘어감, 오후) 단위 테스트 3개 +
+  기존 통합 테스트를 새 방식에 맞게 갱신, 확장 76개 전부 통과, lint/tsc/build 클린.
+
+### Next
+
+- 사용자 재검증 대기 — 이번엔 Intl 자체를 안 쓰니 환경 의존성 문제는 원천적으로 없어야 함.

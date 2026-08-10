@@ -1,5 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { __resetDuplicateSessionForTests, applyIssueEdit, applyIssueOverlay, clearIssueOverlay, scrollToIssue } from './issueOverlay'
+import {
+  __resetDuplicateSessionForTests,
+  applyIssueEdit,
+  applyIssueOverlay,
+  clearIssueOverlay,
+  formatKstTimestamp,
+  scrollToIssue,
+} from './issueOverlay'
 import type { OverlayIssue } from './messages'
 
 const ISSUE: OverlayIssue = {
@@ -103,6 +110,24 @@ describe('applyIssueOverlay', () => {
     const mark = document.querySelector('.sunnic-issue-highlight')
     expect(mark?.textContent).toBe('6-1. 메인 배너 (캐러셀)')
     expect(mark?.closest('h3')).not.toBeNull()
+  })
+
+  it('never falls back to the page title (h1) even when location matches nothing but it', () => {
+    // review-agent의 Document 위계(문서 전체 대상 판정) 이슈는 location이 곧 "문서 제목"이다
+    // (백엔드 document.py의 _doc_title) — 이걸 그대로 폴백 대상으로 허용하면 컨플루언스 페이지
+    // 자체의 제목을 감싸버려서, 마치 "제목이 문제"라는 것처럼 보이는 엉뚱한 하이라이트가 된다
+    // (실사용 중 확인된 버그). h1은 폴백 대상에서 제외해야 하고, 그러면 매칭 자체가 실패해야 한다.
+    document.body.innerHTML = '<main><h1>[DOC-001] NxEF 모바일 웹 — 홈 화면 PRD (v1.0)</h1><h2>1. 프로덕트 목적</h2></main>'
+    const issue: OverlayIssue = {
+      ...ISSUE,
+      input_text: '문서에 없는 문구',
+      location: '[DOC-001] NxEF 모바일 웹 — 홈 화면 PRD (v1.0)',
+    }
+
+    const result = applyIssueOverlay([issue])
+
+    expect(result).toEqual({ matched: 0, total: 1 })
+    expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
   })
 
   it('still highlights the other issues even if one has no location and cannot be matched', () => {
@@ -213,6 +238,22 @@ describe('clearIssueOverlay', () => {
   })
 })
 
+describe('formatKstTimestamp', () => {
+  it('formats a KST noon (UTC 03:00) correctly', () => {
+    expect(formatKstTimestamp(new Date('2026-08-10T03:00:00Z'))).toBe('2026. 8. 10. 오후 12:00:00')
+  })
+
+  it('formats a KST midnight (crossing into the next day) correctly', () => {
+    // UTC 15:30 + 9시간 = 다음날 00:30 KST — hour24가 0으로 넘어가는 경계(오전 12시 표기) 확인.
+    expect(formatKstTimestamp(new Date('2026-08-09T15:30:00Z'))).toBe('2026. 8. 10. 오전 12:30:00')
+  })
+
+  it('formats a regular afternoon time correctly', () => {
+    // UTC 06:15 + 9시간 = 15:15 KST = 오후 3시 15분.
+    expect(formatKstTimestamp(new Date('2026-08-10T06:15:05Z'))).toBe('2026. 8. 10. 오후 3:15:05')
+  })
+})
+
 describe('applyIssueEdit', () => {
   it('the first call creates a duplicate page instead of touching the original, and marks the highlight resolved', async () => {
     const fetchMock = stubConfluenceFetch()
@@ -238,12 +279,13 @@ describe('applyIssueEdit', () => {
     expect(putBody.body.storage.value).toContain(ISSUE.suggestion)
   })
 
-  it('stamps the duplicate title with Korea time even when the runtime default timezone is not KST', async () => {
-    // toLocaleString('ko-KR')만 쓰면 로케일 표기 형식만 한국식이 될 뿐 시간대는 실행 환경의 시스템
-    // 설정을 따라간다 — 서버/브라우저의 기본 시간대가 KST가 아니면 실제 시각과 몇 시간씩 어긋나
-    // 보였다(사용자 보고). timeZone: 'Asia/Seoul'을 명시하면 환경 설정과 무관해야 한다.
+  it('stamps the duplicate title with Korea time computed by pure arithmetic, not Intl', async () => {
+    // timeZone: 'Asia/Seoul'을 명시한 toLocaleString도 실제 서비스 환경에서 여전히 몇 시간씩
+    // 어긋난다는 보고가 있어(Intl 구현/환경에 따라 달라질 여지가 남아있었던 걸로 보임), Intl에
+    // 아예 기대지 않는 순수 산술 계산(UTC+9 고정 오프셋)으로 바꿨다 — 시스템 시간대를 UTC로
+    // 바꿔놔도(vi.stubEnv) 항상 KST로 정확히 찍혀야 한다.
     vi.stubEnv('TZ', 'UTC')
-    const fixedNow = new Date('2026-08-10T03:00:00Z') // KST로는 정오, UTC로는 오전 — 서로 달라야 의미 있는 검증
+    const fixedNow = new Date('2026-08-10T03:00:00Z') // KST로는 정오(오후 12시)
     vi.useFakeTimers()
     vi.setSystemTime(fixedNow)
     try {
@@ -253,10 +295,7 @@ describe('applyIssueEdit', () => {
 
       const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
       const body = JSON.parse((postCall?.[1] as RequestInit).body as string) as { title: string }
-      const nowInSeoul = fixedNow.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })
-      const nowInSystemDefault = fixedNow.toLocaleString('ko-KR')
-      expect(body.title).toContain(nowInSeoul)
-      expect(nowInSeoul).not.toBe(nowInSystemDefault)
+      expect(body.title).toContain('2026. 8. 10. 오후 12:00:00')
     } finally {
       vi.useRealTimers()
       vi.unstubAllEnvs()

@@ -153,6 +153,32 @@ describe('applyIssueOverlay', () => {
     expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
   })
 
+  it('matches a list-item input_text even though the model quoted the synthetic "- " bullet prefix', () => {
+    // confluenceParser.ts는 <li>를 백엔드가 이해하는 "- item" 한 줄로 평탄화하고(review_agent
+    // document.py의 _BULLET_LINE 기대 형식), 모델은 자기가 받은 그 청크를 verbatim으로 인용한다 —
+    // 그래서 input_text에 "- " 접두사가 그대로 섞여 온다. 실제 <li> 텍스트엔 그 기호가 없다.
+    document.body.innerHTML = '<main><ul><li>신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음</li></ul></main>'
+    const issue: OverlayIssue = { ...ISSUE, input_text: '- 신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음' }
+
+    const result = applyIssueOverlay([issue])
+
+    expect(result).toEqual({ matched: 1, total: 1 })
+    expect(document.querySelector('.sunnic-issue-highlight')?.textContent).toBe(
+      '신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음',
+    )
+  })
+
+  it('matches a table-row input_text even though the model quoted the synthetic "| |" cell separators', () => {
+    // confluenceParser.ts는 <tr>을 "| 셀 | 셀 |"로 평탄화한다 — 실제 <td> 텍스트엔 파이프가 없고,
+    // 셀 사이에 아무 구분 문자도 없을 수 있다(HTML 소스에 여백 텍스트 노드가 없는 경우).
+    document.body.innerHTML = '<main><table><tr><td>결제수단</td><td>간편결제 3사</td></tr></table></main>'
+    const issue: OverlayIssue = { ...ISSUE, input_text: '| 결제수단 | 간편결제 3사 |' }
+
+    const result = applyIssueOverlay([issue])
+
+    expect(result).toEqual({ matched: 1, total: 1 })
+  })
+
   it('wraps every matching issue at once, not just one', () => {
     document.body.innerHTML =
       '<main><p>간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원 안내.</p>' +
@@ -391,6 +417,23 @@ describe('applyIssueEdit', () => {
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
     const putBody = JSON.parse(putCall?.[1]?.body as string)
     expect(putBody.body.storage.value).toBe(`<ul><li>${newText}</li><li></li></ul>`)
+  })
+
+  it('finds and replaces a list item even though oldText carries the synthetic "- " bullet prefix the model quoted', async () => {
+    // 모델은 백엔드가 마크다운으로 평탄화한 청크("- item")를 verbatim으로 인용하므로 oldText에
+    // "- " 접두사가 그대로 온다 — 실제 storage HTML의 <li> 텍스트엔 그 기호가 없다.
+    const oldText = '- 신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음'
+    const newText = '신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 25% 낮음'
+    const fetchMock = stubConfluenceFetch({
+      duplicateBody: '<ul><li>신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음</li></ul>',
+    })
+
+    const result = await applyIssueEdit('issue-bullet-prefix', oldText, newText)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    expect(putBody.body.storage.value).toBe(`<ul><li>${newText}</li></ul>`)
   })
 
   it('finds text split by a <strong> close tag and a <br> inside one <p> (real DOC-001 shape)', async () => {

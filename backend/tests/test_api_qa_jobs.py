@@ -28,6 +28,16 @@ _RULE_ID_RE = re.compile(r"^\s*([A-Z]{2}-\d{2}):", re.MULTILINE)
 _CHUNK_ZERO_RE = re.compile(r"\[0\] \([^)]*\)\n(.+?)(?:\n\n|\Z)", re.DOTALL)
 
 
+# qa_jobs._review_cache는 프로세스 전역이라, 한 테스트가 채워놓은 캐시를 다른 테스트가(특히 같은
+# _TEST_DOCUMENT를 쓰는 테스트들이) 모르는 새 재사용하면서 실행 순서에 따라 결과가 달라지는 사고로
+# 이어질 수 있다 — 예를 들어 캐시가 이미 채워진 상태에서 "LLM 클라이언트 생성 실패" 테스트를 돌리면
+# 캐시 덕분에 실제 생성 자체를 건너뛰어서 실패해야 할 job이 성공해버린다. 매 테스트 전에 비운다.
+@pytest.fixture(autouse=True)
+def _clear_review_cache():
+    qa_jobs._review_cache.clear()
+    yield
+
+
 class FakeAnthropicClient:
     """Stands in for review_agent's real AnthropicClient — no network call, just enough of a
     contract (constructor kwargs + complete_json + clone()) to drive the real
@@ -201,6 +211,88 @@ def test_categories_for_progress_marks_everything_done_at_100() -> None:
 
     assert current_category is None
     assert all(item.status == "done" for group in categories for item in group.items)
+
+
+async def test_qa_job_reuses_cached_result_for_identical_document_text(monkeypatch) -> None:
+    # 같은 문서를 반복 검토할 때마다 실제 LLM을 다시 부르면 매번 수십 초 + 비용이 든다 — 문서
+    # 텍스트가 완전히 같으면(document_id가 새로 발급돼도) 캐시에서 재사용해야 한다.
+    call_count = 0
+
+    def fake_review_document(
+        doc_id: str,
+        document_text: str,
+        rulebook: Any,
+        screen_llm: Any,
+        confirm_llm: Any,
+    ) -> qa_jobs.ReviewResult:
+        nonlocal call_count
+        call_count += 1
+        issue = qa_jobs.ReviewIssue(
+            doc_id=doc_id,
+            level="sentence",
+            rule_id="TC-01",
+            location="1. 배경 및 문제 정의",
+            description="설명",
+            original_text="3사만 지원",
+            rationale="이유",
+            fix_direction="제안",
+        )
+        return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(issue,))
+
+    monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        doc1 = (await client.post("/documents", json={"raw_text": _TEST_DOCUMENT})).json()["document_id"]
+        job1 = (await client.post(f"/documents/{doc1}/qa-jobs")).json()["job_id"]
+        status1 = (await client.get(f"/qa-jobs/{job1}/status")).json()
+        issues1 = (await client.get(f"/qa-jobs/{job1}/issues")).json()
+
+        # raw_text가 같아도 /documents는 매번 새 document_id를 발급한다 — 캐시는 document_id가
+        # 아니라 문서 "내용" 기준이어야 이 경우도 재사용된다.
+        doc2 = (await client.post("/documents", json={"raw_text": _TEST_DOCUMENT})).json()["document_id"]
+        job2 = (await client.post(f"/documents/{doc2}/qa-jobs")).json()["job_id"]
+        status2 = (await client.get(f"/qa-jobs/{job2}/status")).json()
+        issues2 = (await client.get(f"/qa-jobs/{job2}/issues")).json()
+
+    assert status1["status"] == "done"
+    assert status2["status"] == "done"
+    assert call_count == 1
+    assert len(issues1) == 1
+    assert len(issues2) == 1
+    # 각 job 소유의 별개 레코드로 저장되는지(캐시된 원본을 공유 참조하는 게 아니라) 확인.
+    assert issues1[0]["id"] != issues2[0]["id"]
+
+
+async def test_qa_job_does_not_use_cache_for_a_different_document(monkeypatch) -> None:
+    call_count = 0
+
+    def fake_review_document(
+        doc_id: str,
+        document_text: str,
+        rulebook: Any,
+        screen_llm: Any,
+        confirm_llm: Any,
+    ) -> qa_jobs.ReviewResult:
+        nonlocal call_count
+        call_count += 1
+        return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=())
+
+    monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        doc1 = (await client.post("/documents", json={"raw_text": _TEST_DOCUMENT})).json()["document_id"]
+        job1 = (await client.post(f"/documents/{doc1}/qa-jobs")).json()["job_id"]
+        await client.get(f"/qa-jobs/{job1}/status")
+
+        doc2 = (await client.post("/documents", json={"raw_text": _TEST_DOCUMENT + "\n다른 내용"})).json()["document_id"]
+        job2 = (await client.post(f"/documents/{doc2}/qa-jobs")).json()["job_id"]
+        await client.get(f"/qa-jobs/{job2}/status")
+
+    assert call_count == 2
 
 
 # 문서 본문 순서로 이슈를 내려주려면(SCREEN 02 "다음"/오버뷰가 왼쪽 원본을 위→아래로 훑도록) 각

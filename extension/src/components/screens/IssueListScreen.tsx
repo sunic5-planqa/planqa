@@ -17,7 +17,12 @@ export function IssueListScreen() {
   const remainingCount = issues.length - resolvedCount
 
   const issue = issues[currentIssueIndex]
-  const isEditing = issue !== undefined && editingIssueId === issue.id
+  // insert_range(MI=정보 누락)는 "원문을 AI 제안으로 교체"할 대상 자체가 없다 — input_text가
+  // 비어있거나(원래 없어야 할 텍스트라서), 문서 쪽 하이라이트는 최후 수단으로 섹션 제목을 감싸고
+  // 있을 뿐이다(issueOverlay.ts의 wrapIssueByLocationHeading). 여길 그대로 "수정 저장" 가능하게
+  // 두면 섹션 제목이 "이 정보를 추가하세요" 같은 제안 문구로 통째로 덮어써지는 사고가 난다.
+  const isInsertRangeIssue = issue?.frame_type === 'insert_range'
+  const isEditing = !isInsertRangeIssue && issue !== undefined && editingIssueId === issue.id
 
   // 렌더 중에 파생시키는 초안 — draft.issueId가 지금 보고 있는 이슈와 다르면(편집을 처음 시작했거나
   // "수정 복구"로 초기화한 경우) AI 제안으로 폴백한다. useEffect로 props→state를 동기화하지 않아도 돼서
@@ -159,6 +164,7 @@ export function IssueListScreen() {
             <div className="issue-suggestion-row">
               <span className="issue-detail-label">수정제안</span>
               {!isEditing &&
+                !isInsertRangeIssue &&
                 (isResolved ? (
                   <span className="resolved-badge">✓ 수정완료</span>
                 ) : (
@@ -188,6 +194,12 @@ export function IssueListScreen() {
               />
             ) : (
               <p className="issue-suggestion-text">{suggestion}</p>
+            )}
+            {isInsertRangeIssue && (
+              <p className="issue-suggestion-hint">
+                문서에 없는 내용을 추가하라는 안내라, 자동으로 반영할 수 없어요. 문서에서 표시된
+                위치를 직접 확인하고 반영해주세요.
+              </p>
             )}
           </div>
 

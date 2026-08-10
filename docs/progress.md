@@ -1292,3 +1292,23 @@ Atlassian 연동으로 실제 페이지(`gy30356635.atlassian.net`, pageId 22954
 
 - range/insert_range의 실제 시각적 프레임(구간 전체 하이라이트) 구현은 여전히 남은 작업.
 - 사용자 재검증 대기.
+
+## 2026-08-10 — 위 수정 직후 왼쪽 하이라이트/스크롤이 전부 사라진 회귀 수정
+
+바로 다음 리로드에서 "왼쪽 하이라이트 박스랑 스크롤이 사라졌다"는 보고. 원인은
+`applyIssueOverlay`가 `issues.filter(wrapIssue)`로 돌리는데, 이슈 하나에서라도 `wrapIssue`가
+예외를 던지면 **`filter()` 전체가 그 자리에서 멈춰서 뒤에 있던 멀쩡한 이슈들까지 전부 하이라이트가
+안 그려지는 것** — 방금 추가한 `wrapIssueByLocationHeading()`이 `issue.location.split('>')`을
+그대로 호출해서, `location`이 없는 이슈(이 필드가 추가되기 전에 만들어진 상태 등)를 만나면 바로
+`TypeError`를 던졌다.
+
+- **`extension/src/content/issueOverlay.ts`**: 두 겹으로 방어 — (1) `wrapIssueByLocationHeading`이
+  `issue.location?.split('>')`로 옵셔널 체이닝해서 애초에 안 던지게, (2) `applyIssueOverlay`가
+  `wrapIssue` 호출을 이슈별로 try/catch로 감싸서, 앞으로 비슷한 종류의(예상 못 한) 에러가 또 나도
+  그 이슈 하나만 매칭 실패로 처리되고 나머지는 영향받지 않게.
+- 검증: 신규 회귀 테스트 1개(location 없는 이슈가 섞여도 나머지 이슈는 정상 하이라이트되는지) 추가,
+  확장 71개 전부 통과, lint/tsc/build 클린.
+
+### Next
+
+- 사용자 재검증 대기 — 이번엔 하이라이트/스크롤 자체가 다시 보이는지부터.

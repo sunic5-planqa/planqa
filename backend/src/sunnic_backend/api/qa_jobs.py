@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import math
 import re
 import uuid
@@ -197,14 +198,31 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
     return review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
 
 
+# 이슈 목록을 "문서 본문 순서"로 보여주려면(SCREEN 02 "다음"/오버뷰가 왼쪽 원본을 위→아래로 훑도록)
+# 각 이슈가 document_text 안 어디쯤인지가 필요하다. input_text로 못 찾는 경우(정보 누락=MI 이슈는
+# 애초에 원문에 없는 걸 지적하니 input_text가 비어있는 게 정상)엔 그 이슈가 속한 위계(location)의
+# 제목이라도 찾아 대략적인 위치로 쓴다 — 그마저 못 찾으면 맨 앞(0)이 아니라 맨 뒤로 보낸다. 맨
+# 앞으로 잘못 보내면 실제로는 문서 후반부 이슈인데 항상 첫 번째로 나와버려서 순서 왜곡이 더 커진다.
+def _issue_start(document_text: str, input_text: str, location: str) -> int:
+    if input_text:
+        start = document_text.find(input_text)
+        if start != -1:
+            return start
+    heading = location.rsplit(">", 1)[-1].strip()
+    if heading:
+        idx = document_text.find(heading)
+        if idx != -1:
+            return idx
+    return len(document_text)
+
+
 def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue: ReviewIssue) -> IssueRecord:
     rule = rulebook.rule(issue.rule_id)
     criteria = _korean_label(rule.category_label) if rule else issue.rule_id
     related_location = issue.related_location
     frame_type = _frame_type(rule.category, related_location) if rule else FrameType.OBJECT
     input_text = issue.original_text or ""
-    start = document_text.find(input_text) if input_text else -1
-    start = max(start, 0)
+    start = _issue_start(document_text, input_text, issue.location)
     return IssueRecord(
         id=str(uuid.uuid4()),
         job_id=job_id,
@@ -251,21 +269,40 @@ async def _tick_progress(job_id: str, started_at: datetime) -> None:
         pass
 
 
+# document_text(추출된 문서 전문) 기준으로 리뷰 결과를 캐싱한다 — 같은 컨플루언스 페이지를 반복
+# 테스트할 때마다 실제 Claude API를 새로 호출하면 시간(수십 초)과 비용이 매번 든다. 프로세스
+# 메모리에만 두고(재시작하면 비워짐) 이 서비스의 다른 저장소(store)와 같은 "인메모리" 정책을 따름 —
+# 코드/프롬프트/룰북을 고치면 어차피 서버를 재시작하니 그 시점에 자연스럽게 캐시도 무효화된다.
+_review_cache: dict[str, ReviewResult] = {}
+
+
+def _document_cache_key(document_text: str) -> str:
+    return hashlib.sha256(document_text.encode("utf-8")).hexdigest()
+
+
 async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> None:
     job = await store.get_qa_job(job_id)
     if job is None:
         return
     rulebook = _load_rulebook()
-    ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
+    cache_key = _document_cache_key(document_text)
+    cached = _review_cache.get(cache_key)
+    ticker: asyncio.Task[None] | None = None
     try:
-        result = await asyncio.to_thread(_run_review_sync, document_id, document_text, rulebook)
+        if cached is not None:
+            result = cached
+        else:
+            ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
+            result = await asyncio.to_thread(_run_review_sync, document_id, document_text, rulebook)
+            _review_cache[cache_key] = result
         for issue in result.issues:
             await store.save_issue(_to_issue_record(job_id, document_text, rulebook, issue))
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.DONE, "progress": 100}))
     except Exception:  # noqa: BLE001 - a failed job must still resolve to a terminal status
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.FAILED, "progress": 100}))
     finally:
-        ticker.cancel()
+        if ticker is not None:
+            ticker.cancel()
 
 
 @router.post("/documents/{document_id}/qa-jobs", response_model=CreateQAJobResponse)
@@ -309,6 +346,10 @@ async def list_qa_job_issues(job_id: str) -> list[IssueResponse]:
     if job is None:
         raise HTTPException(status_code=404, detail="qa job not found")
     issues = await store.list_issues_for_job(job_id)
+    # 저장 순서(리뷰 파이프라인이 위계별 tier를 병렬로 처리하며 붙인 순서)가 아니라 문서 본문에서
+    # 실제로 나타나는 순서로 내려줘야, SCREEN 02의 "다음"/오버뷰가 왼쪽 원본 문서를 위→아래로 훑듯
+    # 움직인다 — 안 그러면 tier가 섞여서 클릭할 때마다 문서 위아래로 왔다갔다하게 된다.
+    issues = sorted(issues, key=lambda issue: issue.start)
     return [
         IssueResponse(
             id=issue.id,

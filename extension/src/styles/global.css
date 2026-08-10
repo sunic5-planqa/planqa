@@ -356,6 +356,13 @@ textarea {
   padding: 16px;
 }
 
+.issue-location {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
 .issue-detail-block {
   display: flex;
   flex-direction: column;

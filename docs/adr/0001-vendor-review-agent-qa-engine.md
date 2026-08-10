@@ -146,3 +146,15 @@ Document passes — sequential as of the update above — now run concurrently v
   `tier_responses`/`clone()` shape for `keyed_responses`/`isolate()`, matching the new
   `isolate_client` contract — `isolate()` now raises a clear error if called with a key but no
   `keyed_responses` configured, instead of silently falling back to the shared (racy) instance.
+
+## Update — 2026-08-11 re-sync: GA/TC/MI category-boundary prompt fix
+
+In response to alpha-test feedback filed as [planqa-agent#26](https://github.com/sunic5-planqa/planqa-agent/issues/26)
+(GA↔TC and TC↔MI misclassification), upstream landed a prompt-only fix
+([planqa-agent#27](https://github.com/sunic5-planqa/planqa-agent/pull/27)) — exactly the
+"cheapest to re-sync" category this ADR's own file-boundary/import-rewrite trade-off was meant
+to reward. `structures/bundled_screen_hybrid.py` gained a `_CATEGORY_BOUNDARY_NOTES` constant
+(GA-vs-TC and TC-vs-MI boundary explanations) inserted into both `_SCREEN_HYBRID_SYSTEM` and
+`_CONFIRM_HYBRID_SYSTEM`. Re-vendoring this was a pure copy — the only diff from upstream is the
+`planqa_review.` → `sunnic_backend.qa_engine.review_agent.` import-path rewrite this ADR already
+expects every re-sync to need; no other file touched, no test changes needed (144/144 still pass).

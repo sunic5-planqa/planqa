@@ -249,6 +249,21 @@ describe('applyIssueEdit', () => {
     const putBody = JSON.parse(putCall?.[1]?.body as string)
     expect(putBody.body.storage.value).toBe(`<p>${ISSUE.suggestion}</p>`)
   })
+
+  it('finds and replaces text that spans two separate list items with no whitespace between them', async () => {
+    // 사람 눈엔 한 문장처럼 붙어 보여도, 실제 storage HTML에서는 서로 다른 <li> 태그에 나뉘어
+    // 있고 그 사이에 공백조차 없는 경우 — 공백만 관대하게 봐주는 단순 정규식으로는 못 찾는다.
+    const oldText = '홈 UV 달성근거: 구매 전환율 필요'
+    const newText = '실제 퍼널 수치 재계산'
+    const fetchMock = stubConfluenceFetch({ duplicateBody: '<ul><li>홈 UV 달성</li><li>근거: 구매 전환율 필요</li></ul>' })
+
+    const result = await applyIssueEdit('issue-multi-li', oldText, newText)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    expect(putBody.body.storage.value).toBe(`<ul><li>${newText}</li><li></li></ul>`)
+  })
 })
 
 describe('scrollToIssue', () => {

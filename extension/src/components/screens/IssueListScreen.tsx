@@ -7,6 +7,7 @@ import { isIssueLikelyResolved } from '../../state/editValidation'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { Button } from '../common/Button'
 import { QuoteHighlightedText } from '../common/QuoteHighlightedText'
+import { formatLocationLabel } from '../../utils/locationLabel'
 
 const RESOLVED_ACTIONS = new Set(['apply', 'edit'])
 
@@ -166,7 +167,7 @@ export function IssueListScreen() {
 
         <div className="issue-detail-card">
           <p className="issue-location">
-            {issue.location}
+            {formatLocationLabel(issue.location, issue.location_number)}
             {issue.related_location && <> ↔ {issue.related_location}</>}
           </p>
 

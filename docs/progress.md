@@ -1087,3 +1087,24 @@ diffable하게 그대로 두기로 한 영역) 안의 지적이라 로컬에서 
   `review_agent/**` 안의 upstream 코드라 로컬에서 고치지 않음. `pipeline.review_document()` 건은
   실제로 유효한 지적이라 `sunic5-planqa/planqa-agent`에 이슈로 알릴지 다음에 검토.
 - 검증: 백엔드 85개 전부 통과, ruff 클린. 확장 63개 전부 통과.
+
+## 2026-08-10 — 수정 저장이 "원문에서 해당 문구를 찾지 못했습니다"로 실패하던 버그 수정
+
+사용자가 실제로 "수정 저장"을 눌렀는데 이 에러가 뜬다고 보고. 원인은 라이브 DOM에서 이슈 위치를
+찾을 때는(2026-08-06에 이미 고친 것처럼) 공백 차이에 관대한 정규식(`buildLooseTextRegex`)을 쓰는데,
+**컨플루언스에 실제로 저장하는 단계(`replaceTextAndSave`)는 여전히 완전 일치(`html.includes`)만
+체크**하고 있었던 것 — 컨플루언스 storage HTML의 줄바꿈/공백이 화면에 렌더링된 것과 완전히 같지
+않은 경우가 흔해서, 화면엔 분명히 보이는 문구인데 저장 단계에서만 못 찾는 비대칭이 있었다.
+
+- **`extension/src/content/issueOverlay.ts`**: `replaceTextAndSave`가 이제 `html.includes(oldText)`
+  대신 `buildLooseTextRegex(oldText)`로 storage HTML을 검색 — 매치 위치를 찾아 `slice`로 직접
+  이어붙여 치환(문자열 `.replace()`의 `$&`/`$1` 같은 특수 치환 패턴 해석 위험도 같이 피함). 표/목록처럼
+  문구 중간에 인라인 태그가 끼어드는 경우는 여전히 못 잡음 — 알려진 한계로 남김.
+- 검증: 신규 테스트 1개(storage HTML의 공백이 다를 때도 저장에 성공하고, 실제 PUT 바디가 정확히
+  치환됐는지) 추가. 확장 `typecheck`/`lint`/`build`/`vitest` 64개 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 DOC-001에서 이번에 "수정 저장"이 정상적으로 성공하는지 확인.
+- 인라인 서식(볼드/링크 등)이 문구 중간에 끼어드는 경우의 저장 실패는 여전히 미해결 — 필요해지면
+  storage HTML을 파싱해서 태그를 건너뛰는 매칭까지 확장을 고려할 수 있음.

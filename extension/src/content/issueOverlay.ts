@@ -162,7 +162,11 @@ function wrapIssueByLocationHeading(issue: OverlayIssue): boolean {
   const target = normalizeHeadingText(issue.location?.split('>').pop() ?? '')
   if (!target) return false
 
-  const heading = Array.from(document.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')).find(
+  // h1은 일부러 뺀다 — review-agent의 Document 위계(문서 전체를 대상으로 한 판정) 이슈는
+  // location이 곧 "문서 제목"이라서(백엔드 document.py의 _doc_title), 여길 막지 않으면 컨플루언스
+  // 페이지 자체의 제목(h1)을 감싸버려 "제목이 문제"인 것처럼 보이는 엉뚱한 하이라이트가 된다(실제
+  // 사용자 보고). 본문 소제목(h2~h6)만 유효한 폴백 대상 — 못 찾으면 하이라이트 없이 넘어간다.
+  const heading = Array.from(document.querySelectorAll<HTMLElement>('h2, h3, h4, h5, h6')).find(
     (h) => !isInsideOverlayNode(h) && normalizeHeadingText(h.textContent ?? '') === target,
   )
   if (!heading) return false

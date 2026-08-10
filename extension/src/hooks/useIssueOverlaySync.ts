@@ -42,6 +42,7 @@ export function useIssueOverlaySync(): void {
       criteria: issue.criteria,
       reason: issue.reason,
       suggestion: issue.suggestion,
+      location: issue.location,
     }))
 
     void sendToActiveTab<ShowIssueOverlayRequest, ShowIssueOverlayResponse>({

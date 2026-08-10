@@ -18,11 +18,15 @@ import type {
 // 여야 붙어서 나가므로) — 사이드패널이 APPLY_ISSUE_EDIT 요청을 보내면 여기서 처리해 응답한다.
 const HIGHLIGHT_CLASS = 'sunnic-issue-highlight'
 const RESOLVED_CLASS = 'sunnic-issue-resolved'
+const ACTIVE_CLASS = 'sunnic-issue-active'
 const TOOLTIP_CLASS = 'sunnic-issue-tooltip'
 const STYLE_ID = 'sunnic-issue-overlay-style'
 
 // Figma SCREEN 03/04의 하이라이트 박스 실측값 — 배경 채움 없이 solid 2px 보라 테두리(#b583ef)만,
-// 둥근 모서리 10px. 그라데이션이 아니다.
+// 둥근 모서리 10px. 그라데이션이 아니다. 단, "지금 오른쪽 패널에서 보고 있는 이슈"(active)만 예외로
+// 그라데이션 테두리를 줘서 여러 박스 중 어디를 보고 있는지 한눈에 띄게 한다 — border-image는
+// border-radius를 무시하는 CSS 한계가 있어서, padding-box/border-box 이중 background로 우회한다
+// (내부는 여전히 투명 — Figma 스펙 그대로 유지).
 const STYLE = `
 .${HIGHLIGHT_CLASS} {
   background: transparent;
@@ -33,6 +37,10 @@ const STYLE = `
 }
 .${HIGHLIGHT_CLASS}.${RESOLVED_CLASS} {
   border-color: #2ea043;
+}
+.${HIGHLIGHT_CLASS}.${ACTIVE_CLASS} {
+  border: 2.5px solid transparent;
+  background: linear-gradient(transparent, transparent) padding-box, linear-gradient(135deg, #c9a9ff, #ffc9e8) border-box;
 }
 .${TOOLTIP_CLASS} {
   position: fixed;
@@ -109,6 +117,66 @@ function collectTextSpans(): { fullText: string; spans: TextSpan[] } {
 const marksByIssueId = new Map<string, HTMLElement[]>()
 const issuesById = new Map<string, OverlayIssue>()
 
+let activeIssueId: string | null = null
+
+// "지금 보고 있는" 박스 하나에만 그라데이션 테두리(ACTIVE_CLASS)를 준다 — 클릭이든 오른쪽 패널
+// 네비게이션(scrollToIssue)이든 이슈 포커스가 바뀌는 모든 경로가 이걸 거친다.
+function setActiveMark(issueId: string): void {
+  if (activeIssueId && activeIssueId !== issueId) {
+    for (const mark of marksByIssueId.get(activeIssueId) ?? []) mark.classList.remove(ACTIVE_CLASS)
+  }
+  for (const mark of marksByIssueId.get(issueId) ?? []) mark.classList.add(ACTIVE_CLASS)
+  activeIssueId = issueId
+}
+
+function attachIssueMarkHandlers(mark: HTMLElement, issue: OverlayIssue): void {
+  mark.className = HIGHLIGHT_CLASS
+  mark.dataset.sunnicIssueId = issue.id
+  mark.addEventListener('click', (event) => {
+    event.stopPropagation()
+    // 이미 이 이슈의 말풍선이 떠 있는 채로 같은 박스를 다시 누르면 닫는다(토글) — 다른 이슈를
+    // 보다가 이 박스를 누른 거면 그냥 새로 연다.
+    if (activeTooltip?.dataset.sunnicForIssue === issue.id) closeTooltip()
+    else showTooltip(mark, issue)
+    setActiveMark(issue.id)
+    chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
+      // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
+    })
+  })
+}
+
+function normalizeHeadingText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+// input_text로 못 찾을 때의 최후 수단 — "정보 누락(MI)"처럼 애초에 원문에 없는 걸 지적하는 이슈는
+// 매치 대상 자체가 없어서 항상 여기로 온다(그 외 사소한 매칭 실패의 안전망 역할도 겸함). issue.location
+// (예: "6. 프로덕트 기능 > 6-1. 메인 배너 (캐러셀)")의 가장 안쪽 위계와 텍스트가 일치하는 제목(h1~h6)을
+// 찾아 그 제목 자체를 감싼다 — location은 htmlToChapterMarkdown이 만든 헤딩 텍스트 그대로라 실제
+// 문서 제목과 일치해야 정상이다. 이렇게라도 하이라이트가 있어야 "다음"으로 넘겼을 때 문서가 스크롤돼
+// 어느 부분을 고쳐야 하는지 보여줄 수 있다 — 정밀한 range/insert_range 프레임 렌더링은 아직 없음.
+function wrapIssueByLocationHeading(issue: OverlayIssue): boolean {
+  // location이 없는 이슈(예: 이 필드가 추가되기 전에 저장/캐시된 예전 데이터)가 섞여 들어와도 여기서
+  // 죽지 않게 방어한다 — 이 함수 하나가 던지면 호출부의 filter() 전체가 멈춰서, 뒤에 있던 멀쩡한
+  // 이슈들의 하이라이트까지 통째로 사라지는 사고로 이어진다(실제로 한번 겪음).
+  const target = normalizeHeadingText(issue.location?.split('>').pop() ?? '')
+  if (!target) return false
+
+  const heading = Array.from(document.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6')).find(
+    (h) => !isInsideOverlayNode(h) && normalizeHeadingText(h.textContent ?? '') === target,
+  )
+  if (!heading) return false
+
+  const mark = document.createElement('mark')
+  attachIssueMarkHandlers(mark, issue)
+  while (heading.firstChild) mark.appendChild(heading.firstChild)
+  heading.appendChild(mark)
+
+  marksByIssueId.set(issue.id, [mark])
+  issuesById.set(issue.id, issue)
+  return true
+}
+
 // issue.input_text와 일치하는 구간을 찾아 하이라이트한다. 매치가 텍스트 노드 하나에 다 들어있으면
 // <mark> 하나로 감싸고, 라벨+뱃지처럼 여러 노드에 걸쳐 있으면 겹치는 구간마다 각각 <mark>로 감싸서
 // (같은 issue id를 공유) 이어 붙은 것처럼 보이게 한다 — Range.surroundContents는 엘리먼트 경계를
@@ -116,7 +184,7 @@ const issuesById = new Map<string, OverlayIssue>()
 function wrapIssue(issue: OverlayIssue): boolean {
   const { fullText, spans } = collectTextSpans()
   const match = buildLooseTextRegex(issue.input_text).exec(fullText)
-  if (!match) return false
+  if (!match) return wrapIssueByLocationHeading(issue)
 
   const matchStart = match.index
   const matchEnd = match.index + match[0].length
@@ -132,33 +200,36 @@ function wrapIssue(issue: OverlayIssue): boolean {
     range.setEnd(span.node, overlapEnd - span.start)
 
     const mark = document.createElement('mark')
-    mark.className = HIGHLIGHT_CLASS
-    mark.dataset.sunnicIssueId = issue.id
+    attachIssueMarkHandlers(mark, issue)
     range.surroundContents(mark)
-    mark.addEventListener('click', (event) => {
-      event.stopPropagation()
-      // 이미 이 이슈의 말풍선이 떠 있는 채로 같은 박스를 다시 누르면 닫는다(토글) — 다른 이슈를
-      // 보다가 이 박스를 누른 거면 그냥 새로 연다.
-      if (activeTooltip?.dataset.sunnicForIssue === issue.id) closeTooltip()
-      else showTooltip(mark, issue)
-      chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
-        // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
-      })
-    })
     marks.push(mark)
   }
 
-  if (marks.length === 0) return false
+  if (marks.length === 0) return wrapIssueByLocationHeading(issue)
   marksByIssueId.set(issue.id, marks)
   issuesById.set(issue.id, issue)
   return true
 }
 
 let activeTooltip: HTMLElement | null = null
+let activeAnchorMark: HTMLElement | null = null
 
 function closeTooltip(): void {
   activeTooltip?.remove()
   activeTooltip = null
+  activeAnchorMark = null
+  window.removeEventListener('scroll', repositionActiveTooltip, true)
+  window.removeEventListener('resize', repositionActiveTooltip)
+}
+
+// scrollToIssue()가 scrollIntoView({behavior:'smooth'})로 스크롤을 걸어 놓고 바로 이어서 말풍선을
+// 띄우면, 그 시점의 mark 위치는 아직 스크롤 애니메이션이 끝나기 전(도착지가 아닌) 값이라 말풍선이
+// 엉뚱한 곳에 자리잡는다 — "어떤 이슈는 말풍선이 뜨는데 어떤 건 안 뜨는" 것처럼 보였던 원인. 스크롤
+// 애니메이션이 끝날 때까지 기다리는 대신, 열려 있는 동안 스크롤/리사이즈마다 위치를 계속 다시 계산해서
+// 애니메이션이 어떻게 끝나든 최종적으로는 항상 mark 바로 아래에 오도록 한다. capture:true라 컨플루언스
+// 내부의 어떤 스크롤 컨테이너(꼭 window가 아니어도)에서 스크롤이 나도 잡아낸다.
+function repositionActiveTooltip(): void {
+  if (activeTooltip && activeAnchorMark) positionNear(activeTooltip, activeAnchorMark)
 }
 
 // position:fixed 기준이라 스크롤 오프셋을 더하면 안 된다 — viewport 좌표 그대로 쓴다.
@@ -189,12 +260,24 @@ function showTooltip(mark: HTMLElement, issue: OverlayIssue): void {
   // 틀어질 수 있는데, html까지 그런 경우는 사실상 없다.
   document.documentElement.appendChild(tooltip)
   activeTooltip = tooltip
+  activeAnchorMark = mark
+  window.addEventListener('scroll', repositionActiveTooltip, true)
+  window.addEventListener('resize', repositionActiveTooltip)
 }
 
 export function applyIssueOverlay(issues: OverlayIssue[]): { matched: number; total: number } {
   ensureStyleInjected()
   clearIssueOverlay()
-  const matched = issues.filter(wrapIssue).length
+  // 이슈 하나에서 예상 못 한 에러가 나도(예: 데이터 이상) filter() 전체를 멈추지 않게 감싼다 —
+  // 그러지 않으면 그 이슈 뒤에 있는 멀쩡한 이슈들까지 전부 하이라이트가 안 그려진다.
+  const matched = issues.filter((issue) => {
+    try {
+      return wrapIssue(issue)
+    } catch (error) {
+      console.warn('[SunniC] 이슈 하이라이트 실패:', issue.id, error)
+      return false
+    }
+  }).length
   return { matched, total: issues.length }
 }
 
@@ -202,6 +285,7 @@ export function clearIssueOverlay(): void {
   closeTooltip()
   marksByIssueId.clear()
   issuesById.clear()
+  activeIssueId = null
   for (const mark of Array.from(document.querySelectorAll(`.${HIGHLIGHT_CLASS}`))) {
     const parent = mark.parentNode
     if (!parent) continue
@@ -229,9 +313,108 @@ function extractPageId(url: string): string | null {
 
 type ApplyResult = { ok: true } | { ok: false; error: string }
 
+// <textarea>.innerHTML → .value 트릭으로 named/numeric HTML 엔티티를 브라우저가 아는 그대로
+// 디코딩한다 — &rarr; 같은 엔티티를 전부 나열한 표를 직접 관리하지 않아도 된다.
+const entityDecoder = document.createElement('textarea')
+function decodeHtmlEntity(raw: string): string {
+  entityDecoder.innerHTML = raw
+  return entityDecoder.value
+}
+
+// storage HTML을 한 번 훑으면서 태그(<...>)는 건너뛰고 텍스트만 이어붙이되, 디코딩된 글자 하나하나가
+// 원본 문자열의 어느 바이트 구간에서 왔는지 같이 기록한다. 예전엔 "디코딩한 텍스트를 원본 문자열
+// 안에서 다시 찾기"(indexOf) 방식이었는데, &rarr; 처럼 엔티티로 인코딩된 문자가 매치 구간 안에 하나만
+// 있어도 디코딩된 문자가 원본에 그대로 존재하지 않아 못 찾는 문제가 있었다(실제 DOC-001에서 확인).
+// 이렇게 스캔과 동시에 오프셋을 기록해두면 나중엔 역산만 하면 되니 그 문제 자체가 생기지 않는다 —
+// 목록/표처럼 문구가 여러 엘리먼트(태그)에 걸친 경우도 태그를 그냥 건너뛰는 것만으로 자연히 처리된다.
+function decodeStorageHtmlText(html: string): { fullText: string; rawRanges: Array<[number, number]> } {
+  let fullText = ''
+  const rawRanges: Array<[number, number]> = []
+  let i = 0
+  while (i < html.length) {
+    const ch = html[i]
+    if (ch === '<') {
+      const close = html.indexOf('>', i)
+      i = close === -1 ? html.length : close + 1
+      continue
+    }
+    if (ch === '&') {
+      const semi = html.indexOf(';', i)
+      if (semi !== -1 && semi - i <= 32) {
+        const raw = html.slice(i, semi + 1)
+        const decoded = decodeHtmlEntity(raw)
+        if (decoded !== raw) {
+          for (const decodedChar of decoded) {
+            fullText += decodedChar
+            rawRanges.push([i, semi + 1])
+          }
+          i = semi + 1
+          continue
+        }
+      }
+    }
+    fullText += ch
+    rawRanges.push([i, i + 1])
+    i += 1
+  }
+  return { fullText, rawRanges }
+}
+
+// storage HTML에서 oldText(공백은 느슨하게)를 찾아 newText로 치환한다. 매치 구간을 raw 오프셋으로
+// 역산한 뒤, 그 구간 [rawStart, rawEnd) 안을 다시 한번 훑어서 태그(<strong>, </li> 등)는 전부 그대로
+// 보존하고 실제 매치된 텍스트만 한 곳에 newText로 몰아 넣는다 — [rawStart, rawEnd)를 통째로 잘라내고
+// newText로 바꿔버리면, <strong>A</strong><br>B처럼 매치가 태그 경계에 걸친 경우 여는 태그만 남고
+// 닫는 태그가 같이 지워져서 마크업이 깨진다.
+function replaceInStorageHtml(html: string, oldText: string, newText: string): string | null {
+  const { fullText, rawRanges } = decodeStorageHtmlText(html)
+  const match = buildLooseTextRegex(oldText).exec(fullText)
+  if (!match || match[0].length === 0) return null
+
+  const matchStart = match.index
+  const matchEnd = match.index + match[0].length
+  const rawStart = rawRanges[matchStart][0]
+  const rawEnd = rawRanges[matchEnd - 1][1]
+
+  let middle = ''
+  let inserted = false
+  let i = rawStart
+  while (i < rawEnd) {
+    if (html[i] === '<') {
+      const close = html.indexOf('>', i)
+      const tagEnd = close === -1 ? rawEnd : Math.min(close + 1, rawEnd)
+      middle += html.slice(i, tagEnd)
+      i = tagEnd
+      continue
+    }
+    if (!inserted) {
+      middle += newText
+      inserted = true
+    }
+    i += 1
+  }
+  if (!inserted) middle += newText
+
+  return html.slice(0, rawStart) + middle + html.slice(rawEnd)
+}
+
+// 매칭이 끝내 실패했을 때, 왜 실패했는지 다음 조사를 위해 콘솔에 실제 원본 조각을 남긴다 — 여기서
+// 계속 실패한다는 보고가 반복되는데 여기 로그가 없으면 실제 storage HTML이 정확히 어떻게 생겼는지
+// 확인할 방법이 없다(엔티티 인코딩, 예상 못 한 태그 등 원격으로는 추측만 가능한 경우들 때문).
+function logStorageMatchFailure(html: string, oldText: string): void {
+  const probe = oldText.slice(0, 15)
+  const probeIndex = html.indexOf(probe)
+  if (probeIndex === -1) {
+    console.warn('[SunniC] 원문 앞부분조차 storage HTML에서 찾지 못함:', { probe, oldTextLength: oldText.length })
+    return
+  }
+  const context = html.slice(Math.max(0, probeIndex - 20), probeIndex + oldText.length + 60)
+  console.warn('[SunniC] 원문 앞부분은 찾았지만 전체 매칭 실패. oldText와 실제 주변 HTML을 비교해보세요:', {
+    oldText,
+    surroundingHtml: context,
+  })
+}
+
 // pageId가 가리키는 페이지의 body.storage에서 oldText → newText로 문자열 치환한 뒤 PUT으로 저장한다.
-// 표/목록처럼 렌더링 시 텍스트가 변형되는 구간은 storage HTML에 그대로 없을 수 있어 실패 처리하고,
-// 문서를 깨뜨리느니 아무것도 안 하는 쪽을 택한다.
 async function replaceTextAndSave(pageId: string, oldText: string, newText: string): Promise<ApplyResult> {
   const getRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=body.storage,version`, {
     credentials: 'include',
@@ -244,7 +427,11 @@ async function replaceTextAndSave(pageId: string, oldText: string, newText: stri
     body: { storage: { value: string } }
   }
   const html = data.body.storage.value
-  if (!html.includes(oldText)) return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
+  const updatedHtml = replaceInStorageHtml(html, oldText, newText)
+  if (updatedHtml === null) {
+    logStorageMatchFailure(html, oldText)
+    return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
+  }
 
   const putRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}`, {
     method: 'PUT',
@@ -254,7 +441,7 @@ async function replaceTextAndSave(pageId: string, oldText: string, newText: stri
       version: { number: data.version.number + 1 },
       title: data.title,
       type: 'page',
-      body: { storage: { value: html.replace(oldText, newText), representation: 'storage' } },
+      body: { storage: { value: updatedHtml, representation: 'storage' } },
     }),
   })
   if (!putRes.ok) return { ok: false, error: `저장에 실패했습니다 (${putRes.status})` }
@@ -306,6 +493,20 @@ async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: tru
   return { ok: true, pageId: created.id }
 }
 
+// 저장이 실제로 반영되는 곳(복제본)과 지금 보고 있는 화면(원본)이 다르므로, 저장 성공 후에도 그냥
+// 두면 화면엔 여전히 고치기 전 원문이 남아있어 사용자가 "진짜 반영됐나?" 헷갈린다. 그래서 성공하면
+// 왼쪽 문서에서도 그 자리를 새 텍스트로 덮어써서 눈으로 바로 확인되게 한다 — 실제 저장 대상(복제본)과
+// 무관하게 순수 로컬 DOM 표시일 뿐이다. 매치가 여러 엘리먼트에 걸쳐 나뉜 경우(라벨+뱃지 등) 전부를
+// 정확히 나눠 넣을 방법이 없어 첫 mark에 새 텍스트를 몰아넣고 나머지는 비워 하나로 합친다.
+function overwriteMarkText(issueId: string, newText: string): void {
+  const marks = marksByIssueId.get(issueId)
+  if (!marks || marks.length === 0) return
+  const [first, ...rest] = marks
+  first.textContent = newText
+  for (const extra of rest) extra.remove()
+  marksByIssueId.set(issueId, [first])
+}
+
 export async function applyIssueEdit(issueId: string, oldText: string, newText: string): Promise<ApplyIssueEditResponse> {
   const originalPageId = extractPageId(location.href)
   if (!originalPageId) return { ok: false, error: '컨플루언스 문서 URL이 아니라 복제본을 만들 수 없습니다.' }
@@ -316,6 +517,7 @@ export async function applyIssueEdit(issueId: string, oldText: string, newText: 
   const result = await replaceTextAndSave(session.pageId, oldText, newText)
   if (!result.ok) return result
 
+  overwriteMarkText(issueId, newText)
   for (const mark of marksByIssueId.get(issueId) ?? []) mark.classList.add(RESOLVED_CLASS)
   closeTooltip()
   return { ok: true }
@@ -330,6 +532,7 @@ export function scrollToIssue(issueId: string): boolean {
   if (!mark || !issue) return false
   mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
   showTooltip(mark, issue)
+  setActiveMark(issueId)
   return true
 }
 

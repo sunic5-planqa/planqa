@@ -10,7 +10,12 @@ import type {
 } from './messages'
 
 export function extractPageId(url: string): string | null {
-  const pathMatch = url.match(/\/pages\/(\d+)/)
+  // "/pages/" 바로 뒤에 숫자가 오는 형태(보기 모드) 외에, 새 편집기의 초안 URL은
+  // "/pages/edit-v2/{id}"처럼 모드 이름이 한 단계 더 끼어든다(실사용자가 이 URL에서 겪은 실제
+  // 버그) — 영숫자/하이픈으로 된 모드 세그먼트 하나는 건너뛰도록 느슨화한다("v2"처럼 숫자가 섞인
+  // 모드명도 있어 [a-z-]+로는 부족함). "/pages/{id}/title"처럼 모드 세그먼트가 아예 없는 경우엔
+  // 정규식 백트래킹이 이 선택적 그룹을 건너뛰고 바로 (\d+)로 매칭한다.
+  const pathMatch = url.match(/\/pages\/(?:[\w-]+\/)?(\d+)/)
   if (pathMatch) return pathMatch[1]
 
   const queryMatch = url.match(/[?&]pageId=(\d+)/)

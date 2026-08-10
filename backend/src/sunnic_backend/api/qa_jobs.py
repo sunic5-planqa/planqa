@@ -197,14 +197,31 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
     return review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
 
 
+# 이슈 목록을 "문서 본문 순서"로 보여주려면(SCREEN 02 "다음"/오버뷰가 왼쪽 원본을 위→아래로 훑도록)
+# 각 이슈가 document_text 안 어디쯤인지가 필요하다. input_text로 못 찾는 경우(정보 누락=MI 이슈는
+# 애초에 원문에 없는 걸 지적하니 input_text가 비어있는 게 정상)엔 그 이슈가 속한 위계(location)의
+# 제목이라도 찾아 대략적인 위치로 쓴다 — 그마저 못 찾으면 맨 앞(0)이 아니라 맨 뒤로 보낸다. 맨
+# 앞으로 잘못 보내면 실제로는 문서 후반부 이슈인데 항상 첫 번째로 나와버려서 순서 왜곡이 더 커진다.
+def _issue_start(document_text: str, input_text: str, location: str) -> int:
+    if input_text:
+        start = document_text.find(input_text)
+        if start != -1:
+            return start
+    heading = location.rsplit(">", 1)[-1].strip()
+    if heading:
+        idx = document_text.find(heading)
+        if idx != -1:
+            return idx
+    return len(document_text)
+
+
 def _to_issue_record(job_id: str, document_text: str, rulebook: RuleBook, issue: ReviewIssue) -> IssueRecord:
     rule = rulebook.rule(issue.rule_id)
     criteria = _korean_label(rule.category_label) if rule else issue.rule_id
     related_location = issue.related_location
     frame_type = _frame_type(rule.category, related_location) if rule else FrameType.OBJECT
     input_text = issue.original_text or ""
-    start = document_text.find(input_text) if input_text else -1
-    start = max(start, 0)
+    start = _issue_start(document_text, input_text, issue.location)
     return IssueRecord(
         id=str(uuid.uuid4()),
         job_id=job_id,
@@ -309,6 +326,10 @@ async def list_qa_job_issues(job_id: str) -> list[IssueResponse]:
     if job is None:
         raise HTTPException(status_code=404, detail="qa job not found")
     issues = await store.list_issues_for_job(job_id)
+    # 저장 순서(리뷰 파이프라인이 위계별 tier를 병렬로 처리하며 붙인 순서)가 아니라 문서 본문에서
+    # 실제로 나타나는 순서로 내려줘야, SCREEN 02의 "다음"/오버뷰가 왼쪽 원본 문서를 위→아래로 훑듯
+    # 움직인다 — 안 그러면 tier가 섞여서 클릭할 때마다 문서 위아래로 왔다갔다하게 된다.
+    issues = sorted(issues, key=lambda issue: issue.start)
     return [
         IssueResponse(
             id=issue.id,

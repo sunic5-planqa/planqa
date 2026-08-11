@@ -72,6 +72,9 @@ export interface ApplyIssueEditRequest {
   issueId: string
   oldText: string
   newText: string
+  // 정보 누락(MI)형 이슈는 치환할 원문 자체가 없다 — 'insert'면 oldText를 무시하고 issue.location이
+  // 가리키는 섹션 제목 바로 아래에 newText를 새 문단으로 끼워 넣는다. 생략하면 기존 치환 동작.
+  mode?: 'replace' | 'insert'
 }
 
 export type ApplyIssueEditResponse = { ok: true } | { ok: false; error: string }

@@ -22,6 +22,7 @@ const RESOLVED_CLASS = 'sunnic-issue-resolved'
 const ACTIVE_CLASS = 'sunnic-issue-active'
 const TOOLTIP_CLASS = 'sunnic-issue-tooltip'
 const STYLE_ID = 'sunnic-issue-overlay-style'
+const INSERTED_CLASS = 'sunnic-issue-inserted'
 
 // Figma SCREEN 03/04의 하이라이트 박스 실측값 — 배경 채움 없이 solid 2px 보라 테두리(#b583ef)만,
 // 둥근 모서리 10px. 그라데이션이 아니다. 단, "지금 오른쪽 패널에서 보고 있는 이슈"(active)만 예외로
@@ -42,6 +43,21 @@ const STYLE = `
 .${HIGHLIGHT_CLASS}.${ACTIVE_CLASS} {
   border: 2.5px solid transparent;
   background: linear-gradient(transparent, transparent) padding-box, linear-gradient(135deg, #c9a9ff, #ffc9e8) border-box;
+}
+.${INSERTED_CLASS} {
+  border: 2px solid #2ea043;
+  border-radius: 10px;
+  padding: 6px 10px;
+  margin: 6px 0;
+  background: rgba(46, 160, 67, 0.06);
+}
+.${INSERTED_CLASS}::before {
+  content: "✓ 삽입됨(복제본에 저장됨)";
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: #2ea043;
+  margin-bottom: 3px;
 }
 .${TOOLTIP_CLASS} {
   position: fixed;
@@ -672,6 +688,22 @@ function overwriteMarkText(issueId: string, newText: string): void {
   marksByIssueId.set(issueId, [first])
 }
 
+// 삽입 모드는 overwriteMarkText처럼 기존 텍스트를 덮어쓸 대상이 없다(헤딩 자체를 바꾸면 안 됨) —
+// 대신 저장된 것과 같은 문단을 헤딩 바로 뒤에 하나 더 그려 넣어서, 저장이 실제로 반영됐다는 걸
+// 원본 페이지에서도 눈으로 확인할 수 있게 한다(치환 모드의 시각 피드백과 대칭). 실제 저장
+// 대상(복제본)과 무관한 순수 로컬 DOM 표시일 뿐이다. mark가 속한 헤딩을 못 찾으면(예상 밖의 DOM
+// 구조) 조용히 건너뛴다 — 저장 자체는 이미 성공했으니 이 표시 하나 실패했다고 에러 취급할 일은
+// 아니다.
+function insertLiveParagraphAfterHeading(issueId: string, newText: string): void {
+  const mark = marksByIssueId.get(issueId)?.[0]
+  const heading = mark?.closest('h2, h3, h4, h5, h6')
+  if (!heading) return
+  const p = document.createElement('p')
+  p.className = INSERTED_CLASS
+  p.textContent = newText
+  heading.insertAdjacentElement('afterend', p)
+}
+
 export async function applyIssueEdit(
   issueId: string,
   oldText: string,
@@ -697,8 +729,9 @@ export async function applyIssueEdit(
 
   // 삽입 모드는 헤딩 자체의 텍스트를 바꾸는 게 아니라 그 아래에 새 문단을 끼워 넣는 것이라, 헤딩을
   // 감싸고 있던 mark의 표시 텍스트를 newText로 덮어쓰면 "제목이 이렇게 바뀐 것"처럼 오해를 준다 —
-  // 삽입 모드에서는 완료 표시(테두리)만 하고 텍스트는 그대로 둔다.
-  if (mode !== 'insert') overwriteMarkText(issueId, newText)
+  // 대신 헤딩 뒤에 삽입된 문단을 실제로 그려 넣어서 저장됐다는 걸 확인시킨다.
+  if (mode === 'insert') insertLiveParagraphAfterHeading(issueId, newText)
+  else overwriteMarkText(issueId, newText)
   for (const mark of marksByIssueId.get(issueId) ?? []) mark.classList.add(RESOLVED_CLASS)
   closeTooltip()
   return { ok: true }

@@ -16,6 +16,7 @@ from sunnic_backend.models.issue import Issue as IssueRecord
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
 from sunnic_backend.qa_engine.review_agent.document import parse_document
 from sunnic_backend.qa_engine.review_agent.llm.anthropic import AnthropicClient
+from sunnic_backend.qa_engine.review_agent.llm.gemini import GeminiClient
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
     RuleBook,
@@ -322,13 +323,13 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
     # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
     # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
     #
-    # bundled_screen_hybrid.review_document() (2026-08-10 재벤더링) calls screen_llm/confirm_llm
-    # directly and sequentially (Paragraph pass, then Document pass) — unlike the old
-    # category_screen structure, nothing here runs concurrently, so LLMClient.clone() is never
-    # called and the _ScopedClient workaround built for it (see docs/adr/0001-...) is gone —
-    # explicit api_key= is threaded straight through the constructor, same as before.
-    # 1차 스크리닝(저비용, over-flag 의도) = Haiku, 2차 정밀검증(고비용, 정밀) = Sonnet.
-    screen_llm = AnthropicClient(model=settings.sunnic_haiku_model, api_key=settings.anthropic_api_key)
+    # bundled_screen_hybrid.review_document()이 screen_llm/confirm_llm을 각각 한 번씩 받는
+    # 구조라, GeminiClient가 review_agent의 LLMClient 프로토콜(complete_json)만 만족하면 그대로
+    # 끼워 넣을 수 있다 — instrumentation.isolate_client()도 GeminiClient에 .isolate()가 따로
+    # 없어서 AnthropicClient와 똑같이 copy.copy() + 새 usage 리스트로 안전하게 격리된다(코드 변경
+    # 불필요). 1차 스크리닝(저비용, over-flag 의도) = Gemini Flash-Lite, 2차 정밀검증(고비용,
+    # 정밀) = Sonnet은 그대로.
+    screen_llm = GeminiClient(model=settings.sunnic_gemini_model, api_keys=settings.gemini_api_keys)
     confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
     result = review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
 

@@ -28,16 +28,16 @@ _CHUNK_ZERO_RE = re.compile(r"\[0\] \([^)]*\)\n(.+?)(?:\n\n|\Z)", re.DOTALL)
 
 
 class FakeAnthropicClient:
-    """Stands in for review_agent's real AnthropicClient — no network call, just enough of a
-    contract (constructor kwargs + complete_json) to drive the real
-    bundled_screen_hybrid/qa_jobs wiring end to end without a live API key."""
+    """Stands in for review_agent's real AnthropicClient OR GeminiClient — no network call,
+    just enough of a contract (constructor kwargs + complete_json) to drive the real
+    bundled_screen_hybrid/qa_jobs wiring end to end without a live API key. Accepts arbitrary
+    keyword args (**_kwargs) so the same double works whether it's standing in for
+    AnthropicClient(model=, api_key=, ...) or GeminiClient(model=, api_keys=, ...) — qa_jobs
+    now uses Gemini for screen_llm and Anthropic for confirm_llm, and both need a double."""
 
-    def __init__(
-        self, model: str | None = None, api_key: str | None = None, temperature: float = 0.0, max_tokens: int = 8192
-    ) -> None:
+    def __init__(self, *, model: str | None = None, temperature: float = 0.0, **_kwargs: object) -> None:
         self.model = model
         self._temperature = temperature
-        self._max_tokens = max_tokens
         self.calls: list[tuple[str, str]] = []
         self.usage: list[CallStats] = []
 
@@ -87,6 +87,7 @@ class FakeAnthropicClient:
 
 async def test_qa_job_runs_pipeline_and_produces_mapped_issues(monkeypatch) -> None:
     monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -142,6 +143,7 @@ async def test_qa_job_marks_failed_when_llm_client_cannot_be_built(monkeypatch) 
             raise RuntimeError("no Anthropic API key configured")
 
     monkeypatch.setattr(qa_jobs, "AnthropicClient", BrokenAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -260,6 +262,7 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
 
     monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
     monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -462,6 +465,7 @@ def test_run_review_sync_drops_ae_false_positive_but_keeps_other_issues(monkeypa
 
     monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
     monkeypatch.setattr(qa_jobs, "AnthropicClient", _FakeConfirmClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     rulebook = qa_jobs._load_rulebook()
     result = qa_jobs._run_review_sync("DOC-TEST", _TEST_DOCUMENT, rulebook)
@@ -497,6 +501,7 @@ def test_run_review_sync_drops_mi_false_positive_but_keeps_other_issues(monkeypa
 
     monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
     monkeypatch.setattr(qa_jobs, "AnthropicClient", _FakeConfirmClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     rulebook = qa_jobs._load_rulebook()
     result = qa_jobs._run_review_sync("DOC-TEST", _TEST_DOCUMENT, rulebook)
@@ -602,6 +607,7 @@ def test_build_heading_numbers_numbers_sub_headings_within_each_unit() -> None:
 
 async def test_qa_job_issues_include_location_number_computed_from_heading_order(monkeypatch) -> None:
     monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     document = "# 제목\n\n## 배경\n\n간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원.\n"
 

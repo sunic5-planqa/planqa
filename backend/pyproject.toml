@@ -32,4 +32,4 @@ asyncio_mode = "auto"
 [tool.ruff.lint.per-file-ignores]
 # Vendored as-is from sunic5-planqa/planqa-agent (feature/review-agent) — keep it a diffable
 # copy of upstream rather than reshaping it to satisfy rules upstream doesn't enforce.
-"src/sunnic_backend/qa_engine/review_agent/**" = ["B023", "C408", "UP047"]
+"src/sunnic_backend/qa_engine/review_agent/**" = ["B023", "C408", "UP047", "I001"]

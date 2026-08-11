@@ -158,3 +158,32 @@ to reward. `structures/bundled_screen_hybrid.py` gained a `_CATEGORY_BOUNDARY_NO
 `_CONFIRM_HYBRID_SYSTEM`. Re-vendoring this was a pure copy — the only diff from upstream is the
 `planqa_review.` → `sunnic_backend.qa_engine.review_agent.` import-path rewrite this ADR already
 expects every re-sync to need; no other file touched, no test changes needed (144/144 still pass).
+
+## Update — 2026-08-12 re-sync: vendor `llm/gemini.py`, switch screen_llm to Gemini Flash-Lite
+
+User request to move the screening (1차) pass from Claude Haiku to Gemini Flash-Lite for cost —
+`llm/gemini.py` still existed upstream (never deleted there, only unused/skipped on our side
+per this ADR's original entry) as a `GeminiClient` implementing the same `LLMClient.complete_json`
+protocol as `AnthropicClient`, so this was a straight vendor rather than new code. `google-genai`
+was already a `pyproject.toml` dependency and `config.py` already parsed `GEMINI_API_KEYS` — both
+leftover scaffolding from before this backend vendored review-agent at all (see this ADR's
+original Context) — so the only new setting needed was `SUNNIC_GEMINI_MODEL` (default
+`gemini-flash-lite-latest`, matching upstream's own `DEFAULT_MODEL`).
+
+- `GeminiClient` has no `.isolate()` method, so `instrumentation.isolate_client()`'s duck-typed
+  fallback (`copy.copy()` + fresh `usage` list) handles it automatically — same zero-code-change
+  outcome as `AnthropicClient` got when concurrent dispatch was added (see the 2026-08-10 update
+  above). `GeminiClient`'s own `_current`/`_current_lock` (multi-key round-robin state) are
+  deliberately shared-by-reference across that shallow copy by design (see the class's own
+  comment) — nothing about isolate_client needed to accommodate this specially.
+- `qa_jobs.py`: `screen_llm` now `GeminiClient(model=settings.sunnic_gemini_model,
+  api_keys=settings.gemini_api_keys)`; `confirm_llm` (Sonnet, 2차) unchanged. `_verify_mi_finding`/
+  `_verify_ae_finding`/`/issues/similarity-check` still use Anthropic Haiku — those are separate
+  verification features this request didn't touch, not part of the review_document screen/confirm
+  pipeline.
+- `render.yaml` gained `GEMINI_API_KEYS` (secret, `sync: false`) and `SUNNIC_GEMINI_MODEL` (fixed
+  value) — production still needs this key set manually in the Render dashboard, same as
+  `ANTHROPIC_API_KEY` was.
+- Diff from upstream: import-path rewrite only (now covered by the `I001` per-file-ignore added
+  alongside `B023`/`C408`/`UP047`, since upstream's own import-sort convention doesn't match ours
+  and reformatting it would fight future re-vendors, same reasoning as the existing ignores).

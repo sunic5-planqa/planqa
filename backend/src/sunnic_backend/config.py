@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     sunnic_haiku_model: str = "claude-haiku-4-5"
     sunnic_sonnet_model: str = "claude-sonnet-5"
+    sunnic_gemini_model: str = "gemini-flash-lite-latest"
     gemini_api_keys: Annotated[list[str], NoDecode] = []
     allowed_origins: Annotated[list[str], NoDecode] = []
 

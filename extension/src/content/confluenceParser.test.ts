@@ -52,6 +52,29 @@ describe('htmlToChapterMarkdown', () => {
     expect(result).toBe('# 제목\n\n- 항목 하나\n- 항목 둘')
   })
 
+  it('flattens a nested list without merging or duplicating the sub-items', () => {
+    // 실사용 중 확인된 버그(NxEF 쿠폰/프로모션 PRD, "3. 성공 지표") — <li> 안에 <ul>이 중첩되면
+    // querySelectorAll('li')가 하위 li까지 한 번에 다 가져와서: (1) 상위 li.textContent가 자기
+    // 텍스트+하위 목록 텍스트를 구분자 없이 뭉개고, (2) 그 하위 항목들이 별도 줄로 또 한 번
+    // 나와서 실제 문서엔 없는 진짜 중복을 만들어냈다. QA 엔진이 그 가짜 중복을 "불필요한 중복
+    // (RD)"으로 정확히 잡아내도, 절반은 라이브 문서에 없는 텍스트라 저장 단계에서 못 찾았다.
+    const html =
+      '<ul><li><p>쿠폰 적용 주문의 구매 전환율이 미적용 주문 대비 1.3배 이상</p>' +
+      '<ul><li><p>측정 기간: 쿠폰 캠페인 시작일로부터 30일</p></li>' +
+      '<li><p>산정 방법: 쿠폰 적용 고객 중 구매 완료 고객 비율을 비교</p></li></ul></li>' +
+      '<li><p>발급된 쿠폰의 실제 사용율 30% 이상</p></li></ul>'
+
+    const result = htmlToChapterMarkdown('제목', html)
+
+    expect(result).toBe(
+      '# 제목\n\n' +
+        '- 쿠폰 적용 주문의 구매 전환율이 미적용 주문 대비 1.3배 이상\n' +
+        '- 측정 기간: 쿠폰 캠페인 시작일로부터 30일\n' +
+        '- 산정 방법: 쿠폰 적용 고객 중 구매 완료 고객 비율을 비교\n' +
+        '- 발급된 쿠폰의 실제 사용율 30% 이상',
+    )
+  })
+
   it('renders table rows as markdown table lines instead of concatenating every cell', () => {
     // 분기가 없으면 표 전체 textContent가 셀 구분자 하나 없이 그냥 붙어버려서(목록의 ", "
     // 이어붙이기보다 더 심함) 실제 문서엔 없는 문구가 만들어졌었다.

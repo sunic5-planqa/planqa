@@ -23,7 +23,7 @@ const deployedApiOrigin = apiBaseUrl ? [`${apiBaseUrl}/*`] : []
 
 export default defineManifest({
   manifest_version: 3,
-  name: '써니C 기획서 품질 검증 도우미',
+  name: '똑독 ㅣ 서비스 기획서 품질 검증 도우미',
   version: pkg.version,
   description: '기획서들의 검토 기준과 프로세스를 일관되고 통일시키는 에이전트 서비스',
   icons: {

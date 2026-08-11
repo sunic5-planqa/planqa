@@ -104,7 +104,12 @@ function buildLooseTextRegex(input: string): RegExp {
   // 구분자가 실제 DOM/저장 HTML엔 아예 없을 수도 있어서, 파이프 양옆 공백까지 같이 선택적으로
   // 만들어야 한다(따로 처리하면 "\s+ \s* \s+"처럼 여전히 공백 1개 이상을 강제하게 된다).
   const loosened = escaped.replace(/\s*\\\|\s*/g, '\\s*')
-  return new RegExp(loosened.replace(/\s+/g, '\\s+'))
+  // 줄바꿈 경계(예: 서로 다른 <li> 항목을 이어붙여 인용한 경우)는 0개 이상 공백으로 느슨화한다 —
+  // 인접한 블록 요소 사이에 실제 DOM/저장 HTML엔 공백 문자가 아예 없을 수도 있다(파이프 케이스와
+  // 같은 이유). 문장 내부의 일반 공백은 최소 1개는 있다고 보고 그대로 \s+로 둔다 — 순서가 중요:
+  // 줄바꿈을 먼저 \s*로 바꿔야 그 문자가 뒤 단계의 일반 공백 처리(\s+)에 다시 걸리지 않는다.
+  const withLooseLineBreaks = loosened.replace(/\n/g, '\\s*')
+  return new RegExp(withLooseLineBreaks.replace(/[ \t]+/g, '\\s+'))
 }
 
 interface TextSpan {

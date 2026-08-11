@@ -179,6 +179,24 @@ describe('applyIssueOverlay', () => {
     expect(result).toEqual({ matched: 1, total: 1 })
   })
 
+  it('matches a multi-bullet input_text even when adjacent <li> elements have no whitespace between them', () => {
+    // 실사용 중 확인된 버그: 모델이 여러 불릿 줄을 통째로 인용하면 input_text에 줄바꿈이 남는데
+    // (불릿 접두사 "- "는 걷어내도), 그 줄바꿈을 \s+(공백 1개 이상)로만 느슨화하면 실제 <li> 사이에
+    // 공백 문자가 전혀 없는 문서에서는 여전히 매칭이 실패했다.
+    document.body.innerHTML =
+      '<main><ul><li>쿠폰 적용 주문의 구매 확정 여부와 무관하게 즉시 사용 처리한다</li>' +
+      '<li>쿠폰 사용 후 주문이 취소되면 쿠폰을 복원하지 않는다</li></ul></main>'
+    const issue: OverlayIssue = {
+      ...ISSUE,
+      input_text:
+        '- 쿠폰 적용 주문의 구매 확정 여부와 무관하게 즉시 사용 처리한다\n- 쿠폰 사용 후 주문이 취소되면 쿠폰을 복원하지 않는다',
+    }
+
+    const result = applyIssueOverlay([issue])
+
+    expect(result).toEqual({ matched: 1, total: 1 })
+  })
+
   it('wraps every matching issue at once, not just one', () => {
     document.body.innerHTML =
       '<main><p>간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원 안내.</p>' +
@@ -450,6 +468,29 @@ describe('applyIssueEdit', () => {
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
     const putBody = JSON.parse(putCall?.[1]?.body as string)
     expect(putBody.body.storage.value).toBe(`<ul><li>${newText}</li></ul>`)
+  })
+
+  it('finds and replaces a multi-bullet oldText even when adjacent <li> elements have no whitespace between them', async () => {
+    // 실사용 중 확인된 저장 실패 — 여러 불릿을 통째로 인용한 oldText(줄바꿈 포함, 219자)가 실제
+    // storage HTML에서 못 찾아져 "원문에서 해당 문구를 찾지 못했습니다"로 실패했다. 원인은 위
+    // applyIssueOverlay 케이스와 동일(줄바꿈 경계를 \s+로만 느슨화해서 <li> 사이 공백이 아예 없는
+    // 문서를 못 맞춤).
+    const oldText =
+      '- 쿠폰 적용 주문의 구매 확정 여부와 무관하게 즉시 사용 처리한다\n- 쿠폰 사용 후 주문이 취소되면 쿠폰을 복원하지 않는다'
+    const newText = '쿠폰 사용 정책을 명확히 재정의한 문구'
+    const fetchMock = stubConfluenceFetch({
+      duplicateBody:
+        '<ul><li>쿠폰 적용 주문의 구매 확정 여부와 무관하게 즉시 사용 처리한다</li>' +
+        '<li>쿠폰 사용 후 주문이 취소되면 쿠폰을 복원하지 않는다</li></ul>',
+    })
+
+    const result = await applyIssueEdit('issue-multi-bullet', oldText, newText)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string) as { body: { storage: { value: string } } }
+    expect(putBody.body.storage.value).toContain(newText)
+    expect(putBody.body.storage.value).not.toContain('쿠폰 적용 주문의 구매 확정')
   })
 
   it('finds text split by a <strong> close tag and a <br> inside one <p> (real DOC-001 shape)', async () => {

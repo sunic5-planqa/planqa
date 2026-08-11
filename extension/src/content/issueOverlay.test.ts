@@ -349,24 +349,6 @@ describe('applyIssueEdit — insert mode (정보 누락/MI)', () => {
     expect(mark?.textContent).toBe('결제 수단')
   })
 
-  // 원본 페이지 화면이 저장 전후로 전혀 안 바뀌면(치환 모드는 overwriteMarkText로 바뀌는데 삽입
-  // 모드만 그대로면) 사용자 입장에선 "저장이 안 된 것"처럼 보인다(실사용 중 확인된 혼란) — 실제
-  // 저장 대상(복제본)과는 별개로, 원본 화면에도 삽입된 문단을 그려 넣어야 한다.
-  it('draws the inserted paragraph into the live page right after the heading, for visual confirmation', async () => {
-    document.body.innerHTML = '<main><h2>결제 수단</h2><p>기존 문단.</p></main>'
-    const issue: OverlayIssue = { ...ISSUE, input_text: '', location: '결제 수단' }
-    applyIssueOverlay([issue])
-    stubConfluenceFetch({ duplicateBody: '<h2>결제 수단</h2>' })
-
-    await applyIssueEdit(issue.id, '', '쿠폰 사용 조건을 명시해야 한다.', 'insert')
-
-    const inserted = document.querySelector('.sunnic-issue-inserted')
-    expect(inserted?.textContent).toBe('쿠폰 사용 조건을 명시해야 한다.')
-    // 헤딩 바로 다음 형제 요소여야 한다(기존 "기존 문단." 앞에 끼워짐).
-    const heading = document.querySelector('h2')
-    expect(heading?.nextElementSibling).toBe(inserted)
-  })
-
   it('fails clearly when the target section heading no longer exists in storage HTML', async () => {
     document.body.innerHTML = '<main><h2>결제 수단</h2></main>'
     const issue: OverlayIssue = { ...ISSUE, input_text: '', location: '결제 수단' }

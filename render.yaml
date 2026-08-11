@@ -10,9 +10,13 @@ services:
     envVars:
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: GEMINI_API_KEYS
+        sync: false
       - key: ALLOWED_ORIGINS
         sync: false
       - key: SUNNIC_HAIKU_MODEL
         value: claude-haiku-4-5
       - key: SUNNIC_SONNET_MODEL
         value: claude-sonnet-5
+      - key: SUNNIC_GEMINI_MODEL
+        value: gemini-flash-lite-latest

@@ -19,11 +19,12 @@ export function IssueListScreen() {
   const remainingCount = issues.length - resolvedCount
 
   const issue = issues[currentIssueIndex]
-  // insert_range(MI=정보 누락)는 "원문을 AI 제안으로 교체"할 대상 자체가 없다 — 대신 issueOverlay.ts가
-  // 섹션 제목(location) 바로 아래에 새 문단으로 끼워 넣는 삽입 모드로 저장한다(정밀한 범위 프레이밍은
-  // 아니지만, 예전처럼 "직접 컨플루언스에 가서 찾아 넣어야" 하는 것보단 훨씬 편함).
+  // insert_range(MI=정보 누락)는 "원문을 AI 제안으로 교체"할 대상 자체가 없다 — input_text가
+  // 비어있거나(원래 없어야 할 텍스트라서), 문서 쪽 하이라이트는 최후 수단으로 섹션 제목을 감싸고
+  // 있을 뿐이다(issueOverlay.ts의 wrapIssueByLocationHeading). 여길 그대로 "수정 저장" 가능하게
+  // 두면 섹션 제목이 "이 정보를 추가하세요" 같은 제안 문구로 통째로 덮어써지는 사고가 난다.
   const isInsertRangeIssue = issue?.frame_type === 'insert_range'
-  const isEditing = issue !== undefined && editingIssueId === issue.id
+  const isEditing = !isInsertRangeIssue && issue !== undefined && editingIssueId === issue.id
   // LG/LF/GA는 두 위치 간 관계 오류라 두 번째 위치(related_original_text)도 있으면 독립적으로
   // 편집·저장할 수 있게 한다 — 없으면(모델이 못 찾은 경우) 지금까지처럼 첫 번째 위치만 편집 가능.
   const isRelationalIssue = issue?.frame_type === 'range' && !!issue.related_original_text
@@ -95,7 +96,6 @@ export function IssueListScreen() {
         issueId: issue.id,
         oldText: activeOldText,
         newText: activeDraftText,
-        mode: isInsertRangeIssue ? 'insert' : 'replace',
       })
 
       if (!response.ok) {
@@ -135,8 +135,8 @@ export function IssueListScreen() {
   // 실질적으로 해결하는지(백엔드 LLM 판단, /issues/similarity-check) 순서로 확인한다. 둘 중
   // 하나라도 걸리면 저장하지 않고 경고만 띄운 채 리턴 — 사용자가 "수정 저장"을 한 번 더 눌러야
   // (warningAcknowledged) 그대로 반영된다. 백엔드 호출이 실패해도(네트워크 문제 등) 저장 자체를
-  // 막지는 않는다 — 이 검사는 안전장치일 뿐 필수 게이트가 아니기 때문. 관련 위치 편집과 정보 누락
-  // (MI) 삽입은 비교 기준이 될 "원문"/"AI 제안"이 애초에 없어서 이 검사를 건너뛴다.
+  // 막지는 않는다 — 이 검사는 안전장치일 뿐 필수 게이트가 아니기 때문. 관련 위치 편집은 비교
+  // 기준이 될 "AI 제안"이 애초에 없어서(원문에서 바로 고치는 것 자체가 목적) 이 검사를 건너뛴다.
   const handleSaveClick = async () => {
     if (warningAcknowledged) {
       void saveEdit()
@@ -149,7 +149,7 @@ export function IssueListScreen() {
       return
     }
 
-    if (editingTarget === 'related' || isInsertRangeIssue) {
+    if (editingTarget === 'related') {
       void saveEdit()
       return
     }
@@ -208,13 +208,14 @@ export function IssueListScreen() {
 
           <div className={`issue-suggestion-box ${isEditingPrimary ? 'issue-suggestion-box-editing' : ''}`.trim()}>
             <div className="issue-suggestion-row">
-              <span className="issue-detail-label">{isInsertRangeIssue ? '추가할 내용' : '수정제안'}</span>
+              <span className="issue-detail-label">수정제안</span>
               {!isEditing &&
+                !isInsertRangeIssue &&
                 (primaryResolved ? (
                   <span className="resolved-badge">✓ 수정완료</span>
                 ) : (
                   <button type="button" className="issue-fix-link" onClick={() => startEdit('primary')}>
-                    <span className="issue-fix-link-text">{isInsertRangeIssue ? '내용 추가하기' : '오류 수정하기'}</span>
+                    <span className="issue-fix-link-text">오류 수정하기</span>
                     <svg className="issue-fix-link-icon" viewBox="0 0 12 12" fill="none" aria-hidden="true">
                       <circle cx="6" cy="6" r="5.25" stroke="currentColor" strokeWidth="1" />
                       <path
@@ -242,11 +243,10 @@ export function IssueListScreen() {
                 <QuoteHighlightedText text={suggestion} quoteClassName="gradient-quote" />
               </p>
             )}
-            {isInsertRangeIssue && !isEditingPrimary && !primaryResolved && (
+            {isInsertRangeIssue && (
               <p className="issue-suggestion-hint">
-                문서에 없는 내용을 추가하라는 안내예요. 위 제안을 참고해 필요한 내용으로 고친 뒤
-                "내용 추가하기"로 저장하면 이 섹션 제목 바로 아래에 새 문단으로 들어가요 — 정확한
-                위치는 저장 후 컨플루언스에서 직접 확인해주세요.
+                문서에 없는 내용을 추가하라는 안내라, 자동으로 반영할 수 없어요. 문서에서 표시된
+                위치를 직접 확인하고 반영해주세요.
               </p>
             )}
           </div>
@@ -315,13 +315,7 @@ export function IssueListScreen() {
               onClick={() => void handleSaveClick()}
               disabled={saving || checkingSimilarity}
             >
-              {saving
-                ? '저장 중...'
-                : checkingSimilarity
-                  ? '확인 중...'
-                  : isInsertRangeIssue && editingTarget === 'primary'
-                    ? '내용 저장 ✓'
-                    : '수정 저장 ✓'}
+              {saving ? '저장 중...' : checkingSimilarity ? '확인 중...' : '수정 저장 ✓'}
             </button>
           </div>
         ) : (

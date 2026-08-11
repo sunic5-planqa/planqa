@@ -2242,3 +2242,37 @@ AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(Re
 - "써니C"라는 이름이 `docs/`의 과거 진행 기록·ADR·README 등 프로젝트 문서 전반에 여전히 남아있음
   — 이번 변경은 사용자가 명시적으로 지목한 확장 UI/로고 범위로 한정, 문서 전체 리네이밍은 별도
   요청 시 진행.
+
+## 2026-08-12 — MI 삽입 모드 되돌림 + QA 리뷰 결과 캐시 제거
+
+"추가가 계속 뜨는데 적용이 안 된다"는 재보고 끝에 사용자가 삽입 모드 자체를 되돌리고 기존
+치환(수정) 방식으로만 동작하게 해달라고 요청 — 여러 차례 디버깅해도 안 되는 걸 계속 붙잡고
+있느니, 검증된 기존 동작으로 되돌리는 쪽을 선택. 같이 요청받은 QA 리뷰 결과 캐시 제거도 진행 —
+돌아보니 이게 그동안 "고쳤는데 왜 반영이 안 되냐"는 여러 혼란의 실제 원인이었을 가능성이 큼(문서
+텍스트가 그대로면 프롬프트/코드를 아무리 고쳐도 서버 재시작 전까진 캐시된 옛날 결과가 계속
+나갔음 — MI/AE 검증 추가, GA/TC/MI 경계 프롬프트 등 문서 내용과 무관한 백엔드 변경들이 전부 이
+캐시에 가려졌을 수 있음).
+
+- **`git revert`로 되돌림**: `feat: allow editing MI issues via insert mode`(#73),
+  `fix: show inserted paragraph on original page for MI edits`(#75) 두 커밋 정확히 원복 —
+  `issueOverlay.ts`(insertParagraphAfterHeading/insertContentAndSave/insertLiveParagraphAfterHeading/
+  `.sunnic-issue-inserted` 스타일), `messages.ts`(mode 필드), `IssueListScreen.tsx`(삽입 모드
+  전용 라벨/분기) 전부 제거 — MI 이슈는 다시 "문서에 없는 내용을 추가하라는 안내라, 자동으로
+  반영할 수 없어요" 메시지만 뜨고 편집 불가한 예전 상태로.
+- **`qa_jobs.py`**: `_review_cache`/`_document_cache_key` 완전 삭제, `_execute_qa_job`이 항상
+  `_run_review_sync`를 새로 호출. 미사용된 `hashlib` import도 제거.
+- 테스트: 캐시 재사용을 검증하던 `test_qa_job_reuses_cached_result_for_identical_document_text`를
+  정반대 기대값(캐시 없이 매번 새로 호출됨, `call_count == 2`)으로 재작성 —
+  `test_qa_job_does_not_use_cache_for_a_different_document`는 이제 사실상 같은 걸 검증하게 돼서
+  통합. `_clear_review_cache` 오토유즈 픽스처도 대상이 없어져 제거.
+- 검증: 백엔드 148개, 확장 101개(삽입 모드 관련 4개 자연히 사라짐) 전부 통과, 양쪽
+  typecheck/lint/build 클린. 되돌린 뒤 확장 빌드 해시(`issueOverlay.ts-ClGkDPoH.js`)가 삽입 모드
+  추가 이전 빌드와 정확히 일치 — 완전한 원복 확인.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 캐시 제거 후 같은 문서를 다시 QA 돌렸을 때 매번 실제로 새
+  리뷰가 도는지(응답 시간으로 체감), 그리고 그동안 캐시에 가려져 있었을 수 있는 백엔드 수정
+  (MI/AE 검증, GA/TC/MI 프롬프트 등)들이 이제 실제로 반영되는지 확인 필요.
+- MI형 이슈 편집은 다시 막힌 상태 — 노션 문서(정밀 프레이밍 스펙)를 받으면 그 기준으로 처음부터
+  다시 설계해서 붙이는 게 나을 듯.

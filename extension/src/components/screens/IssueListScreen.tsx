@@ -180,7 +180,7 @@ export function IssueListScreen() {
   return (
     <div className="screen issue-list-screen">
       <div className="screen-scroll">
-        <h1 className="panel-title">AI QA Service</h1>
+        <h1 className="panel-title">똑독</h1>
         <hr className="panel-divider" />
 
         <OverviewPanel issues={issues} currentIssueId={issue.id} />

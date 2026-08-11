@@ -545,6 +545,55 @@ async function replaceTextAndSave(pageId: string, oldText: string, newText: stri
   return { ok: true }
 }
 
+// 정보 누락(MI)형 이슈는 원문에 없는 내용을 "추가"해야 하는 거라 기존 치환(oldText→newText)
+// 방식이 안 맞는다 — 대신 이슈가 속한 섹션 제목(location의 가장 안쪽 위계) 바로 아래에 새 문단으로
+// 삽입한다. 정확히 어느 문장 뒤에 넣을지까지는 판단 못 하지만(정밀한 범위 프레이밍은 별도 과제로
+// 남겨둠), 적어도 사람이 그 섹션 안에서 확인하고 다듬으면 되는 지점까지는 자동으로 넣어준다 —
+// "직접 컨플루언스에 가서 찾아 넣어야 함" 대비 훨씬 편하다.
+function insertParagraphAfterHeading(html: string, headingLabel: string, newText: string): string | null {
+  const target = normalizeHeadingText(headingLabel)
+  const headingRe = /<h[2-6][^>]*>([\s\S]*?)<\/h[2-6]>/gi
+  let match: RegExpExecArray | null
+  while ((match = headingRe.exec(html))) {
+    const innerText = normalizeHeadingText(match[1].replace(/<[^>]+>/g, ''))
+    if (innerText !== target) continue
+    const insertAt = match.index + match[0].length
+    return html.slice(0, insertAt) + `<p>${escapeHtml(newText)}</p>` + html.slice(insertAt)
+  }
+  return null
+}
+
+async function insertContentAndSave(pageId: string, headingLabel: string, newText: string): Promise<ApplyResult> {
+  const getRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=body.storage,version`, {
+    credentials: 'include',
+  })
+  if (!getRes.ok) return { ok: false, error: `문서를 불러오지 못했습니다 (${getRes.status})` }
+
+  const data = (await getRes.json()) as {
+    title: string
+    version: { number: number }
+    body: { storage: { value: string } }
+  }
+  const html = data.body.storage.value
+  const target = headingLabel.split('>').pop()?.trim() ?? ''
+  const updatedHtml = target ? insertParagraphAfterHeading(html, target, newText) : null
+  if (updatedHtml === null) return { ok: false, error: '문서에서 해당 섹션을 찾지 못했습니다.' }
+
+  const putRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}`, {
+    method: 'PUT',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json', 'X-Atlassian-Token': 'no-check' },
+    body: JSON.stringify({
+      version: { number: data.version.number + 1 },
+      title: data.title,
+      type: 'page',
+      body: { storage: { value: updatedHtml, representation: 'storage' } },
+    }),
+  })
+  if (!putRes.ok) return { ok: false, error: `저장에 실패했습니다 (${putRes.status})` }
+  return { ok: true }
+}
+
 // QA 리뷰 세션당 복제본 1개 — 원본은 절대 쓰지 않고, 첫 적용에서 이 복제본을 만들어 이후 모든 적용을
 // 여기에 누적한다. 페이지를 새로고침하면 초기화되고 다음 적용에서 새 복제본이 다시 만들어진다.
 let duplicateSession: { pageId: string; title: string } | null = null
@@ -623,17 +672,33 @@ function overwriteMarkText(issueId: string, newText: string): void {
   marksByIssueId.set(issueId, [first])
 }
 
-export async function applyIssueEdit(issueId: string, oldText: string, newText: string): Promise<ApplyIssueEditResponse> {
+export async function applyIssueEdit(
+  issueId: string,
+  oldText: string,
+  newText: string,
+  mode: 'replace' | 'insert' = 'replace',
+): Promise<ApplyIssueEditResponse> {
   const originalPageId = extractPageId(location.href)
   if (!originalPageId) return { ok: false, error: '컨플루언스 문서 URL이 아니라 복제본을 만들 수 없습니다.' }
 
   const session = await ensureDuplicateSession(originalPageId)
   if (!session.ok) return session
 
-  const result = await replaceTextAndSave(session.pageId, oldText, newText)
+  let result: ApplyResult
+  if (mode === 'insert') {
+    const issue = issuesById.get(issueId)
+    result = issue
+      ? await insertContentAndSave(session.pageId, issue.location, newText)
+      : { ok: false, error: '이슈 정보를 찾을 수 없습니다.' }
+  } else {
+    result = await replaceTextAndSave(session.pageId, oldText, newText)
+  }
   if (!result.ok) return result
 
-  overwriteMarkText(issueId, newText)
+  // 삽입 모드는 헤딩 자체의 텍스트를 바꾸는 게 아니라 그 아래에 새 문단을 끼워 넣는 것이라, 헤딩을
+  // 감싸고 있던 mark의 표시 텍스트를 newText로 덮어쓰면 "제목이 이렇게 바뀐 것"처럼 오해를 준다 —
+  // 삽입 모드에서는 완료 표시(테두리)만 하고 텍스트는 그대로 둔다.
+  if (mode !== 'insert') overwriteMarkText(issueId, newText)
   for (const mark of marksByIssueId.get(issueId) ?? []) mark.classList.add(RESOLVED_CLASS)
   closeTooltip()
   return { ok: true }
@@ -671,7 +736,7 @@ chrome.runtime.onMessage.addListener(
       return true
     }
     if (message.type === 'APPLY_ISSUE_EDIT') {
-      void applyIssueEdit(message.issueId, message.oldText, message.newText).then(sendResponse)
+      void applyIssueEdit(message.issueId, message.oldText, message.newText, message.mode ?? 'replace').then(sendResponse)
       return true
     }
     return undefined

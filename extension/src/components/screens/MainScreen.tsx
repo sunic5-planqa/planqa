@@ -58,7 +58,7 @@ export function MainScreen() {
   if (confluenceStatus === 'idle' || confluenceStatus === 'detecting') {
     return (
       <div className="screen main-screen">
-        <h1 className="panel-title">AI QA Service</h1>
+        <h1 className="panel-title">똑독</h1>
         <hr className="panel-divider" />
         <div className="loading-screen">
           <div className="mascot mascot-walk">
@@ -76,7 +76,7 @@ export function MainScreen() {
   return (
     <div className="screen main-screen">
       <div className="screen-scroll">
-        <h1 className="panel-title">AI QA Service</h1>
+        <h1 className="panel-title">똑독</h1>
         <hr className="panel-divider" />
 
         {(confluenceStatus === 'not_confluence' || confluenceStatus === 'error') && (
@@ -100,7 +100,7 @@ export function MainScreen() {
       <div className="screen-footer">
         {documentCount !== null && (
           <p className="review-stats">
-            <span className="review-stats-brand">AI QA Service</span>
+            <span className="review-stats-brand">똑독</span>
             <span className="review-stats-muted">으로</span>
             <br />
             <span className="review-stats-muted">{documentCount}건의 문서가 검토됐어요</span>

@@ -25,12 +25,9 @@ export function htmlToChapterMarkdown(pageTitle: string, storageHtml: string): s
       // 그 가짜 텍스트를 그대로 인용하면 저장 단계에서 원문을 영영 찾을 수 없다(DOC-001 "목표
       // 런칭일:, QA 기간:" 케이스로 실제 확인). review-agent의 document.py도 `- `로 시작하는 줄을
       // 하나의 문장 단위(불릿)로 인식하도록 짜여 있어서, 항목마다 별도 줄의 마크다운 불릿으로 남긴다.
-      const items = Array.from(node.querySelectorAll('li'))
-        .map((li) => collapseWhitespace(li.textContent ?? ''))
-        .filter(Boolean)
+      const items = flattenListItems(node)
       if (items.length) {
-        lines.push('')
-        for (const item of items) lines.push(`- ${item}`)
+        lines.push('', ...items)
       }
       continue
     }
@@ -59,4 +56,25 @@ export function htmlToChapterMarkdown(pageTitle: string, storageHtml: string): s
 
 function collapseWhitespace(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
+}
+
+// <li> 안에 <ul>/<ol>이 중첩된 경우(하위 불릿), listNode.querySelectorAll('li')로 한 번에 다
+// 가져오면 두 가지 문제가 생긴다: (1) 상위 li.textContent가 자기 텍스트와 하위 목록 텍스트를
+// 구분자 없이 그대로 이어붙여 뭉갠 문장을 만들고, (2) 그 하위 li들이 querySelectorAll에도 또
+// 걸려서 같은 내용이 별도 줄로 한 번 더 나온다 — 실제 문서엔 없는 중복을 우리가 만들어내는
+// 셈이라, QA 엔진이 그걸 진짜 "불필요한 중복(RD)"으로 정확히 잡아내도, 그 중복된 절반은 실제
+// 라이브 문서에 없는 텍스트라 저장 단계에서 원문을 못 찾는다(실사용 중 확인됨). 직계 자식만
+// 순회하고, 각 li 자신의 텍스트는 중첩 목록을 뺀 것만 쓰고, 중첩 목록은 재귀적으로 그 뒤에
+// 이어서 별도 줄에 남긴다(한 번만).
+function flattenListItems(listNode: Element): string[] {
+  const lines: string[] = []
+  for (const li of Array.from(listNode.querySelectorAll(':scope > li'))) {
+    const nestedLists = Array.from(li.querySelectorAll(':scope > ul, :scope > ol'))
+    const clone = li.cloneNode(true) as Element
+    for (const nested of Array.from(clone.querySelectorAll('ul, ol'))) nested.remove()
+    const ownText = collapseWhitespace(clone.textContent ?? '')
+    if (ownText) lines.push(`- ${ownText}`)
+    for (const nested of nestedLists) lines.push(...flattenListItems(nested))
+  }
+  return lines
 }

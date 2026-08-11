@@ -2316,3 +2316,23 @@ AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(Re
 - Gemini 무료 티어 쿼터(키당 최소 RPM/일일 요청 매우 낮음)에 걸리면 `GeminiClient`가 여러 키를
   라운드로빈하며 재시도하는데, 키를 하나만 등록해두면 그 재시도 로직이 무의미해짐 — 여러 키를
   콤마로 등록해두는 걸 권장.
+
+## 2026-08-12 — 배포 QR코드 + zip 안에 설치법 동봉
+
+비개발자 5명에게 배포할 때 GitHub 링크 대신 QR코드로 받게 하고 싶다는 요청 — GitHub Releases의
+zip 직링크(`releases/download/extension-latest/sunnic-extension.zip`)로 QR 생성. 이 링크는
+`extension-latest` 태그를 계속 덮어쓰는 방식이라 고정이라, 확장이 업데이트돼도 QR을 다시 만들
+필요 없음.
+
+- QR코드 생성: Python `qrcode` 패키지(스크래치 venv에 임시 설치)로 생성 후 OpenCV로 디코드까지
+  재확인(실제로 그 URL로 정확히 스캔되는지 검증).
+- **`extension/public/설치방법.md`(신규)**: 5단계 설치 안내를 zip 안에 직접 동봉 — Vite가
+  `public/` 아래 파일을 빌드 시 자동으로 `dist/` 루트에 복사하는 걸 그대로 활용(코드/워크플로
+  변경 없이 파일 하나만 추가). 압축 풀었을 때 폴더 안에서 바로 설치법을 볼 수 있음.
+- 검증: 확장 typecheck/lint/vitest(101개) 전부 통과, 로컬 빌드로 `dist/설치방법.md`가 실제로
+  나오는지 확인.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: GitHub Actions로 새 zip이 빌드된 뒤, 실제 배포된 zip을 QR로
+  받아서 풀었을 때 `설치방법.md`가 폴더 안에 정말 보이는지 확인 필요.

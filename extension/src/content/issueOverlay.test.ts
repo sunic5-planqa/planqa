@@ -319,6 +319,48 @@ describe('formatKstTimestamp', () => {
   })
 })
 
+describe('applyIssueEdit — insert mode (정보 누락/MI)', () => {
+  it('inserts a new paragraph right after the matching heading instead of replacing text', async () => {
+    // MI형 이슈는 원문에 없는 내용을 "추가"하라는 안내라 input_text가 비어있다 — oldText 없이
+    // issue.location이 가리키는 섹션 제목 바로 아래에 newText를 새 문단으로 끼워 넣는다.
+    document.body.innerHTML = '<main><h2>결제 수단</h2></main>'
+    const issue: OverlayIssue = { ...ISSUE, input_text: '', location: '결제 수단' }
+    applyIssueOverlay([issue])
+    const fetchMock = stubConfluenceFetch({ duplicateBody: '<h2>결제 수단</h2><p>기존 문단.</p>' })
+
+    const result = await applyIssueEdit(issue.id, '', '쿠폰 사용 조건을 명시해야 한다.', 'insert')
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    const putBody = JSON.parse((putCall?.[1] as RequestInit).body as string) as { body: { storage: { value: string } } }
+    expect(putBody.body.storage.value).toBe('<h2>결제 수단</h2><p>쿠폰 사용 조건을 명시해야 한다.</p><p>기존 문단.</p>')
+  })
+
+  it('marks the heading resolved without overwriting the heading text itself', async () => {
+    document.body.innerHTML = '<main><h2>결제 수단</h2></main>'
+    const issue: OverlayIssue = { ...ISSUE, input_text: '', location: '결제 수단' }
+    applyIssueOverlay([issue])
+    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
+    stubConfluenceFetch({ duplicateBody: '<h2>결제 수단</h2>' })
+
+    await applyIssueEdit(issue.id, '', '쿠폰 사용 조건을 명시해야 한다.', 'insert')
+
+    expect(mark?.classList.contains('sunnic-issue-resolved')).toBe(true)
+    expect(mark?.textContent).toBe('결제 수단')
+  })
+
+  it('fails clearly when the target section heading no longer exists in storage HTML', async () => {
+    document.body.innerHTML = '<main><h2>결제 수단</h2></main>'
+    const issue: OverlayIssue = { ...ISSUE, input_text: '', location: '결제 수단' }
+    applyIssueOverlay([issue])
+    stubConfluenceFetch({ duplicateBody: '<h2>다른 섹션</h2>' })
+
+    const result = await applyIssueEdit(issue.id, '', '쿠폰 사용 조건을 명시해야 한다.', 'insert')
+
+    expect(result).toEqual({ ok: false, error: '문서에서 해당 섹션을 찾지 못했습니다.' })
+  })
+})
+
 describe('applyIssueEdit', () => {
   it('the first call creates a duplicate page instead of touching the original, and marks the highlight resolved', async () => {
     const fetchMock = stubConfluenceFetch()

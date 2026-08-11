@@ -2276,3 +2276,43 @@ AI 제안 말풍선의 "따옴표 구간만 강조" 로직을 사이드패널(Re
   (MI/AE 검증, GA/TC/MI 프롬프트 등)들이 이제 실제로 반영되는지 확인 필요.
 - MI형 이슈 편집은 다시 막힌 상태 — 노션 문서(정밀 프레이밍 스펙)를 받으면 그 기준으로 처음부터
   다시 설계해서 붙이는 게 나을 듯.
+
+## 2026-08-12 — 1차 스크리닝 모델을 Claude Haiku → Gemini Flash-Lite로 전환
+
+비용 절감 목적으로 1차 스크리닝(screen_llm)을 Gemini Flash-Lite로 바꿔달라는 요청. planqa-agent에
+`llm/gemini.py`가 이미 있어서(우리가 처음 벤더링할 때 "안 쓴다"고 스킵만 했을 뿐 upstream엔 계속
+있었음, ADR 0001 최초 Context 참고) 새로 만들 것 없이 그대로 벤더링. `google-genai` 의존성과
+`config.py`의 `gemini_api_keys` 파싱도 review-agent 벤더링 이전 초기 스캐폴드 시절부터 이미
+남아있던 것이라(당시 1차 스크리닝을 Gemini로 하려던 원래 설계) 추가 설정 없이 바로 재사용 가능했음.
+
+- **`llm/gemini.py`(재벤더링)**: `GeminiClient` — `AnthropicClient`와 같은 `LLMClient.
+  complete_json` 프로토콜이라 `instrumentation.isolate_client()`가 `.isolate()` 없는 클라이언트에
+  대해 이미 갖고 있던 duck-type 폴백(`copy.copy()` + 새 usage 리스트)이 코드 변경 없이 그대로
+  적용됨 — 여러 Gemini API 키 라운드로빈 상태(`_current`/`_current_lock`)는 그 얕은 복사에서
+  의도적으로 참조 공유되도록 이미 설계돼 있음(클래스 자체 주석 참고).
+- **`config.py`**: `sunnic_gemini_model: str = "gemini-flash-lite-latest"` 추가(upstream
+  `DEFAULT_MODEL`과 동일 값).
+- **`qa_jobs.py`**: `screen_llm`을 `GeminiClient(model=settings.sunnic_gemini_model,
+  api_keys=settings.gemini_api_keys)`로 교체, `confirm_llm`(Sonnet, 2차)은 그대로. MI/AE
+  재검증·유사도 검사는 이 요청 범위 밖이라 계속 Haiku 사용.
+- **`render.yaml`/`.env.example`**: `GEMINI_API_KEYS`(비밀, 수동 설정), `SUNNIC_GEMINI_MODEL`
+  추가.
+- **`pyproject.toml`**: 벤더링 파일 lint 예외 목록에 `I001`(import 정렬) 추가 — upstream의
+  import 줄바꿈 관례가 우리 것과 달라서, 재벤더링할 때마다 다시 안 맞을 걸 알면서 손대는 대신
+  기존 `B023`/`C408`/`UP047`와 같은 이유로 예외 처리.
+- 테스트: `screen_llm`이 이제 Gemini를 쓰므로, 기존에 `AnthropicClient`만 목킹하던 모든 테스트
+  (`FakeAnthropicClient`)에 `GeminiClient`도 같이 목킹하도록 6곳 추가 — 안 그러면 로컬 `.env`에
+  실제 키가 있어서 테스트가 조용히 진짜 Gemini API를 호출하는 사고가 날 뻔했음(실제로 최초 실행
+  때 발생 확인, 네트워크 의존적이라 CI/다른 개발자 환경에선 아예 실패했을 것). `FakeAnthropicClient`
+  생성자를 키워드 전용 `**_kwargs`로 일반화해서 `AnthropicClient(api_key=...)`/`GeminiClient(
+  api_keys=...)` 두 시그니처 모두에 그대로 쓸 수 있게 함.
+- 검증: 백엔드 148개 전부 통과, ruff 클린.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 QA 실행에서 스크리닝이 Gemini로 정상적으로 도는지(응답
+  속도/품질 변화 포함), Render 프로덕션에 `GEMINI_API_KEYS`를 아직 안 넣어서 배포 환경에선 이
+  키를 설정하기 전까지 QA 작업이 실패할 것 — 사용자가 Render 대시보드에서 직접 추가해야 함.
+- Gemini 무료 티어 쿼터(키당 최소 RPM/일일 요청 매우 낮음)에 걸리면 `GeminiClient`가 여러 키를
+  라운드로빈하며 재시도하는데, 키를 하나만 등록해두면 그 재시도 로직이 무의미해짐 — 여러 키를
+  콤마로 등록해두는 걸 권장.

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import math
 import re
 import uuid
@@ -33,6 +34,8 @@ from sunnic_backend.qa_engine.review_agent.structures.bundled_screen_hybrid impo
 )
 from sunnic_backend.qa_engine.review_agent.tiers import TIER_CATEGORIES
 from sunnic_backend.storage.store import store
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["qa-jobs"])
 
@@ -460,7 +463,8 @@ async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> 
         for issue in result.issues:
             await store.save_issue(_to_issue_record(job_id, document_text, rulebook, issue, heading_numbers))
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.DONE, "progress": 100}))
-    except Exception:  # noqa: BLE001 - a failed job must still resolve to a terminal status
+    except Exception:
+        logger.exception("QA job %s failed for document %s", job_id, document_id)
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.FAILED, "progress": 100}))
     finally:
         if ticker is not None:

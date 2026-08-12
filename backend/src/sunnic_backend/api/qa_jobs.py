@@ -444,20 +444,21 @@ def _to_issue_record(
     )
 
 
-# 2026-08-11에 30s로 튜닝했던 값은 스크리닝 패스가 Claude Haiku이던 시절(실측 완료 ~63.1초) 기준이라,
-# screen_llm을 Gemini Flash-Lite로 바꾼 뒤(2026-08-12)엔 완전히 안 맞았다 — 2026-08-13 실측: 405자
-# 짧은 문서 13초, 2568자 PRD 픽스처 43초로 문서 길이에 비례해 훨씬 빨리 끝난다. 고정값 하나로는 짧은
-# 문서에서 "90%는커녕 30%대에서 갑자기 100%로 점프"가 나서, 문서 길이(document_text 문자 수)에 선형
-# 비례하는 추정치로 바꿨다. 두 실측점을 지나는 직선(7.5 + 0.014*chars)이 예측 완료 시각이고, tau는
-# 그 시각에서 곡선이 ~85%에 오도록 1.9로 나눈 값 — 문서가 길든 짧든 실제 완료 시점 근처에서 항상
-# 비슷한 잔여 점프(~15%p)만 남긴다. 그래도 여전히 순수 근사치다(실제 per-tier 진행 신호 없음, ADR
-# 0001) — 모델을 다시 바꾸거나 파이프라인 구조가 바뀌면 이 두 상수도 다시 실측해서 맞춰야 한다.
-def _estimate_duration_seconds(document_text: str) -> float:
-    predicted_completion = 7.5 + 0.014 * len(document_text)
-    return predicted_completion / 1.9
+# 2026-08-13 하루에만 두 번 다시 튜닝했다 — 문서 길이 비례 공식(7.5 + 0.014*chars)을 아침에 도입한
+# 근거였던 실측(405자 13초 / 2568자 PRD 43초)이 같은 날 오후 MI/AE 검증 호출 병렬화(perf:
+# parallelize-mi-ae-verification) 직후 무효화됐다 — 같은 PRD 픽스처가 12초로 줄었는데, 그 병렬화가
+# 없앤 건 정확히 "문서 길이에 비례해 늘어나던" 부분(MI/AE 이슈 개수만큼 순차 호출)이었기 때문에
+# 문서 길이와 소요 시간의 상관관계 자체가 깨졌다. 병렬화 이후 재실측(짧은 알림 문서 32초, PRD
+# 12초 — 오히려 짧은 문서가 더 오래 걸림)도 이를 뒷받침한다: 이제 소요 시간은 길이보다 제미나이
+# 무료 티어 rate-limit 백오프(운 나쁘면 20초 단위로 재시도) 쪽 영향이 더 커서, 문서 길이로 미리
+# 예측하는 게 오히려 근거 없는 정밀함이었다. 그래서 길이 비례 공식은 버리고 단순 상수로 되돌리되,
+# 병렬화 이후 실측 두 점(12초/32초)에서 잔여 점프가 각각 30pp/12pp 정도로 균형 잡히는 tau=8을
+# 골랐다. 무료 티어 쿼터가 하루치 테스트로 상당히 소진돼 더 실측하지 않고 이 값으로 마무리한다 —
+# 여전히 순수 근사치이고(ADR 0001), 파이프라인이나 쿼터 상황이 또 바뀌면 다시 맞춰야 한다.
+_ESTIMATED_DURATION_SECONDS = 8.0
 
 
-async def _tick_progress(job_id: str, started_at: datetime, estimated_duration: float) -> None:
+async def _tick_progress(job_id: str, started_at: datetime) -> None:
     # review_document() has no per-tier progress hook (see docs/adr/0001-...), so this fakes
     # a smoothly-advancing bar instead of leaving it pinned at 0% for the whole run — it
     # asymptotically approaches 90% (never claims done before the real result lands) based on
@@ -470,7 +471,7 @@ async def _tick_progress(job_id: str, started_at: datetime, estimated_duration: 
             if job is None or job.status != QAJobStatus.RUNNING:
                 return
             elapsed = (datetime.now(UTC) - started_at).total_seconds()
-            progress = min(90, int(90 * (1 - math.exp(-elapsed / estimated_duration))))
+            progress = min(90, int(90 * (1 - math.exp(-elapsed / _ESTIMATED_DURATION_SECONDS))))
             if progress > job.progress:
                 await store.save_qa_job(job.model_copy(update={"progress": progress}))
     except asyncio.CancelledError:
@@ -484,7 +485,7 @@ async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> 
     rulebook = _load_rulebook()
     ticker: asyncio.Task[None] | None = None
     try:
-        ticker = asyncio.create_task(_tick_progress(job_id, job.started_at, _estimate_duration_seconds(document_text)))
+        ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
         result = await asyncio.to_thread(_run_review_sync, document_id, document_text, rulebook)
         heading_numbers = _build_heading_numbers(document_text)
         for issue in result.issues:

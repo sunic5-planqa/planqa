@@ -4,6 +4,7 @@ import math
 import re
 import uuid
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,10 @@ from sunnic_backend.models.issue import FrameType, IssueStatus
 from sunnic_backend.models.issue import Issue as IssueRecord
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
 from sunnic_backend.qa_engine.review_agent.document import parse_document
+from sunnic_backend.qa_engine.review_agent.instrumentation import (
+    isolate_client,
+    merge_usage,
+)
 from sunnic_backend.qa_engine.review_agent.llm.anthropic import AnthropicClient
 from sunnic_backend.qa_engine.review_agent.llm.gemini import GeminiClient
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
@@ -336,14 +341,35 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
     confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
     result = review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
 
-    verified_issues = tuple(
-        issue
-        for issue in result.issues
-        if (rule := rulebook.rule(issue.rule_id)) is None
-        or (verify := _FALSE_POSITIVE_VERIFIERS.get(rule.category)) is None
-        or verify(document_text, issue, confirm_llm)
-    )
-    deduped_issues = _dedupe_conflicting_categories(verified_issues, rulebook)
+    passthrough: list[ReviewIssue] = []
+    to_verify: list[tuple[ReviewIssue, Callable[[str, ReviewIssue, AnthropicClient], bool]]] = []
+    for issue in result.issues:
+        rule = rulebook.rule(issue.rule_id)
+        verify = _FALSE_POSITIVE_VERIFIERS.get(rule.category) if rule is not None else None
+        (passthrough.append(issue) if verify is None else to_verify.append((issue, verify)))
+
+    verified_issues = list(passthrough)
+    if to_verify:
+        # Each MI/AE finding's verify() call is independent (its own confirm_llm round-trip over
+        # the full document), and running them one at a time was why server-side review took
+        # ~2x as long as the bare review agent (2026-08-13 user report) — a document with 10
+        # MI/AE findings paid 10 serial round-trips on top of the review itself. isolate_client()
+        # gives each thread its own client copy so concurrent calls don't race on the shared
+        # usage list, same pattern/rationale as bundled_screen_hybrid._run_pass; merge_usage
+        # folds each copy's stats back onto the original confirm_llm once done.
+        with ThreadPoolExecutor(max_workers=len(to_verify)) as pool:
+            pending: list[tuple[ReviewIssue, AnthropicClient, Future[bool]]] = []
+            for issue, verify in to_verify:
+                isolated = isolate_client(confirm_llm, key=issue.rule_id)
+                pending.append((issue, isolated, pool.submit(verify, document_text, issue, isolated)))
+            for issue, isolated, future in pending:
+                try:
+                    if future.result():
+                        verified_issues.append(issue)
+                finally:
+                    merge_usage(confirm_llm, isolated)
+
+    deduped_issues = _dedupe_conflicting_categories(tuple(verified_issues), rulebook)
     return replace(result, issues=deduped_issues)
 
 

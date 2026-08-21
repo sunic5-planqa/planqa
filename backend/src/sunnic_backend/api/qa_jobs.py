@@ -3,8 +3,6 @@ import logging
 import math
 import re
 import uuid
-from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,10 +15,6 @@ from sunnic_backend.models.issue import FrameType, IssueStatus
 from sunnic_backend.models.issue import Issue as IssueRecord
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
 from sunnic_backend.qa_engine.review_agent.document import parse_document
-from sunnic_backend.qa_engine.review_agent.instrumentation import (
-    isolate_client,
-    merge_usage,
-)
 from sunnic_backend.qa_engine.review_agent.llm.anthropic import AnthropicClient
 from sunnic_backend.qa_engine.review_agent.llm.gemini import GeminiClient
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
@@ -205,82 +199,13 @@ class IssueResponse(BaseModel):
     related_original_text: str | None
 
 
-_MI_VERIFY_SYSTEM = (
-    "You are double-checking a document-review agent's claim that specific information is "
-    "missing from a document — this exact failure mode (claiming X is missing when X is "
-    "actually stated elsewhere in the document, because the agent's own review only saw one "
-    "narrow chunk of it) has been observed live in production. You will be given the FULL "
-    "document text and the agent's claim. Re-read the ENTIRE document carefully, not just "
-    "whatever section the agent focused on, before deciding.\n"
-    'Respond with JSON only: {"actually_missing": <bool>, "reason": "<one short sentence>"}'
-)
-
-_AE_VERIFY_SYSTEM = (
-    "You are double-checking a document-review agent's claim that a specific phrase is "
-    "ambiguous/vague (모호한 표현) — this category is vulnerable to the same narrow-context "
-    "failure mode as missing-information claims: a number, referent, or actor that looks "
-    "unspecified in isolation may actually be defined or referenced elsewhere in the same "
-    "document (e.g. a quantity defined in another section and referenced here per AE-01's own "
-    "exception condition, a pronoun whose antecedent is clear from surrounding context, an "
-    "actor implied by a system-wide policy stated elsewhere per AE-04's exception). You will "
-    "be given the FULL document text and the agent's claim. Re-read the ENTIRE document "
-    "carefully, not just whatever section the agent focused on, before deciding whether the "
-    "flagged text is genuinely ambiguous in context.\n"
-    'Respond with JSON only: {"actually_ambiguous": <bool>, "reason": "<one short sentence>"}'
-)
-
-
-# MI(정보 누락)에서, 문서에 실제로 있는 정보를 "없다"고 잘못 주장하는 오탐이 실사용 중 확인됨
-# (DOC-001 "8. 런칭 계획"의 날짜 — 파서는 정확히 뽑아냈는데 confirm이 좁은 chunk만 보고 놓침,
-# 2026-08-10). planqa-agent의 services/eval-service(judge.py)로 걸러볼 수 있는지 먼저 검토했으나,
-# 그건 문서 원문 없이 에이전트 본인의 근거/이유만 재검토하는 reference-free 구조라
-# (judge_review_result가 document_text를 아예 안 받음) "근거 자체는 논리적이지만 전제가 문서와
-# 안 맞는" 이런 유형은 애초에 못 잡는다 — 그래서 대신 여기서 문서 전체를 다시 보여주고 재확인한다.
-# AE(모호한 표현)도 같은 방식으로 추가(2026-08-11, 실사용 과탐지 재보고) — AE-01/AE-04 예외조건이
-# 둘 다 "문서 다른 곳에 정의/참조돼 있으면 예외"라, 좁은 chunk만 본 confirm이 그 정의를 놓치고
-# "모호하다"고 오판하는 게 MI와 정확히 같은 실패 패턴이기 때문. 나머지 카테고리로는 안 넓힘 — 이
-# 둘만 "문서 전체를 봐야 판단 가능한 예외조건"을 갖고 있고, 모든 카테고리에 걸면 비용/시간이
-# 크게 늘어난다.
-def _verify_mi_finding(document_text: str, issue: ReviewIssue, llm: AnthropicClient) -> bool:
-    prompt = (
-        f"Full document:\n{document_text}\n\n"
-        f"Agent's claim — location: {issue.location!r}\n"
-        f"  what's allegedly missing: {issue.description!r}\n"
-        f"  rationale: {issue.rationale!r}\n"
-        f"  quoted context: {issue.original_text!r}\n\n"
-        "Return the JSON."
-    )
-    try:
-        response = llm.complete_json(system=_MI_VERIFY_SYSTEM, prompt=prompt)
-    except Exception:  # noqa: BLE001 - a verification failure must not block/hide the original finding
-        return True
-    if not isinstance(response, dict):
-        return True
-    return bool(response.get("actually_missing", True))
-
-
-def _verify_ae_finding(document_text: str, issue: ReviewIssue, llm: AnthropicClient) -> bool:
-    prompt = (
-        f"Full document:\n{document_text}\n\n"
-        f"Agent's claim — location: {issue.location!r}\n"
-        f"  flagged text: {issue.original_text!r}\n"
-        f"  what's allegedly ambiguous: {issue.description!r}\n"
-        f"  rationale: {issue.rationale!r}\n\n"
-        "Return the JSON."
-    )
-    try:
-        response = llm.complete_json(system=_AE_VERIFY_SYSTEM, prompt=prompt)
-    except Exception:  # noqa: BLE001 - a verification failure must not block/hide the original finding
-        return True
-    if not isinstance(response, dict):
-        return True
-    return bool(response.get("actually_ambiguous", True))
-
-
-_FALSE_POSITIVE_VERIFIERS: dict[str, Callable[[str, ReviewIssue, AnthropicClient], bool]] = {
-    "MI": _verify_mi_finding,
-    "AE": _verify_ae_finding,
-}
+# review-agent가 이 MI/AE 재검증을 소스 안에서 직접 정식으로 구현하면서(bundled_screen_hybrid.py
+# 상단 주석 참고 — "백엔드는... 우회로 추가했지만, 여긴 소스를 직접 소유하므로 정식으로 구현") 여기
+# 있던 _verify_mi_finding/_verify_ae_finding/_FALSE_POSITIVE_VERIFIERS는 review_document()가 이미
+# 내부적으로 수행한 검증을 결과에 대고 한 번 더 독립적으로 돌리는 이중 검증이 됐다 — 두 판정 중
+# 어느 한쪽만 "없다"고 봐도 그 이슈가 사라지므로, 원래 의도(narrow-context 오탐 제거)보다 훨씬
+# 공격적으로 과탐지를 걸러내는 부작용이 있었다. 그래서 삭제하고 review_document()의 판정을 그대로
+# 신뢰한다(2026-08-21).
 
 
 # 관계형·상위목표충돌(GA/LG/LF)이 자구단위 문제(TC/TM)보다 실제 서비스에 미치는 영향이 커서 더
@@ -341,35 +266,7 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
     confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
     result = review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
 
-    passthrough: list[ReviewIssue] = []
-    to_verify: list[tuple[ReviewIssue, Callable[[str, ReviewIssue, AnthropicClient], bool]]] = []
-    for issue in result.issues:
-        rule = rulebook.rule(issue.rule_id)
-        verify = _FALSE_POSITIVE_VERIFIERS.get(rule.category) if rule is not None else None
-        (passthrough.append(issue) if verify is None else to_verify.append((issue, verify)))
-
-    verified_issues = list(passthrough)
-    if to_verify:
-        # Each MI/AE finding's verify() call is independent (its own confirm_llm round-trip over
-        # the full document), and running them one at a time was why server-side review took
-        # ~2x as long as the bare review agent (2026-08-13 user report) — a document with 10
-        # MI/AE findings paid 10 serial round-trips on top of the review itself. isolate_client()
-        # gives each thread its own client copy so concurrent calls don't race on the shared
-        # usage list, same pattern/rationale as bundled_screen_hybrid._run_pass; merge_usage
-        # folds each copy's stats back onto the original confirm_llm once done.
-        with ThreadPoolExecutor(max_workers=len(to_verify)) as pool:
-            pending: list[tuple[ReviewIssue, AnthropicClient, Future[bool]]] = []
-            for issue, verify in to_verify:
-                isolated = isolate_client(confirm_llm, key=issue.rule_id)
-                pending.append((issue, isolated, pool.submit(verify, document_text, issue, isolated)))
-            for issue, isolated, future in pending:
-                try:
-                    if future.result():
-                        verified_issues.append(issue)
-                finally:
-                    merge_usage(confirm_llm, isolated)
-
-    deduped_issues = _dedupe_conflicting_categories(tuple(verified_issues), rulebook)
+    deduped_issues = _dedupe_conflicting_categories(result.issues, rulebook)
     return replace(result, issues=deduped_issues)
 
 

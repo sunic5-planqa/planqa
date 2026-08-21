@@ -29,5 +29,9 @@ wandb/
 *.safetensors
 
 logs/
-.claude/
-.claude/
+
+# 팀 공용 훅/설정만 커밋, 로그인 세션이나 개인 로컬 설정은 무시
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/hooks/**

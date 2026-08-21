@@ -2336,3 +2336,26 @@ zip 직링크(`releases/download/extension-latest/sunnic-extension.zip`)로 QR �
 
 - **Claude가 검증 불가능한 것**: GitHub Actions로 새 zip이 빌드된 뒤, 실제 배포된 zip을 QR로
   받아서 풀었을 때 `설치방법.md`가 폴더 안에 정말 보이는지 확인 필요.
+
+## 2026-08-21 — qa_jobs.py의 중복 MI/AE 과탐지 재검증 제거
+
+review-agent(`bundled_screen_hybrid.py`)가 MI/AE 카테고리의 narrow-context 오탐 재검증을
+소스 안에서 직접 정식으로 구현하면서, 여기 `qa_jobs.py`에 있던 같은 목적의 우회 구현
+(`_verify_mi_finding`/`_verify_ae_finding`/`_FALSE_POSITIVE_VERIFIERS`, `_run_review_sync`의
+ThreadPoolExecutor 재검증 블록)이 review_document() 결과에 대해 독립적으로 한 번 더
+같은 판정을 내리는 이중 검증이 되어 있었다. 어느 한쪽만 "없다/모호하다"고 봐도 이슈가
+사라지는 구조라 과탐지 방지가 의도보다 훨씬 공격적으로 동작하던 것으로 보여 삭제했다.
+
+- `_run_review_sync()`는 이제 `review_document()` 결과를 바로 `_dedupe_conflicting_categories()`
+  (카테고리 우선순위 기반, 이번 작업 범위 밖이라 그대로 유지)에 넘기고 끝낸다.
+- 더 이상 쓰지 않는 import 정리(`Callable`, `ThreadPoolExecutor`, `Future`, `isolate_client`,
+  `merge_usage`).
+- 관련 단위 테스트(`_StubVerifyLLM`, `_verify_mi_finding`/`_verify_ae_finding` 테스트,
+  `test_run_review_sync_drops_*_false_positive_*`)도 함께 제거. dedupe 관련 테스트는 그대로 둠.
+- 검증: `pytest` 138개 전부 통과, `ruff check` 클린.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 서비스에서 이중 검증 제거로 MI/AE 이슈 노출 개수가
+  실제로 늘어나는지는 재검증(예: 20문서 재검증)으로 확인 필요 — 사용자가 review-agent 쪽
+  과탐지 완화(진행 중)와 함께 측정할 예정.

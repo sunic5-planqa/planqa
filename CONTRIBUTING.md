@@ -29,7 +29,7 @@ git checkout -b feature/<이름>-<작업내용>   # 예: feature/bomi-edit-butto
 2. 커밋: `<category>: <짧은 설명>` 형식, 영어, 70자 이내
    - 예: `feat: add scroll-to-error on click`
 3. push 후 `dev`를 대상으로 PR 생성 — 위 PR 템플릿의 체크리스트를 채우세요
-4. 혜서 또는 가영의 승인이 있어야 merge됩니다 — **본인이 직접 merge하지 마세요**
+4. **직접 push가 안 되니, PR을 하고 혜서/가영님께 merge 요청을 드리세요**
 
 ## 가장 흔한 실수
 
@@ -38,6 +38,7 @@ git checkout -b feature/<이름>-<작업내용>   # 예: feature/bomi-edit-butto
   키 자체를 재발급해야 할 수 있습니다).
 - `main`에 직접 push하려는 것 — 브랜치 보호로 막혀 있지만, 애초에 `dev`에서 시작하는 습관을
   들이는 게 안전합니다.
-- 리뷰 없이 자기 PR을 스스로 merge하는 것 — 이것도 보호 규칙으로 막혀 있습니다.
+- 리뷰 없이 자기 PR을 스스로 merge하려는 것 — 어차피 직접 push가 안 되니, PR을 하고
+  혜서/가영님께 merge 요청을 드리세요.
 
 막히는 부분 있으면 코드보다 먼저 혜서/가영한테 물어보세요 — 처음이라 막히는 건 당연합니다.

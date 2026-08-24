@@ -125,6 +125,48 @@ async def test_qa_job_create_returns_404_for_unknown_document() -> None:
     assert response.status_code == 404
 
 
+# team_code 없이 호출하는 기존 경로가 이전(팀 규칙 기능 도입 전)과 동일하게 동작하는지에 대한
+# 회귀 테스트 — CreateQAJobRequest에 기본값이 있어 바디 없이 POST해도 그대로 통과해야 한다.
+async def test_qa_job_create_without_body_still_works(monkeypatch) -> None:
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_response = await client.post("/documents", json={"raw_text": _TEST_DOCUMENT})
+        document_id = create_response.json()["document_id"]
+
+        job_response = await client.post(f"/documents/{document_id}/qa-jobs")
+        job_id = job_response.json()["job_id"]
+        status_response = await client.get(f"/qa-jobs/{job_id}/status")
+
+    assert job_response.status_code == 200
+    assert status_response.json()["status"] == "done"
+
+
+# team_code를 보내되 해당 팀에 등록된 규칙이 없는 경우 — merge_team_rules([])가 원본 rulebook을
+# 그대로 반환하는 어댑터 계약(test_team_rule_adapter.py에서 단위 테스트됨)이 실제 API 경로에서도
+# QA 실행을 방해하지 않는지 확인.
+async def test_qa_job_create_with_team_code_but_no_team_rules_still_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        team_response = await client.post("/teams", json={"team_name": "테스트팀", "description": "설명"})
+        team_code = team_response.json()["team_code"]
+
+        create_response = await client.post("/documents", json={"raw_text": _TEST_DOCUMENT})
+        document_id = create_response.json()["document_id"]
+
+        job_response = await client.post(f"/documents/{document_id}/qa-jobs", json={"team_code": team_code})
+        job_id = job_response.json()["job_id"]
+        status_response = await client.get(f"/qa-jobs/{job_id}/status")
+
+    assert job_response.status_code == 200
+    assert status_response.json()["status"] == "done"
+
+
 async def test_qa_job_marks_failed_when_llm_client_cannot_be_built(monkeypatch) -> None:
     # review_document() itself isolates each stage's LLM errors into tier_errors and still
     # returns a (empty) result — by design, see pipeline.py's docstring — so the only way a

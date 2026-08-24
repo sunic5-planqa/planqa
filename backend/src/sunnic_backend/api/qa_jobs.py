@@ -32,6 +32,7 @@ from sunnic_backend.qa_engine.review_agent.structures.bundled_screen_hybrid impo
     review_document,
 )
 from sunnic_backend.qa_engine.review_agent.tiers import TIER_CATEGORIES
+from sunnic_backend.qa_engine.team_rule_adapter import merge_team_rules
 from sunnic_backend.storage.store import store
 
 logger = logging.getLogger(__name__)
@@ -375,11 +376,14 @@ async def _tick_progress(job_id: str, started_at: datetime) -> None:
         pass
 
 
-async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> None:
+async def _execute_qa_job(job_id: str, document_id: str, document_text: str, team_code: str | None = None) -> None:
     job = await store.get_qa_job(job_id)
     if job is None:
         return
     rulebook = _load_rulebook()
+    if team_code:
+        team_rules = await store.list_team_rules_for_team(team_code)
+        rulebook = merge_team_rules(rulebook, [rule for rule in team_rules if rule.enabled])
     ticker: asyncio.Task[None] | None = None
     try:
         ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
@@ -396,11 +400,18 @@ async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> 
             ticker.cancel()
 
 
+class CreateQAJobRequest(BaseModel):
+    team_code: str | None = None
+
+
 @router.post("/documents/{document_id}/qa-jobs", response_model=CreateQAJobResponse)
-async def create_qa_job(document_id: str, background_tasks: BackgroundTasks) -> CreateQAJobResponse:
+async def create_qa_job(
+    document_id: str, background_tasks: BackgroundTasks, request: CreateQAJobRequest | None = None
+) -> CreateQAJobResponse:
     document = await store.get_document(document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="document not found")
+    team_code = request.team_code if request else None
 
     job = QAJob(
         id=str(uuid.uuid4()),
@@ -411,7 +422,7 @@ async def create_qa_job(document_id: str, background_tasks: BackgroundTasks) -> 
         started_at=datetime.now(UTC),
     )
     await store.save_qa_job(job)
-    background_tasks.add_task(_execute_qa_job, job.id, document_id, document.raw_text)
+    background_tasks.add_task(_execute_qa_job, job.id, document_id, document.raw_text, team_code)
     return CreateQAJobResponse(job_id=job.id)
 
 

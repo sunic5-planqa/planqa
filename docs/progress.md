@@ -2359,3 +2359,116 @@ ThreadPoolExecutor 재검증 블록)이 review_document() 결과에 대해 독�
 - **Claude가 검증 불가능한 것**: 실제 서비스에서 이중 검증 제거로 MI/AE 이슈 노출 개수가
   실제로 늘어나는지는 재검증(예: 20문서 재검증)으로 확인 필요 — 사용자가 review-agent 쪽
   과탐지 완화(진행 중)와 함께 측정할 예정.
+
+## 2026-08-23 — 팀 규칙 관리 기능 (`feature/eunseong-team-rule-wireframe`)
+
+은성님이 맡은 팀룰 추가 기능을 처음부터 구현했다. 조사 결과 프론트엔드에 "Rule 섹션" 자체가
+없었고(백엔드엔 8개 카테고리/41개 규칙 데이터만 존재), 팀 개념도 백엔드 어디에도 없어서
+기본 Rule 섹션 구축부터 팀 CRUD까지 함께 진행하기로 사용자와 합의했다(`AskUserQuestion`으로
+스코프 확정: 기본 Rule 섹션 포함 / 구조화된 폼 직접 입력(자연어→AI초안 흐름은 제외) / 팀은
+"팀 코드 입력" 아래 "팀 만들기"로 팀명+설명을 받아 코드를 생성). 계획은
+`EnterPlanMode`로 세운 뒤 승인받고 진행(`/Users/song-eunseong/.claude/plans/wondrous-fluttering-castle.md`).
+
+- **백엔드**: `models/team.py`(`Team`), `models/team_rule.py`(`TeamRule`, `RuleExample`) 신규.
+  `storage/store.py`에 팀/팀규칙 dict 추가(기존 in-memory 패턴 그대로, `delete_team_rule`이
+  이 스토어의 첫 삭제 메서드). `api/teams.py`(팀 생성/조회, 팀규칙 CRUD, `secrets` 기반 6자리
+  코드 생성) + `api/rulebook.py`(`GET /rulebook/categories` — 기존 `qa_jobs.py`의
+  `_load_rulebook`/`_korean_label`을 그대로 import해 재사용, 8개 카테고리만 반환) 신규 라우터
+  2개, `main.py`에 등록.
+- **프론트엔드**: `RuleSection.tsx`(References 아래 신규 — 기본 규칙 카테고리 목록 + "적용된
+  규칙: N개" 카운트, 팀 코드 입력/확인, 인라인 "팀 만들기" 폼, 팀 연결 시 "👥 팀명 ⚙" 필),
+  `TeamRulesScreen.tsx`(신규 5번째 화면, `.screen`/`.screen-scroll`/`.screen-footer` 셸 재사용),
+  `TeamRuleForm.tsx`/`TeamRuleAccordion.tsx`(규칙 사례 여러 개 입력, 수정/삭제),
+  `ConfirmDialog.tsx`(이 코드베이스 첫 모달 — `Button`의 `variant="danger"`를 처음 실사용).
+  전역 상태(`AppState`)에 `teamCode`/`teamName`/`teamDescription`/`teamRules`/`ruleCategories`
+  추가, `appReducer`에 관련 액션 6개 추가. 새 공용 Accordion 컴포넌트는 만들지 않고
+  `CategoryTree`/`ReferencesSection`의 기존 토글 패턴을 그대로 복사(사용처 2곳뿐이라 추상화가
+  오히려 손해).
+- **"적용된 규칙" 카운트 정정**: 계획 초안은 41개 세부 규칙 합산을 가정했으나, 사용자 스펙의
+  예시("기본 8개 + 팀 2개 → 10개")를 재확인해 8개 카테고리 + 팀 규칙 수로 정정.
+- 검증: 백엔드 `uv run pytest` 149개 전부 통과(`ruff check` 클린), 프론트 `npm run
+  typecheck`/`lint`/`test`(vitest 110개) 전부 통과, `npm run build` 프로덕션 빌드 성공. 로컬
+  백엔드를 띄워 `curl`로 팀 생성→조회→규칙 생성(최소/전체 필드)→목록→수정→삭제 전체 플로우
+  실제 실행 확인(8개 카테고리, 404, CRUD 전부 기대대로 동작).
+- **알려진 한계(사용자에게 명시적으로 flag)**: in-memory 저장이라 백엔드 재시작 시 팀/규칙
+  소실(기존 documents/qa_jobs와 동일), 인증 없음(팀 코드를 아는 사람은 누구나 수정 가능), 팀
+  규칙은 아직 실제 QA 리뷰 파이프라인(`review_document`)에 반영되지 않음(저장/표시만).
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 Chrome에 unpacked 로드해서 사이드패널 UI를 눈으로
+  보고 조작하는 것(아코디언 토글, 폼 검증, 확인 다이얼로그 등 시각적 동작) — 은성님이 직접
+  `chrome://extensions`에 로드해서 확인 필요.
+- 팀 규칙을 실제 LLM 리뷰 파이프라인에 반영하는 작업(`bundled_screen_hybrid.py` 연동)은
+  이번 스코프 밖으로 남겨둠 — 다음 단계로 고려.
+- 넘버링 하모나이징(은성님 두 번째 담당 기능)은 아직 시작 전, 범위는 혜서/가영님과 확인 필요.
+
+## 2026-08-24 — 팀 규칙 기능 Round 2: 데이터 구조 개편 + 화면 통합 + Agent 연동
+
+Round 1을 실제 Chrome에 로드해 확인한 사용자가 스크린샷 3장 + 상세 명세로 큰 폭의 수정을 요청.
+`AskUserQuestion`으로 세 가지 핵심 결정을 받은 뒤 `EnterPlanMode`로 계획을 다시 세우고 승인받아
+진행했다(계획: `/Users/song-eunseong/.claude/plans/wondrous-fluttering-castle.md`).
+
+- **데이터 구조 개편**: `TeamRule`에 `rule_name`(신규 필수, 규칙 설명과 분리)과 `enabled`(체크박스,
+  기본값 true) 추가. `examples`를 자유 배열에서 `{error1, error2, exception}` 고정 3슬롯 구조로
+  변경(`models/team_rule.py`, `api/teams.py`의 `TeamRuleIn`/`TeamRuleResponse`). PATCH는 계속 폼
+  전체 교체 방식 유지 — 체크박스 토글도 같은 PATCH로 처리(별도 엔드포인트 안 만듦).
+- **화면 구조 통합**: 별도였던 `TeamRulesScreen`을 삭제하고 `RuleSection.tsx` 하나에 기본 규칙
+  카드(번호+규칙명+설명, 8개 카테고리 설명은 백엔드에 없는 데이터라 프론트엔드에 하드코딩)와 팀
+  규칙 카드(체크박스/토글/✎/🗑/+추가 전부)를 합쳤다. 체크박스는 클릭 즉시 PATCH로 저장(별도 저장
+  버튼 없음), 토글은 읽기 전용 상세 보기, ✎만 편집 폼(`TeamRuleForm`)을 연다 — 이 구분은
+  `AskUserQuestion`으로 사용자에게 직접 확인받은 UX.
+- **Agent 연동(신규 스코프, 이전엔 명시적으로 제외했던 부분)**: `qa_engine/team_rule_adapter.py`
+  신규 — 활성화된(`enabled=true`) 팀 규칙을 synthetic `RuleDef`로 변환해 `review_document()`가
+  이미 받는 `RuleBook` 파라미터에 merge. 벤더 파일(`bundled_screen_hybrid.py`/`fewshot_bank.py`)은
+  한 줄도 안 건드림 — `RuleDef.text`가 `_hybrid_block()`이 파싱 없이 그대로 보간하는 자유 텍스트
+  필드라는 점을 이용해, `규칙 설명 + [오류 사례 1]/[수정 사례 1]/[오류 사례 2]/[수정 사례 2]/
+  [예외 사례]`를 하나의 문자열로 조합해 그 안에 담았다(저장 구조 자체는 계속 필드별로 분리 유지 —
+  합치는 건 Agent에 넘기는 마지막 순간뿐). 구현 전 실제 `RuleDef` 필드 구조와 매핑표를 먼저
+  보여달라는 사용자 요청에 따라, 계획 문서에 매핑표 + 라우팅 안전성 근거(코드 인용 5곳)를 먼저
+  제시하고 승인받은 뒤 구현. `POST /documents/{id}/qa-jobs`에 선택적 `team_code` 바디 추가,
+  `_execute_qa_job`이 있으면 팀 규칙을 merge, 없으면 기존 경로 100% 그대로.
+- 검증: 백엔드 `uv run pytest` **158개** 전부 통과(신규: `test_team_rule_adapter.py` 6개,
+  `test_api_qa_jobs.py`에 회귀 테스트 2개 추가, `test_api_teams.py` 새 스키마로 재작성),
+  `ruff check` 클린. 프론트 `typecheck`/`lint`/`test`(vitest **111개**) 전부 통과, `npm run
+  build` 성공. 로컬 백엔드로 curl E2E: 팀 생성 → 새 스키마 규칙 생성(규칙명/고정
+  examples/enabled) → PATCH로 enabled=false 토글 → `team_code` 포함/미포함 QA job 생성 둘 다
+  200 확인.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: Chrome 실제 로드 후 통합된 Rule 섹션(기본+팀) 시각 확인 —
+  은성님 직접 확인 필요. 실제 LLM 응답에 팀 규칙 few-shot 텍스트가 기대한 형태로 도달하는지도
+  API 키 있는 환경에서 실제 QA 실행으로만 최종 확인 가능(이번 세션은 `team_rule_adapter.py`
+  순수 함수 테스트 + 라우팅 안전성 근거로 대체).
+- 넘버링 하모나이징(은성님 두 번째 담당 기능)은 아직 시작 전.
+
+## 2026-08-24 — 팀 규칙 기능 Round 3: 관리 페이지 재분리
+
+Round 2에서 메인 화면 하나로 합쳤던 걸 사용자가 다시 뒤집었다 — "관리(추가/수정/삭제)"와
+"적용 선택(체크박스)"의 역할을 분리해 관리는 별도 페이지로, 메인 Rule 화면은 체크박스만 있는
+화면으로 되돌렸다. 진입점(관리 페이지로 가는 길)이 명세에 없어 `AskUserQuestion`으로 확인 후
+`EnterPlanMode`로 계획을 세우고 진행(백엔드는 이번 라운드에서 전혀 안 건드림 — 순수 프론트엔드
+재구성). 계획: `/Users/song-eunseong/.claude/plans/wondrous-fluttering-castle.md`.
+
+- `TeamRulesScreen.tsx` 재생성 — Round 2에서 지웠던 걸 복원하되, 이번엔 팀 코드도 헤더에
+  표시(지금까지 팀 생성 후 코드를 확인할 방법이 어디에도 없었던 걸 이번에 채움).
+  `TeamRuleAccordion.tsx`에서 체크박스(적용 여부) 관련 로직을 전부 제거 — 이 컴포넌트는 이제
+  순수하게 추가/수정/삭제만 담당.
+- `RuleSection.tsx`(메인 화면)에서 팀 규칙 추가/수정 폼을 전부 제거하고, 체크박스+규칙명+설명
+  한 줄짜리 목록으로 단순화. 체크박스 토글은 `RuleSection`으로 옮겨 즉시 PATCH 저장. 헤더에
+  "👥 팀 규칙 · 팀명" 옆 ⚙ 버튼으로 관리 페이지 진입(사용자에게 직접 확인받은 위치). 팀 규칙이
+  0개여도 헤더/⚙는 유지하고 목록 자리에 안내 문구만 표시 — 완전히 숨기면 첫 규칙을 추가할 방법이
+  없어지는 걸 막기 위한 해석(계획에 명시하고 승인받음). "팀 만들기" 성공 시 관리 페이지로 자동
+  이동 추가 — 생성된 코드를 바로 볼 수 있게(사용자가 명시적으로 요구하진 않았으나, 안 그러면 방금
+  만든 코드를 볼 방법이 없어 채택).
+- 기본 규칙 8개 설명을 전부 한 줄에 들어가도록 문구 자체를 축약(CSS `text-overflow: ellipsis`
+  금지 요구 — 실제 문장을 줄임). 팀 규칙 설명은 사용자가 직접 쓴 임의 길이 텍스트라 문구를
+  대신 줄여줄 수 없어, 여기에만 예외적으로 CSS 한 줄 말줄임(`.team-rule-row-description`)을 적용.
+- 검증: `typecheck`/`lint`/`test`(vitest 111개, 신규 없음 — 로직 이동만이라 리듀서/검증 함수
+  변경 없음)/`build` 전부 통과. 백엔드는 안 건드렸으므로 기존 158개 테스트 상태 그대로 유효.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: Chrome에서 관리 페이지 진입(⚙)과 메인 화면 체크박스가 실제로
+  분리되어 보이는지, 팀 생성 후 자동 이동으로 코드가 잘 보이는지 — 은성님 직접 확인 필요.

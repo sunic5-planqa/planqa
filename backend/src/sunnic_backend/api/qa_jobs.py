@@ -32,6 +32,11 @@ from sunnic_backend.qa_engine.review_agent.structures.bundled_screen_hybrid impo
     review_document,
 )
 from sunnic_backend.qa_engine.review_agent.tiers import TIER_CATEGORIES
+from sunnic_backend.qa_engine.team_rule_adapter import (
+    TEAM_CATEGORY,
+    TEAM_RULE_ID_PREFIX,
+    merge_team_rules,
+)
 from sunnic_backend.storage.store import store
 
 logger = logging.getLogger(__name__)
@@ -240,9 +245,11 @@ def _dedupe_conflicting_categories(issues: tuple[ReviewIssue, ...], rulebook: Ru
     best_by_key: dict[tuple[str, str], ReviewIssue] = {}
     passthrough: list[ReviewIssue] = []
     for issue in issues:
-        if not issue.original_text:
-            # MI(정보 누락) 등 원문 인용이 없는 이슈는 "같은 문구"를 판단할 근거가 없다 — 잘못
-            # 묶으면 서로 다른 결측 항목이 하나로 사라질 수 있어 건드리지 않는다.
+        if not issue.original_text or issue.rule_id.startswith(TEAM_RULE_ID_PREFIX):
+            # MI(정보 누락) 등 원문 인용이 없는 이슈는 "같은 문구"를 판단할 근거가 없어 건드리지
+            # 않는다. 팀 규칙(TEAM-*)도 여기서 건드리지 않는다 — _CATEGORY_PRIORITY는 8개 기본
+            # 카테고리의 시급도표라 TEAM은 항상 최하위로 떨어져서, 기본 규칙과 같은 문구를
+            # 가리키기만 하면 팀이 일부러 추가한 규칙이 매번 조용히 사라지게 된다.
             passthrough.append(issue)
             continue
         key = (issue.location, issue.original_text)
@@ -317,7 +324,15 @@ def _to_issue_record(
     job_id: str, document_text: str, rulebook: RuleBook, issue: ReviewIssue, heading_numbers: dict[str, str]
 ) -> IssueRecord:
     rule = rulebook.rule(issue.rule_id)
-    criteria = _korean_label(rule.category_label) if rule else issue.rule_id
+    # _korean_label()은 rulebook_v1.0.md의 "<한글> <English Title Case>" 헤더에서 영어 절반을
+    # 잘라내려고 만든 함수라, 팀 규칙의 자유 텍스트 rule_name(category_label로 재사용됨)에 돌리면
+    # "회원가입 API 정책" 같은 이름이 첫 영어 단어 앞에서 잘려나간다 — 팀 카테고리는 원문 그대로 쓴다.
+    if rule is None:
+        criteria = issue.rule_id
+    elif rule.category == TEAM_CATEGORY:
+        criteria = rule.category_label
+    else:
+        criteria = _korean_label(rule.category_label)
     related_location = issue.related_location
     frame_type = _frame_type(rule.category, related_location) if rule else FrameType.OBJECT
     input_text = issue.original_text or ""
@@ -375,11 +390,14 @@ async def _tick_progress(job_id: str, started_at: datetime) -> None:
         pass
 
 
-async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> None:
+async def _execute_qa_job(job_id: str, document_id: str, document_text: str, team_code: str | None = None) -> None:
     job = await store.get_qa_job(job_id)
     if job is None:
         return
     rulebook = _load_rulebook()
+    if team_code:
+        team_rules = await store.list_team_rules_for_team(team_code)
+        rulebook = merge_team_rules(rulebook, [rule for rule in team_rules if rule.enabled])
     ticker: asyncio.Task[None] | None = None
     try:
         ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
@@ -396,11 +414,18 @@ async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> 
             ticker.cancel()
 
 
+class CreateQAJobRequest(BaseModel):
+    team_code: str | None = None
+
+
 @router.post("/documents/{document_id}/qa-jobs", response_model=CreateQAJobResponse)
-async def create_qa_job(document_id: str, background_tasks: BackgroundTasks) -> CreateQAJobResponse:
+async def create_qa_job(
+    document_id: str, background_tasks: BackgroundTasks, request: CreateQAJobRequest | None = None
+) -> CreateQAJobResponse:
     document = await store.get_document(document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="document not found")
+    team_code = request.team_code if request else None
 
     job = QAJob(
         id=str(uuid.uuid4()),
@@ -411,7 +436,7 @@ async def create_qa_job(document_id: str, background_tasks: BackgroundTasks) -> 
         started_at=datetime.now(UTC),
     )
     await store.save_qa_job(job)
-    background_tasks.add_task(_execute_qa_job, job.id, document_id, document.raw_text)
+    background_tasks.add_task(_execute_qa_job, job.id, document_id, document.raw_text, team_code)
     return CreateQAJobResponse(job_id=job.id)
 
 

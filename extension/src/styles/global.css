@@ -286,7 +286,8 @@ textarea {
   gap: 10px;
 }
 
-.history-back-link {
+.history-back-link,
+.screen-back-link {
   align-self: center;
   background: none;
   border: none;
@@ -966,4 +967,383 @@ textarea {
 .diff-revised-check {
   color: var(--accent);
   font-weight: 400;
+}
+
+/* ---- Rule section (MainScreen) + 팀 규칙 관리 ---- */
+
+.rule-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.rule-heading {
+  font-size: 1rem;
+  font-weight: 800;
+  margin: 0;
+  color: var(--text-heading);
+}
+
+.rule-count {
+  font-size: 0.68rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.rule-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #fafafb;
+  border-radius: 14px;
+  padding: 14px;
+  margin-top: 10px;
+}
+
+.rule-card-header {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-heading);
+}
+
+.rule-card-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rule-card-gear-button {
+  background: none;
+  border: none;
+  padding: 2px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.rule-base-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rule-base-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.rule-number-badge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.rule-base-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rule-base-item-name {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-heading);
+}
+
+.rule-base-item-description {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* 팀 규칙 설명은 사용자가 직접 쓴 임의 길이 텍스트라 기본 규칙처럼 문구 자체를 줄일 수 없다 —
+   여기서만 한 줄로 잘라 보여준다(기본 규칙 설명에는 이 처리를 하지 않음). */
+.team-rule-row-description {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.team-connect-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.team-connect-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.team-code-input {
+  flex: 1;
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.team-connect-error {
+  color: var(--danger);
+}
+
+.team-create-link {
+  align-self: flex-start;
+}
+
+.create-team-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.create-team-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.team-rules-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.team-rules-heading {
+  font-size: 1rem;
+  font-weight: 800;
+  margin: 0;
+  color: var(--text-heading);
+}
+
+.team-code-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.team-code-display {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.team-code-value {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--text-heading);
+}
+
+.team-code-copy-button {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  padding: 2px;
+  font-size: 0.9rem;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.team-rule-accordion {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.team-rule-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #fafafb;
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.team-rule-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.team-rule-checkbox {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.team-rule-card-toggle {
+  flex: 1;
+  background: none;
+  border: none;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+  color: var(--text-heading);
+}
+
+.team-rule-card-icons {
+  flex-shrink: 0;
+  display: flex;
+  gap: 8px;
+}
+
+.team-rule-icon-button {
+  background: none;
+  border: none;
+  padding: 2px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.team-rule-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.team-rule-card-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.team-rule-card-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.team-rule-card-value {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-body);
+  line-height: 1.55;
+}
+
+.team-rule-card-example {
+  font-size: 0.76rem;
+  line-height: 1.6;
+}
+
+.team-rule-card-example-wrong {
+  margin: 0;
+  color: var(--danger);
+}
+
+.team-rule-card-example-fixed {
+  margin: 0;
+  color: var(--success);
+}
+
+.team-rule-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.team-rule-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.team-rule-form-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.team-rule-example-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.team-rule-example-block-title {
+  margin: 0 0 2px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.team-rule-example-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.team-rule-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.team-rule-add-link {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.confirm-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 10;
+}
+
+.confirm-dialog-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 280px;
+  background: #fff;
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+}
+
+.confirm-dialog-message {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--text-heading);
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

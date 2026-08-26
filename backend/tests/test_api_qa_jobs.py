@@ -125,6 +125,48 @@ async def test_qa_job_create_returns_404_for_unknown_document() -> None:
     assert response.status_code == 404
 
 
+# team_code 없이 호출하는 기존 경로가 이전(팀 규칙 기능 도입 전)과 동일하게 동작하는지에 대한
+# 회귀 테스트 — CreateQAJobRequest에 기본값이 있어 바디 없이 POST해도 그대로 통과해야 한다.
+async def test_qa_job_create_without_body_still_works(monkeypatch) -> None:
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_response = await client.post("/documents", json={"raw_text": _TEST_DOCUMENT})
+        document_id = create_response.json()["document_id"]
+
+        job_response = await client.post(f"/documents/{document_id}/qa-jobs")
+        job_id = job_response.json()["job_id"]
+        status_response = await client.get(f"/qa-jobs/{job_id}/status")
+
+    assert job_response.status_code == 200
+    assert status_response.json()["status"] == "done"
+
+
+# team_code를 보내되 해당 팀에 등록된 규칙이 없는 경우 — merge_team_rules([])가 원본 rulebook을
+# 그대로 반환하는 어댑터 계약(test_team_rule_adapter.py에서 단위 테스트됨)이 실제 API 경로에서도
+# QA 실행을 방해하지 않는지 확인.
+async def test_qa_job_create_with_team_code_but_no_team_rules_still_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        team_response = await client.post("/teams", json={"team_name": "테스트팀", "description": "설명"})
+        team_code = team_response.json()["team_code"]
+
+        create_response = await client.post("/documents", json={"raw_text": _TEST_DOCUMENT})
+        document_id = create_response.json()["document_id"]
+
+        job_response = await client.post(f"/documents/{document_id}/qa-jobs", json={"team_code": team_code})
+        job_id = job_response.json()["job_id"]
+        status_response = await client.get(f"/qa-jobs/{job_id}/status")
+
+    assert job_response.status_code == 200
+    assert status_response.json()["status"] == "done"
+
+
 async def test_qa_job_marks_failed_when_llm_client_cannot_be_built(monkeypatch) -> None:
     # review_document() itself isolates each stage's LLM errors into tier_errors and still
     # returns a (empty) result — by design, see pipeline.py's docstring — so the only way a
@@ -399,6 +441,37 @@ def test_dedupe_conflicting_categories_never_collapses_issues_without_a_quote() 
     kept = qa_jobs._dedupe_conflicting_categories((a, b), rulebook)
 
     assert {issue.rule_id for issue in kept} == {"MI-01", "MI-02"}
+
+
+# 회귀 테스트(PR #113) — TEAM은 _CATEGORY_PRIORITY에 없는 합성 카테고리라 _category_priority()가
+# 항상 최하위 점수를 매긴다. 팀 규칙 이슈가 기본 규칙 이슈와 같은 문구를 가리키기만 하면 무조건
+# 지워지던 버그를 막는다: TEAM-* 이슈는 인용문이 있어도 이 dedup 대상에서 제외한다.
+def test_dedupe_conflicting_categories_never_drops_team_rule_issues() -> None:
+    rulebook = qa_jobs._load_rulebook()
+    ga_issue = _issue("GA-01", "6. FAQ", "같은 문구")
+    team_issue = _issue("TEAM-abc-123", "6. FAQ", "같은 문구")
+
+    kept = qa_jobs._dedupe_conflicting_categories((ga_issue, team_issue), rulebook)
+
+    assert {issue.rule_id for issue in kept} == {"GA-01", "TEAM-abc-123"}
+
+
+# 회귀 테스트(PR #113) — _korean_label()은 rulebook_v1.0.md의 "<한글> <English>" 헤더에서
+# 영어 절반을 잘라내려고 만든 함수라, 팀 규칙의 자유 텍스트 rule_name에 그대로 돌리면 첫 영어
+# 단어 앞에서 잘려나간다. TEAM 카테고리는 원문 rule_name을 그대로 criteria로 써야 한다.
+def test_to_issue_record_keeps_team_rule_name_with_english_words_intact() -> None:
+    from sunnic_backend.models.team_rule import TeamRule
+    from sunnic_backend.qa_engine.team_rule_adapter import merge_team_rules
+
+    rulebook = merge_team_rules(
+        qa_jobs._load_rulebook(),
+        [TeamRule(id="abc-123", team_code="T1", rule_name="회원가입 API 정책 검토", description="설명")],
+    )
+    issue = _issue("TEAM-abc-123", "1. 개요", "원문 인용")
+
+    record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, {})
+
+    assert record.criteria == "회원가입 API 정책 검토"
 
 
 # 원문 헤딩 자체의 번호는 작성자마다 있기도 없기도 해서 신뢰할 수 없다는 게 실사용 피드백으로

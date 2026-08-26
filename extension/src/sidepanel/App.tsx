@@ -4,6 +4,7 @@ import { IssueListScreen } from '../components/screens/IssueListScreen'
 import { LoadingScreen } from '../components/screens/LoadingScreen'
 import { MainScreen } from '../components/screens/MainScreen'
 import { ProgressScreen } from '../components/screens/ProgressScreen'
+import { TeamRulesScreen } from '../components/screens/TeamRulesScreen'
 import { useIssueOverlaySync } from '../hooks/useIssueOverlaySync'
 import { useAppState } from '../state/hooks'
 
@@ -19,6 +20,7 @@ export function App() {
       {screen === 'progress' && <ProgressScreen />}
       {screen === 'issues' && <IssueListScreen />}
       {screen === 'history' && <HistoryExportScreen />}
+      {screen === 'team-rules' && <TeamRulesScreen />}
     </main>
   )
 }

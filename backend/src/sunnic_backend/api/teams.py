@@ -43,6 +43,10 @@ class TeamRuleResponse(BaseModel):
     enabled: bool
 
 
+class TeamRuleEnabledIn(BaseModel):
+    enabled: bool
+
+
 def _to_response(rule: TeamRule) -> TeamRuleResponse:
     return TeamRuleResponse(
         id=rule.id,
@@ -54,11 +58,16 @@ def _to_response(rule: TeamRule) -> TeamRuleResponse:
     )
 
 
-async def _generate_unique_team_code() -> str:
+async def _create_team_with_unique_code(team_name: str, description: str) -> Team:
+    # save_team_if_new() folds the "is this code taken" check and the save into one lock
+    # acquisition — see storage/store.py — so two concurrent creates can never both succeed
+    # with the same generated code (the previous shape checked then saved as two separate
+    # calls, leaving a race window between them).
     for _ in range(10):
         code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH))
-        if await store.get_team(code) is None:
-            return code
+        team = Team(team_code=code, team_name=team_name, description=description)
+        if await store.save_team_if_new(team):
+            return team
     raise HTTPException(status_code=500, detail="failed to generate a unique team code")
 
 
@@ -78,12 +87,7 @@ async def _get_team_rule_or_404(team_code: str, rule_id: str) -> TeamRule:
 
 @router.post("/teams", response_model=TeamResponse)
 async def create_team(request: CreateTeamRequest) -> TeamResponse:
-    team = Team(
-        team_code=await _generate_unique_team_code(),
-        team_name=request.team_name,
-        description=request.description,
-    )
-    await store.save_team(team)
+    team = await _create_team_with_unique_code(request.team_name, request.description)
     return TeamResponse(**team.model_dump())
 
 
@@ -128,6 +132,21 @@ async def update_team_rule(team_code: str, rule_id: str, request: TeamRuleIn) ->
             "enabled": request.enabled,
         }
     )
+    await store.save_team_rule(updated)
+    return _to_response(updated)
+
+
+# Split out from update_team_rule (a full-replace PATCH) because the sidepanel's checkbox
+# toggle only ever wants to flip `enabled` — routing that through the full-replace endpoint
+# means it must resend rule_name/description/exception_text/examples read from its own
+# client-side state, so two concurrent editors (one toggling, one editing the description)
+# race and the toggle's PATCH silently reverts the other's just-saved description back to
+# whatever stale copy the toggle had in memory. A dedicated endpoint that only ever touches
+# `enabled` can't clobber unrelated fields no matter how stale the client's copy of them is.
+@router.patch("/teams/{team_code}/rules/{rule_id}/enabled", response_model=TeamRuleResponse)
+async def set_team_rule_enabled(team_code: str, rule_id: str, request: TeamRuleEnabledIn) -> TeamRuleResponse:
+    existing = await _get_team_rule_or_404(team_code, rule_id)
+    updated = existing.model_copy(update={"enabled": request.enabled})
     await store.save_team_rule(updated)
     return _to_response(updated)
 

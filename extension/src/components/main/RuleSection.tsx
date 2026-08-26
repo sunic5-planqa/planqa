@@ -84,17 +84,12 @@ export function RuleSection() {
 
   const toggleRuleEnabled = async (ruleId: string, enabled: boolean) => {
     if (!teamCode) return
-    const rule = teamRules.find((r) => r.id === ruleId)
-    if (!rule) return
     setTogglingId(ruleId)
     try {
-      const updated = await api.updateTeamRule(teamCode, ruleId, {
-        rule_name: rule.rule_name,
-        description: rule.description,
-        exception_text: rule.exception_text,
-        examples: rule.examples,
-        enabled,
-      })
+      // A dedicated enabled-only endpoint (not updateTeamRule's full-replace PATCH) so this
+      // can never resend a stale copy of rule_name/description/exception_text/examples over
+      // whatever another editor just saved for this same rule.
+      const updated = await api.setTeamRuleEnabled(teamCode, ruleId, enabled)
       dispatch({ type: 'TEAM_RULE_UPDATED', rule: updated })
     } catch {
       dispatch({ type: 'SET_ERROR', error: '규칙 적용 여부 변경에 실패했습니다.' })

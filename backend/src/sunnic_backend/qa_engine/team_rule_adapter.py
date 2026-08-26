@@ -6,8 +6,11 @@ from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
     RuleDef,
 )
 
-_TEAM_CATEGORY = "TEAM"
-_TEAM_RULE_ID_PREFIX = "TEAM-"
+# Public (no leading underscore) because qa_jobs.py needs these to special-case synthetic
+# team-rule issues: TEAM isn't a real rulebook_v1.0.md category, so category-keyed logic that
+# assumes the 8 built-in categories (_korean_label, _CATEGORY_PRIORITY dedup) must recognize it.
+TEAM_CATEGORY = "TEAM"
+TEAM_RULE_ID_PREFIX = "TEAM-"
 
 
 def _compose_rule_text(rule: TeamRule) -> str:
@@ -29,8 +32,8 @@ def _compose_rule_text(rule: TeamRule) -> str:
 
 def team_rule_to_ruledef(rule: TeamRule) -> RuleDef:
     return RuleDef(
-        rule_id=f"{_TEAM_RULE_ID_PREFIX}{rule.id}",
-        category=_TEAM_CATEGORY,
+        rule_id=f"{TEAM_RULE_ID_PREFIX}{rule.id}",
+        category=TEAM_CATEGORY,
         category_label=rule.rule_name,
         text=_compose_rule_text(rule),
         fixed_level=None,
@@ -41,5 +44,5 @@ def team_rule_to_ruledef(rule: TeamRule) -> RuleDef:
 def merge_team_rules(rulebook: RuleBook, team_rules: list[TeamRule]) -> RuleBook:
     if not team_rules:
         return rulebook
-    extra = {f"{_TEAM_RULE_ID_PREFIX}{rule.id}": team_rule_to_ruledef(rule) for rule in team_rules}
+    extra = {f"{TEAM_RULE_ID_PREFIX}{rule.id}": team_rule_to_ruledef(rule) for rule in team_rules}
     return replace(rulebook, rules={**rulebook.rules, **extra})

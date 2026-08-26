@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api/client'
 import type { TeamRuleInput } from '../../api/types'
 import { useAppDispatch, useAppState } from '../../state/hooks'
+import { ErrorBanner } from '../common/ErrorBanner'
 import { TeamRuleAccordion } from '../team/TeamRuleAccordion'
 import { TeamRuleForm } from '../team/TeamRuleForm'
 
@@ -11,11 +12,17 @@ export function TeamRulesScreen() {
   const [showCreateForm, setShowCreateForm] = useState(false)
   const [creating, setCreating] = useState(false)
   const [copied, setCopied] = useState(false)
+  // MainScreen의 전역 error/ErrorBanner는 이 화면(팀-코드 화면 전환 시 언마운트되는 별도
+  // Screen)에서는 렌더링되지 않으므로 재사용하지 않는다 — 이 화면 안에서만 뜨는 로컬 에러.
+  const [loadError, setLoadError] = useState<string | null>(null)
   const copiedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (!teamCode) return
-    api.listTeamRules(teamCode).then((rules) => dispatch({ type: 'TEAM_RULES_LOADED', rules }))
+    api
+      .listTeamRules(teamCode)
+      .then((rules) => dispatch({ type: 'TEAM_RULES_LOADED', rules }))
+      .catch(() => setLoadError('팀 규칙 목록을 불러오지 못했습니다.'))
   }, [teamCode, dispatch])
 
   useEffect(() => () => {
@@ -42,6 +49,8 @@ export function TeamRulesScreen() {
       const rule = await api.createTeamRule(teamCode, input)
       dispatch({ type: 'TEAM_RULE_ADDED', rule })
       setShowCreateForm(false)
+    } catch {
+      setLoadError('팀 규칙 추가에 실패했습니다.')
     } finally {
       setCreating(false)
     }
@@ -68,7 +77,9 @@ export function TeamRulesScreen() {
           {teamDescription && <p className="hint">{teamDescription}</p>}
         </div>
 
-        {teamCode && <TeamRuleAccordion rules={teamRules} teamCode={teamCode} />}
+        {loadError && <ErrorBanner message={loadError} />}
+
+        {teamCode && <TeamRuleAccordion rules={teamRules} teamCode={teamCode} onError={setLoadError} />}
 
         {showCreateForm ? (
           <TeamRuleForm saving={creating} onCancel={() => setShowCreateForm(false)} onSave={(input) => void createRule(input)} />

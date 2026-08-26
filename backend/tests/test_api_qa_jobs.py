@@ -443,6 +443,37 @@ def test_dedupe_conflicting_categories_never_collapses_issues_without_a_quote() 
     assert {issue.rule_id for issue in kept} == {"MI-01", "MI-02"}
 
 
+# 회귀 테스트(PR #113) — TEAM은 _CATEGORY_PRIORITY에 없는 합성 카테고리라 _category_priority()가
+# 항상 최하위 점수를 매긴다. 팀 규칙 이슈가 기본 규칙 이슈와 같은 문구를 가리키기만 하면 무조건
+# 지워지던 버그를 막는다: TEAM-* 이슈는 인용문이 있어도 이 dedup 대상에서 제외한다.
+def test_dedupe_conflicting_categories_never_drops_team_rule_issues() -> None:
+    rulebook = qa_jobs._load_rulebook()
+    ga_issue = _issue("GA-01", "6. FAQ", "같은 문구")
+    team_issue = _issue("TEAM-abc-123", "6. FAQ", "같은 문구")
+
+    kept = qa_jobs._dedupe_conflicting_categories((ga_issue, team_issue), rulebook)
+
+    assert {issue.rule_id for issue in kept} == {"GA-01", "TEAM-abc-123"}
+
+
+# 회귀 테스트(PR #113) — _korean_label()은 rulebook_v1.0.md의 "<한글> <English>" 헤더에서
+# 영어 절반을 잘라내려고 만든 함수라, 팀 규칙의 자유 텍스트 rule_name에 그대로 돌리면 첫 영어
+# 단어 앞에서 잘려나간다. TEAM 카테고리는 원문 rule_name을 그대로 criteria로 써야 한다.
+def test_to_issue_record_keeps_team_rule_name_with_english_words_intact() -> None:
+    from sunnic_backend.models.team_rule import TeamRule
+    from sunnic_backend.qa_engine.team_rule_adapter import merge_team_rules
+
+    rulebook = merge_team_rules(
+        qa_jobs._load_rulebook(),
+        [TeamRule(id="abc-123", team_code="T1", rule_name="회원가입 API 정책 검토", description="설명")],
+    )
+    issue = _issue("TEAM-abc-123", "1. 개요", "원문 인용")
+
+    record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, {})
+
+    assert record.criteria == "회원가입 API 정책 검토"
+
+
 # 원문 헤딩 자체의 번호는 작성자마다 있기도 없기도 해서 신뢰할 수 없다는 게 실사용 피드백으로
 # 확인됨 — 문서 안 등장 순서를 우리가 직접 세어 번호를 매긴다.
 def test_build_heading_numbers_numbers_logical_units_in_document_order() -> None:

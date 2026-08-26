@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import type { IssueResponse } from '../api/types'
+import type { IssueResponse, TeamRuleResponse } from '../api/types'
 import { appReducer } from './appReducer'
 import { initialAppState } from './types'
+
+function teamRule(overrides: Partial<TeamRuleResponse> = {}): TeamRuleResponse {
+  return {
+    id: 'r1',
+    rule_name: '규칙명',
+    description: '규칙',
+    exception_text: null,
+    examples: { error1: { error: '', correction: '' }, error2: { error: '', correction: '' }, exception: '' },
+    enabled: true,
+    ...overrides,
+  }
+}
 
 describe('appReducer', () => {
   it('ISSUES_LOADED resets index, editing state, and stale edits from a previous review', () => {
@@ -207,5 +219,60 @@ describe('appReducer', () => {
 
     const afterSelect = appReducer({ ...withIssues, editingIssueId: 'a' }, { type: 'SELECT_ISSUE_BY_ID', issueId: 'b' })
     expect(afterSelect.editingIssueId).toBeNull()
+  })
+
+  it('RULE_CATEGORIES_LOADED stores the categories', () => {
+    const state = appReducer(initialAppState, {
+      type: 'RULE_CATEGORIES_LOADED',
+      categories: [{ category: 'LG', label: '논리비약' }],
+    })
+
+    expect(state.ruleCategories).toEqual([{ category: 'LG', label: '논리비약' }])
+  })
+
+  it('TEAM_CONNECTED stores the team code, name, and description', () => {
+    const state = appReducer(initialAppState, {
+      type: 'TEAM_CONNECTED',
+      team: { team_code: 'ABC123', team_name: '서비스기획 2팀', description: '설명' },
+    })
+
+    expect(state.teamCode).toBe('ABC123')
+    expect(state.teamName).toBe('서비스기획 2팀')
+    expect(state.teamDescription).toBe('설명')
+  })
+
+  it('TEAM_RULES_LOADED replaces the team rule list', () => {
+    const rules = [teamRule()]
+
+    const state = appReducer(initialAppState, { type: 'TEAM_RULES_LOADED', rules })
+
+    expect(state.teamRules).toEqual(rules)
+  })
+
+  it('TEAM_RULE_ADDED appends a rule', () => {
+    const rule = teamRule()
+
+    const state = appReducer(initialAppState, { type: 'TEAM_RULE_ADDED', rule })
+
+    expect(state.teamRules).toEqual([rule])
+  })
+
+  it('TEAM_RULE_UPDATED replaces the matching rule in place', () => {
+    const original = teamRule({ description: '원본' })
+    const updated = teamRule({ description: '수정됨' })
+    const withRule = { ...initialAppState, teamRules: [original] }
+
+    const state = appReducer(withRule, { type: 'TEAM_RULE_UPDATED', rule: updated })
+
+    expect(state.teamRules).toEqual([updated])
+  })
+
+  it('TEAM_RULE_DELETED removes the matching rule', () => {
+    const rule = teamRule()
+    const withRule = { ...initialAppState, teamRules: [rule] }
+
+    const state = appReducer(withRule, { type: 'TEAM_RULE_DELETED', ruleId: 'r1' })
+
+    expect(state.teamRules).toEqual([])
   })
 })

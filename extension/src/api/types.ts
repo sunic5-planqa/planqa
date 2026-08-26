@@ -34,6 +34,10 @@ export interface CreateQAJobResponse {
   job_id: string
 }
 
+export interface CreateQAJobRequest {
+  team_code?: string | null
+}
+
 export type CategoryItemStatus = 'pending' | 'in_progress' | 'done'
 
 export interface CategoryItem {
@@ -99,4 +103,48 @@ export interface ExportDocumentResponse {
 
 export interface DocumentCountResponse {
   count: number
+}
+
+export interface RulebookCategoryResponse {
+  category: string
+  label: string
+}
+
+export interface TeamResponse {
+  team_code: string
+  team_name: string
+  description: string
+}
+
+export interface CreateTeamRequest {
+  team_name: string
+  description: string
+}
+
+export interface RuleExamplePair {
+  error: string
+  correction: string
+}
+
+export interface TeamRuleExamples {
+  error1: RuleExamplePair
+  error2: RuleExamplePair
+  exception: string
+}
+
+export interface TeamRuleResponse {
+  id: string
+  rule_name: string
+  description: string
+  exception_text: string | null
+  examples: TeamRuleExamples
+  enabled: boolean
+}
+
+export interface TeamRuleInput {
+  rule_name: string
+  description: string
+  exception_text?: string | null
+  examples: TeamRuleExamples
+  enabled: boolean
 }

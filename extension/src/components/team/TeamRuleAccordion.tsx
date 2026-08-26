@@ -5,7 +5,16 @@ import { useAppDispatch } from '../../state/hooks'
 import { ConfirmDialog } from '../common/ConfirmDialog'
 import { TeamRuleForm } from './TeamRuleForm'
 
-export function TeamRuleAccordion({ rules, teamCode }: { rules: TeamRuleResponse[]; teamCode: string }) {
+interface TeamRuleAccordionProps {
+  rules: TeamRuleResponse[]
+  teamCode: string
+  // 이 컴포넌트는 TeamRulesScreen 밑에서만 쓰이는데, 그 화면은 MainScreen의 전역
+  // error/ErrorBanner를 렌더링하지 않는다 — 실패를 보여줄 배너를 부모가 갖고 있으므로
+  // 콜백으로 위임한다(전역 error 슬라이스에 넣으면 나중에 메인 화면에서야 뒤늦게 뜬다).
+  onError: (message: string) => void
+}
+
+export function TeamRuleAccordion({ rules, teamCode, onError }: TeamRuleAccordionProps) {
   const dispatch = useAppDispatch()
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -27,15 +36,24 @@ export function TeamRuleAccordion({ rules, teamCode }: { rules: TeamRuleResponse
       const updated = await api.updateTeamRule(teamCode, rule.id, input)
       dispatch({ type: 'TEAM_RULE_UPDATED', rule: updated })
       setEditingId(null)
+    } catch {
+      onError('팀 규칙 수정에 실패했습니다.')
     } finally {
       setSaving(false)
     }
   }
 
   const confirmDelete = async (ruleId: string) => {
-    await api.deleteTeamRule(teamCode, ruleId)
-    dispatch({ type: 'TEAM_RULE_DELETED', ruleId })
-    setConfirmDeleteId(null)
+    try {
+      await api.deleteTeamRule(teamCode, ruleId)
+      dispatch({ type: 'TEAM_RULE_DELETED', ruleId })
+    } catch {
+      // 실패해도 다이얼로그를 계속 띄워두면 취소 외에는 빠져나갈 방법이 없다 — 닫고 배너로
+      // 알린 뒤 사용자가 다시 시도하게 한다.
+      onError('팀 규칙 삭제에 실패했습니다.')
+    } finally {
+      setConfirmDeleteId(null)
+    }
   }
 
   return (

@@ -48,9 +48,16 @@ export function RuleSection() {
     setLookupError(null)
     try {
       const team = await api.getTeam(teamCodeInput.trim())
+      // getTeam 성공 시점에 바로 화면이 "연결됨" 카드로 전환되므로(teamCode !== null), 아래
+      // listTeamRules가 실패해도 lookupError는 더 이상 보이는 브랜치가 아니다 — 화면 어디서든
+      // 항상 렌더링되는 전역 error/ErrorBanner(MainScreen)로 따로 알린다.
       dispatch({ type: 'TEAM_CONNECTED', team })
-      const rules = await api.listTeamRules(team.team_code)
-      dispatch({ type: 'TEAM_RULES_LOADED', rules })
+      try {
+        const rules = await api.listTeamRules(team.team_code)
+        dispatch({ type: 'TEAM_RULES_LOADED', rules })
+      } catch {
+        dispatch({ type: 'SET_ERROR', error: '팀 규칙 목록을 불러오지 못했습니다.' })
+      }
     } catch (err) {
       setLookupError(err instanceof ApiError && err.status === 404 ? '팀 코드를 찾을 수 없습니다.' : '팀 조회에 실패했습니다.')
     } finally {
@@ -68,6 +75,8 @@ export function RuleSection() {
       setShowCreateTeamForm(false)
       // 방금 생성된 팀 코드를 확인할 곳이 관리 페이지뿐이라, 만들자마자 그리로 이동시킨다.
       dispatch({ type: 'NAVIGATE', screen: 'team-rules' })
+    } catch {
+      dispatch({ type: 'SET_ERROR', error: '팀 생성에 실패했습니다.' })
     } finally {
       setCreating(false)
     }
@@ -87,6 +96,8 @@ export function RuleSection() {
         enabled,
       })
       dispatch({ type: 'TEAM_RULE_UPDATED', rule: updated })
+    } catch {
+      dispatch({ type: 'SET_ERROR', error: '규칙 적용 여부 변경에 실패했습니다.' })
     } finally {
       setTogglingId(null)
     }

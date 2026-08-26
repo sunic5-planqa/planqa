@@ -2472,3 +2472,39 @@ Round 2에서 메인 화면 하나로 합쳤던 걸 사용자가 다시 뒤집�
 
 - **Claude가 검증 불가능한 것**: Chrome에서 관리 페이지 진입(⚙)과 메인 화면 체크박스가 실제로
   분리되어 보이는지, 팀 생성 후 자동 이동으로 코드가 잘 보이는지 — 은성님 직접 확인 필요.
+
+## 2026-08-27 — PR #113 리뷰 후속 fix 2건
+
+PR #113(팀 규칙 관리 기능) 코드 리뷰에서 나온 "설계 판단 필요" 항목 중 2개를 마무리. 나머지
+하나(`tiers.py`의 `TIER_CATEGORIES`에 "TEAM" 추가)는 시도했다가 되돌림 — 아래 참고.
+
+### Done
+
+- **팀 코드 생성 TOCTOU 레이스 제거**: `store.py`에 `save_team_if_new()` 추가 — "코드가
+  비어있는지 확인"과 "저장"을 별개의 락 획득 두 번이 아니라 한 번의 락 안에서 원자적으로
+  처리. `teams.py`의 `_generate_unique_team_code()` + `store.save_team()` 조합을
+  `_create_team_with_unique_code()`(생성-시도-저장을 한 함수로) 하나로 교체.
+- **팀 룰 체크박스 토글의 lost-update 제거**: `update_team_rule`(풀-리플레이스 PATCH)은
+  그대로 두고, `enabled` 필드만 바꾸는 전용 엔드포인트
+  `PATCH /teams/{team_code}/rules/{rule_id}/enabled` 신설. 프론트 `toggleRuleEnabled`가
+  이제 이걸 호출 — 더 이상 클라이언트 상태에서 읽은(어쩌면 이미 오래된) rule_name/
+  description/exception_text/examples를 다시 보내지 않으므로, 토글이 다른 편집자가 방금
+  저장한 필드를 되돌릴 수 없음.
+- 신규 테스트 4개: `save_team_if_new`가 같은 코드 두 번째 저장을 거부하는지, 신규 엔드포인트가
+  다른 필드는 안 건드리는지, 실제로 "다른 편집자의 동시 편집을 안 되돌리는지"(concurrent-edit
+  시나리오 그대로 재현), 잘못된 팀으로는 404인지.
+- 164/164 백엔드 테스트 통과(기존 160 + 신규 4), `ruff check` 통과, 프론트 typecheck/lint/
+  vitest 111개 그대로 통과(프론트는 `client.ts`/`RuleSection.tsx`만 수정, 로직 이동 수준이라
+  신규 테스트 없음).
+
+### Not done — 시도했다가 되돌림
+
+- `tiers.py`의 `TIER_CATEGORIES`에 `"TEAM"`을 추가했더니 `test_tiers.py`의 두 테스트
+  (`test_every_assigned_category_exists_in_the_real_rulebook`,
+  `test_tier_categories_matches_rulebook_section_2`)가 깨짐 — 이 파일은 벤더링 정책상
+  `rulebook_v1.0.md`의 실제 카테고리와 바이트 단위로 일치해야 한다는 걸 검증하는 테스트라,
+  "TEAM"을 여기 넣는 건 이 파일의 존재 이유(벤더링 드리프트 감지)를 정면으로 깨는 것.
+  프로덕션 경로(`bundled_screen_hybrid.review_document`)는 이 함수를 아예 안 써서 지금은
+  위험 없음 — 나중에 `pipeline.review_document` 쪽에 팀 룰을 실제로 merge해서 쓰게 되면, 그
+  호출부에서 TEAM 카테고리 룰을 별도로 챙겨 넣는 방식으로 고쳐야 함(이 파일 자체는 손대지
+  않고).

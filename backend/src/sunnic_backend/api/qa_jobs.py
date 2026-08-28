@@ -28,6 +28,7 @@ from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import (
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import (
     Level,
 )
+from sunnic_backend.qa_engine.review_agent.structures import xdc
 from sunnic_backend.qa_engine.review_agent.structures.bundled_screen_hybrid import (
     review_document,
 )
@@ -43,8 +44,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["qa-jobs"])
 
-_RULEBOOK_PATH = Path(__file__).resolve().parent.parent / "qa_engine" / "review_agent" / "data" / "rulebook_v1.0.md"
+_QA_ENGINE_DIR = Path(__file__).resolve().parent.parent / "qa_engine" / "review_agent"
+_RULEBOOK_PATH = _QA_ENGINE_DIR / "data" / "rulebook_v1.0.md"
+_XDC_RULEBOOK_PATH = _QA_ENGINE_DIR / "data" / "xdc" / "xdc_rulebook_v1.0.md"
+_XDC_ALIASES_PATH = _QA_ENGINE_DIR / "data" / "xdc" / "aliases.json"
 _rulebook: RuleBook | None = None
+_xdc_rulebook: RuleBook | None = None
+_xdc_aliases: dict[str, str] | None = None
+# 프로세스 생애 동안 유지되는 참고문서 인덱스 캐시 — review_document()의 reference_cache=
+# 인자로 그대로 넘긴다. 키는 review-agent 쪽에서 (doc_id, sha256(text)[:16])로 계산하므로,
+# 같은 참고문서를 여러 QA job이 반복 참조해도(팀이 정책 문서 하나를 계속 기준으로 쓰는 흔한
+# 경우) 매번 다시 인덱싱(Gemini 콜)하지 않는다. 문서가 수정되면 해시가 바뀌어 자연히
+# 무효화된다.
+_reference_cache: dict[str, xdc.ReferenceIndex] = {}
 
 
 def _load_rulebook() -> RuleBook:
@@ -54,6 +66,20 @@ def _load_rulebook() -> RuleBook:
     if _rulebook is None:
         _rulebook = parse_rulebook(_RULEBOOK_PATH)
     return _rulebook
+
+
+def _load_xdc_rulebook() -> RuleBook:
+    global _xdc_rulebook
+    if _xdc_rulebook is None:
+        _xdc_rulebook = parse_rulebook(_XDC_RULEBOOK_PATH)
+    return _xdc_rulebook
+
+
+def _load_xdc_aliases() -> dict[str, str]:
+    global _xdc_aliases
+    if _xdc_aliases is None:
+        _xdc_aliases = xdc.load_aliases(_XDC_ALIASES_PATH)
+    return _xdc_aliases
 
 
 class CategoryItemOut(BaseModel):
@@ -85,7 +111,10 @@ def _korean_label(category_label: str) -> str:
 #   LG/LF/GA: 두 위치 간 관계 오류라 range 프레임 — review-agent가 related_location을 채워주면
 #     (요청 이슈 sunic5-planqa/planqa-agent#4, 2026-08-10 재벤더링으로 반영됨) range, 모델이
 #     특정 못 해 비어 있으면 object로 안전하게 폴백한다.
-_RANGE_CATEGORIES = frozenset({"LG", "LF", "GA"})
+#   XDC: 관계형과 같은 이유(두 위치 간 관계)로 range — 다만 두 번째 위치가 같은 문서가 아니라
+#     참고문서 쪽이라 related_location이 아니라 reference_section에 담겨 온다(_to_issue_record
+#     참고). 카테고리 판정만으로 봤을 땐 LG/LF/GA와 동일하게 취급하면 됨.
+_RANGE_CATEGORIES = frozenset({"LG", "LF", "GA", "XDC"})
 _INSERT_RANGE_CATEGORIES = frozenset({"MI"})
 
 
@@ -218,6 +247,7 @@ class IssueResponse(BaseModel):
 # 하나로 정해진 값은 아니라 팀 판단이 바뀌면 순서만 조정하면 됨(카테고리 코드는 rulebook_v1.0.md
 # §1~8 순서, 이 딕셔너리는 그와 무관하게 시급도로 재배열한 것).
 _CATEGORY_PRIORITY: dict[str, int] = {
+    "XDC": 0,  # 타 문서 정합성 — 참고문서와의 확정사항 불일치, GA와 동급의 시급도
     "GA": 0,  # 상위 목표와 세부 내용의 정합성 — 문서 자체 목적과 충돌
     "LG": 1,  # 논리비약
     "LF": 2,  # 논리흐름
@@ -242,7 +272,7 @@ def _category_priority(rule_id: str, rulebook: RuleBook) -> int:
 # dedupe.py의 dedupe_issues()는 "같은 rule_id + 겹치는 위치"만 접도록 의도적으로 짜여 있어서(서로
 # 다른 rule_id는 별개 이슈로 보존) 이건 그 위에 얹는 우리 쪽 후처리다.
 def _dedupe_conflicting_categories(issues: tuple[ReviewIssue, ...], rulebook: RuleBook) -> tuple[ReviewIssue, ...]:
-    best_by_key: dict[tuple[str, str], ReviewIssue] = {}
+    best_by_key: dict[tuple[str, str, str | None], ReviewIssue] = {}
     passthrough: list[ReviewIssue] = []
     for issue in issues:
         if not issue.original_text or issue.rule_id.startswith(TEAM_RULE_ID_PREFIX):
@@ -252,14 +282,36 @@ def _dedupe_conflicting_categories(issues: tuple[ReviewIssue, ...], rulebook: Ru
             # 가리키기만 하면 팀이 일부러 추가한 규칙이 매번 조용히 사라지게 된다.
             passthrough.append(issue)
             continue
-        key = (issue.location, issue.original_text)
+        # reference_document를 키에 포함 — XDC 이슈는 같은 (위치, 인용문)이라도 참고문서가
+        # 다르면 서로 다른 발견이다(같은 문단이 참고문서 A/B 둘 다와 따로 충돌하는 경우). XDC가
+        # 아닌 이슈는 reference_document가 항상 None이라 이 키 확장이 기존 동작을 안 바꾼다.
+        key = (issue.location, issue.original_text, issue.reference_document)
         existing = best_by_key.get(key)
         if existing is None or _category_priority(issue.rule_id, rulebook) < _category_priority(existing.rule_id, rulebook):
             best_by_key[key] = issue
     return tuple(best_by_key.values()) + tuple(passthrough)
 
 
-def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> ReviewResult:
+# review_document()의 rulebook(팀 룰 병합분) 인자에 XDC-01~04를 같이 합쳐 넣지 않는 이유:
+# _paragraph_and_document_rules()가 category만으로 버킷을 나누는데, XDC는 참고문서와 비교
+# 해야만 의미 있는 룰이라 그 안에 섞이면 참고문서 없이 현재 문서 혼자 스크리닝/컨펌하는
+# 엉뚱한 내부 판정이 돼버린다 — 그래서 review_document()엔 xdc_rulebook= 전용 인자로 별도
+# 전달한다. 다만 _to_issue_record/_dedupe_conflicting_categories는 rulebook.rule(rule_id)로
+# category/category_label을 찾으므로, 그 두 곳에서 쓸 조회용 사본에는 XDC도 합쳐 넣는다.
+def _rulebook_for_lookup(rulebook: RuleBook, xdc_rulebook: RuleBook | None) -> RuleBook:
+    if xdc_rulebook is None:
+        return rulebook
+    return replace(rulebook, rules={**rulebook.rules, **xdc_rulebook.rules})
+
+
+def _run_review_sync(
+    doc_id: str,
+    document_text: str,
+    rulebook: RuleBook,
+    reference_documents: list[tuple[str, str]],
+    xdc_rulebook: RuleBook | None,
+    xdc_aliases: dict[str, str] | None,
+) -> ReviewResult:
     # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
     # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
     #
@@ -271,9 +323,20 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
     # 정밀) = Sonnet은 그대로.
     screen_llm = GeminiClient(model=settings.sunnic_gemini_model, api_keys=settings.gemini_api_keys)
     confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
-    result = review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
+    result = review_document(
+        doc_id,
+        document_text,
+        rulebook,
+        screen_llm,
+        confirm_llm,
+        reference_documents=reference_documents,
+        xdc_rulebook=xdc_rulebook,
+        xdc_aliases=xdc_aliases,
+        reference_cache=_reference_cache,
+    )
 
-    deduped_issues = _dedupe_conflicting_categories(result.issues, rulebook)
+    lookup_rulebook = _rulebook_for_lookup(rulebook, xdc_rulebook)
+    deduped_issues = _dedupe_conflicting_categories(result.issues, lookup_rulebook)
     return replace(result, issues=deduped_issues)
 
 
@@ -334,6 +397,14 @@ def _to_issue_record(
     else:
         criteria = _korean_label(rule.category_label)
     related_location = issue.related_location
+    related_original_text = issue.related_original_text
+    # XDC의 "두 번째 위치"는 같은 문서 안이 아니라 참고문서 쪽이라 별도 필드
+    # (reference_document/reference_section/reference_quote)로 담겨 온다 — 새 스키마 필드를
+    # 프론트까지 뚫는 대신, 관계형(LG/LF/GA)이 이미 쓰는 related_location/related_original_text
+    # 표시 경로를 그대로 재사용한다(어느 문서 소속인지 알 수 있게 라벨에 doc_id를 붙임).
+    if issue.reference_document:
+        related_location = f"[{issue.reference_document}] {issue.reference_section}"
+        related_original_text = issue.reference_quote
     frame_type = _frame_type(rule.category, related_location) if rule else FrameType.OBJECT
     input_text = issue.original_text or ""
     start = _issue_start(document_text, input_text, issue.location)
@@ -352,7 +423,7 @@ def _to_issue_record(
         end=start + len(input_text),
         frame_type=frame_type,
         related_location=related_location,
-        related_original_text=issue.related_original_text,
+        related_original_text=related_original_text,
     )
 
 
@@ -390,7 +461,13 @@ async def _tick_progress(job_id: str, started_at: datetime) -> None:
         pass
 
 
-async def _execute_qa_job(job_id: str, document_id: str, document_text: str, team_code: str | None = None) -> None:
+async def _execute_qa_job(
+    job_id: str,
+    document_id: str,
+    document_text: str,
+    team_code: str | None = None,
+    reference_document_ids: list[str] | None = None,
+) -> None:
     job = await store.get_qa_job(job_id)
     if job is None:
         return
@@ -398,13 +475,30 @@ async def _execute_qa_job(job_id: str, document_id: str, document_text: str, tea
     if team_code:
         team_rules = await store.list_team_rules_for_team(team_code)
         rulebook = merge_team_rules(rulebook, [rule for rule in team_rules if rule.enabled])
+
+    reference_documents: list[tuple[str, str]] = []
+    for reference_document_id in reference_document_ids or []:
+        reference_document = await store.get_document(reference_document_id)
+        if reference_document is not None:
+            reference_documents.append((reference_document_id, reference_document.raw_text))
+    xdc_rulebook = _load_xdc_rulebook() if reference_documents else None
+    lookup_rulebook = _rulebook_for_lookup(rulebook, xdc_rulebook)
+
     ticker: asyncio.Task[None] | None = None
     try:
         ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
-        result = await asyncio.to_thread(_run_review_sync, document_id, document_text, rulebook)
+        result = await asyncio.to_thread(
+            _run_review_sync,
+            document_id,
+            document_text,
+            rulebook,
+            reference_documents,
+            xdc_rulebook,
+            _load_xdc_aliases() if reference_documents else None,
+        )
         heading_numbers = _build_heading_numbers(document_text)
         for issue in result.issues:
-            await store.save_issue(_to_issue_record(job_id, document_text, rulebook, issue, heading_numbers))
+            await store.save_issue(_to_issue_record(job_id, document_text, lookup_rulebook, issue, heading_numbers))
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.DONE, "progress": 100}))
     except Exception:
         logger.exception("QA job %s failed for document %s", job_id, document_id)
@@ -416,6 +510,7 @@ async def _execute_qa_job(job_id: str, document_id: str, document_text: str, tea
 
 class CreateQAJobRequest(BaseModel):
     team_code: str | None = None
+    reference_document_ids: list[str] = []
 
 
 @router.post("/documents/{document_id}/qa-jobs", response_model=CreateQAJobResponse)
@@ -426,6 +521,7 @@ async def create_qa_job(
     if document is None:
         raise HTTPException(status_code=404, detail="document not found")
     team_code = request.team_code if request else None
+    reference_document_ids = request.reference_document_ids if request else []
 
     job = QAJob(
         id=str(uuid.uuid4()),
@@ -436,7 +532,9 @@ async def create_qa_job(
         started_at=datetime.now(UTC),
     )
     await store.save_qa_job(job)
-    background_tasks.add_task(_execute_qa_job, job.id, document_id, document.raw_text, team_code)
+    background_tasks.add_task(
+        _execute_qa_job, job.id, document_id, document.raw_text, team_code, reference_document_ids
+    )
     return CreateQAJobResponse(job_id=job.id)
 
 

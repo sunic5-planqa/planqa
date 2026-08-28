@@ -52,6 +52,17 @@ class Store:
         async with self._lock:
             self._teams[team.team_code] = team
 
+    async def save_team_if_new(self, team: Team) -> bool:
+        # Combines the "is this code taken" check and the save into one lock acquisition —
+        # a separate get_team() + save_team() pair (the previous shape) leaves a window
+        # between the two calls where two concurrent creates can both pass the check for
+        # the same generated code, and the second save silently overwrites the first team.
+        async with self._lock:
+            if team.team_code in self._teams:
+                return False
+            self._teams[team.team_code] = team
+            return True
+
     async def get_team(self, team_code: str) -> Team | None:
         async with self._lock:
             return self._teams.get(team_code)

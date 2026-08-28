@@ -93,6 +93,12 @@ export const api = {
   updateTeamRule: (teamCode: string, ruleId: string, body: TeamRuleInput) =>
     request<TeamRuleResponse>(`/teams/${teamCode}/rules/${ruleId}`, { method: 'PATCH', body: JSON.stringify(body) }),
 
+  setTeamRuleEnabled: (teamCode: string, ruleId: string, enabled: boolean) =>
+    request<TeamRuleResponse>(`/teams/${teamCode}/rules/${ruleId}/enabled`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
+
   deleteTeamRule: (teamCode: string, ruleId: string) =>
     request<{ id: string }>(`/teams/${teamCode}/rules/${ruleId}`, { method: 'DELETE' }),
 }

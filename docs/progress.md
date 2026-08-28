@@ -2508,3 +2508,53 @@ PR #113(팀 규칙 관리 기능) 코드 리뷰에서 나온 "설계 판단 필�
   위험 없음 — 나중에 `pipeline.review_document` 쪽에 팀 룰을 실제로 merge해서 쓰게 되면, 그
   호출부에서 TEAM 카테고리 룰을 별도로 챙겨 넣는 방식으로 고쳐야 함(이 파일 자체는 손대지
   않고).
+
+## 2026-08-28 (계속) — 타문서 정합성(XDC) 리뷰 파이프라인 연동
+
+승현이 독립적으로 XDC 기능을 구현(sunic5-planqa/planqa#115)했는데, 팀 룰 통합 코드를
+실수로 되돌리는 문제가 있어 그 PR 자체는 안 씀 — 대신 룰 카탈로그(XDC-01~04)만 이식하고,
+실제 구현은 planqa-agent의 review-agent 쪽(더 많은 매칭 신호, 벤더링 정책 준수, 139개
+테스트로 검증됨)을 재벤더링해서 연결했다. 상세 배경은 planqa-agent#43/#44/#45 참고.
+
+### Done
+
+- **재벤더링**: `structures/xdc.py`(신규), `structures/bundled_screen_hybrid.py`(참고문서
+  있을 때만 활성화되는 decision_records 추출 + XDC 전용 confirm 트랙),
+  `planqa_schemas/schema.py`(Issue에 reference_document/reference_section/reference_quote/
+  difference_type 4필드), `planqa_schemas/rulebook.py`(룰 ID 정규식 `{2}`→`{2,3}`,
+  XDC 같은 3자 카테고리 지원), `dedupe.py`(`_same_reference` 가드) — planqa-agent
+  services/review-agent에서 그대로 복사 + import 네임스페이스만 재작성.
+- `data/xdc/xdc_rulebook_v1.0.md`(XDC-01~04), `data/xdc/aliases.json` 데이터 파일 추가.
+- `api/qa_jobs.py` 연동:
+  - `CreateQAJobRequest.reference_document_ids: list[str] = []` 추가(`team_code`는 유지).
+  - `_execute_qa_job`이 그 id들로 `store.get_document()`를 조회해 `(id, raw_text)` 쌍으로 변환.
+  - **중요한 설계 결정**: XDC 룰북은 `review_document()`의 팀 룰과 같은 `rulebook` 인자에
+    합치지 않고 별도 `xdc_rulebook=` 키워드 인자로만 넘긴다 — 합치면
+    `_paragraph_and_document_rules()`가 XDC-01~04를 일반 문단형 내부 룰로 오인해서
+    참고문서 없이 현재 문서 혼자 스크리닝/컨펌해버리는 오류가 생김(승현 버전에는 없던 문제,
+    설계 단계에서 미리 확인).
+  - `_to_issue_record`/`_dedupe_conflicting_categories` 전용으로 XDC를 합친 조회용
+    rulebook(`_rulebook_for_lookup`)을 별도로 만들어 사용 — criteria/frame_type/우선순위
+    판정에 필요.
+- **승현 버전에서 발견한 버그 2개를 여기서는 처음부터 피함**:
+  1. XDC 이슈가 dedup에서 조용히 사라지는 문제(`_CATEGORY_PRIORITY`에 XDC 미등록 시
+     TEAM처럼 최하위 취급) → `_CATEGORY_PRIORITY`에 `"XDC": 0`(GA와 동급) 추가로 방지.
+  2. XDC 이슈가 RANGE 프레임으로 안 그려지는 문제(`rulebook.rule(rule_id)`가 None이라
+     `_frame_type`이 항상 OBJECT로 폴백) → `_rulebook_for_lookup`으로 XDC를 조회 가능하게
+     만들고, `_RANGE_CATEGORIES`에 `"XDC"` 추가로 해결.
+  - 추가로, XDC의 두 번째 위치(참고문서 쪽)는 `reference_document/reference_section/
+    reference_quote`라는 별도 필드로 오는데, 프론트까지 새 스키마를 뚫는 대신 관계형
+    (LG/LF/GA)이 이미 쓰는 `related_location`/`related_original_text` 표시 경로를
+    재사용(`[문서ID] 위치` 라벨로 합성) — 프론트 코드 변경 없이 기존 RANGE 프레임
+    렌더링을 그대로 씀.
+- 신규 테스트 5개: `_frame_type` XDC 케이스 2개, dedup 우선순위(XDC가 안 사라지는지),
+  `_to_issue_record`의 reference→related_location 매핑, API 전체 배선(참고문서 텍스트가
+  실제로 `review_document()`까지 도달하는지 + 응답에 관계형 필드가 매핑되는지) e2e 1개.
+- 백엔드 169/169 테스트 통과(기존 164 + 신규 5), `ruff check` 통과.
+
+### Next
+
+- 프론트: 참고문서를 고르는 UI가 아직 없음 — `client.ts`의 `createQAJob`도 아직
+  `reference_document_ids`를 안 받음. 이건 별도 UX 설계가 필요한 신규 기능이라 이번엔
+  백엔드 계약만 만들어두고 UI는 안 건드림.
+- 승현님께 PR #115 대신 이 PR을 쓴다고 설명하고 #115는 닫아달라고 요청 필요.

@@ -286,6 +286,7 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
         reference_documents: list[tuple[str, str]] | None = None,
         xdc_rulebook: Any = None,
         xdc_aliases: Any = None,
+        reference_cache: Any = None,
     ) -> qa_jobs.ReviewResult:
         nonlocal call_count
         call_count += 1
@@ -329,6 +330,7 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
 # 그리고 XDC 이슈가 API 응답까지 관계형 필드가 매핑된 채로 나오는지 — 전체 배선 확인.
 async def test_qa_job_with_reference_document_ids_passes_texts_and_maps_xdc_issue(monkeypatch) -> None:
     captured_reference_documents: list[tuple[str, str]] = []
+    captured_reference_caches: list[Any] = []
 
     def fake_review_document(
         doc_id: str,
@@ -340,8 +342,10 @@ async def test_qa_job_with_reference_document_ids_passes_texts_and_maps_xdc_issu
         reference_documents: list[tuple[str, str]] | None = None,
         xdc_rulebook: Any = None,
         xdc_aliases: Any = None,
+        reference_cache: Any = None,
     ) -> qa_jobs.ReviewResult:
         captured_reference_documents.extend(reference_documents or [])
+        captured_reference_caches.append(reference_cache)
         issue = qa_jobs.ReviewIssue(
             doc_id=doc_id,
             level="Paragraph",
@@ -376,6 +380,9 @@ async def test_qa_job_with_reference_document_ids_passes_texts_and_maps_xdc_issu
 
     assert status["status"] == "done"
     assert captured_reference_documents == [(reference_doc, "참고문서 본문")]
+    # 프로세스 생애 동안 유지되는 같은 딕셔너리가 넘어가는지 — 매 job마다 새로 만들어지면
+    # 참고문서를 캐시할 수 없다(매번 재인덱싱하게 됨).
+    assert captured_reference_caches == [qa_jobs._reference_cache]
     [issue] = issues
     assert issue["criteria"] == "타 문서 정합성"
     assert issue["related_location"] == "[REF-DOC] §2-1"
@@ -519,6 +526,35 @@ def test_dedupe_conflicting_categories_never_drops_team_rule_issues() -> None:
     kept = qa_jobs._dedupe_conflicting_categories((ga_issue, team_issue), rulebook)
 
     assert {issue.rule_id for issue in kept} == {"GA-01", "TEAM-abc-123"}
+
+
+# 회귀 테스트(sunic5-planqa/planqa#115 리뷰) — dedup 키가 (location, original_text)만 쓰면
+# 같은 문단이 참고문서 A/B 둘 다와 따로 충돌해도 XDC 이슈 하나만 남고 하나는 사라진다.
+# reference_document를 키에 포함시켜서 막는다.
+def test_dedupe_conflicting_categories_keeps_xdc_issues_from_different_reference_docs() -> None:
+    rulebook = _xdc_lookup_rulebook()
+    against_doc_a = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="6. FAQ",
+        description="d",
+        original_text="같은 문구",
+        reference_document="DOC-A",
+    )
+    against_doc_b = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="6. FAQ",
+        description="d",
+        original_text="같은 문구",
+        reference_document="DOC-B",
+    )
+
+    kept = qa_jobs._dedupe_conflicting_categories((against_doc_a, against_doc_b), rulebook)
+
+    assert {issue.reference_document for issue in kept} == {"DOC-A", "DOC-B"}
 
 
 # 회귀 테스트(PR #113) — _korean_label()은 rulebook_v1.0.md의 "<한글> <English>" 헤더에서

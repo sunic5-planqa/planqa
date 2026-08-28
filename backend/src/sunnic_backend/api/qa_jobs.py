@@ -51,6 +51,12 @@ _XDC_ALIASES_PATH = _QA_ENGINE_DIR / "data" / "xdc" / "aliases.json"
 _rulebook: RuleBook | None = None
 _xdc_rulebook: RuleBook | None = None
 _xdc_aliases: dict[str, str] | None = None
+# 프로세스 생애 동안 유지되는 참고문서 인덱스 캐시 — review_document()의 reference_cache=
+# 인자로 그대로 넘긴다. 키는 review-agent 쪽에서 (doc_id, sha256(text)[:16])로 계산하므로,
+# 같은 참고문서를 여러 QA job이 반복 참조해도(팀이 정책 문서 하나를 계속 기준으로 쓰는 흔한
+# 경우) 매번 다시 인덱싱(Gemini 콜)하지 않는다. 문서가 수정되면 해시가 바뀌어 자연히
+# 무효화된다.
+_reference_cache: dict[str, xdc.ReferenceIndex] = {}
 
 
 def _load_rulebook() -> RuleBook:
@@ -266,7 +272,7 @@ def _category_priority(rule_id: str, rulebook: RuleBook) -> int:
 # dedupe.py의 dedupe_issues()는 "같은 rule_id + 겹치는 위치"만 접도록 의도적으로 짜여 있어서(서로
 # 다른 rule_id는 별개 이슈로 보존) 이건 그 위에 얹는 우리 쪽 후처리다.
 def _dedupe_conflicting_categories(issues: tuple[ReviewIssue, ...], rulebook: RuleBook) -> tuple[ReviewIssue, ...]:
-    best_by_key: dict[tuple[str, str], ReviewIssue] = {}
+    best_by_key: dict[tuple[str, str, str | None], ReviewIssue] = {}
     passthrough: list[ReviewIssue] = []
     for issue in issues:
         if not issue.original_text or issue.rule_id.startswith(TEAM_RULE_ID_PREFIX):
@@ -276,7 +282,10 @@ def _dedupe_conflicting_categories(issues: tuple[ReviewIssue, ...], rulebook: Ru
             # 가리키기만 하면 팀이 일부러 추가한 규칙이 매번 조용히 사라지게 된다.
             passthrough.append(issue)
             continue
-        key = (issue.location, issue.original_text)
+        # reference_document를 키에 포함 — XDC 이슈는 같은 (위치, 인용문)이라도 참고문서가
+        # 다르면 서로 다른 발견이다(같은 문단이 참고문서 A/B 둘 다와 따로 충돌하는 경우). XDC가
+        # 아닌 이슈는 reference_document가 항상 None이라 이 키 확장이 기존 동작을 안 바꾼다.
+        key = (issue.location, issue.original_text, issue.reference_document)
         existing = best_by_key.get(key)
         if existing is None or _category_priority(issue.rule_id, rulebook) < _category_priority(existing.rule_id, rulebook):
             best_by_key[key] = issue
@@ -323,6 +332,7 @@ def _run_review_sync(
         reference_documents=reference_documents,
         xdc_rulebook=xdc_rulebook,
         xdc_aliases=xdc_aliases,
+        reference_cache=_reference_cache,
     )
 
     lookup_rulebook = _rulebook_for_lookup(rulebook, xdc_rulebook)

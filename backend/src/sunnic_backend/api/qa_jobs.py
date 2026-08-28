@@ -259,7 +259,9 @@ def _dedupe_conflicting_categories(issues: tuple[ReviewIssue, ...], rulebook: Ru
     return tuple(best_by_key.values()) + tuple(passthrough)
 
 
-def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> ReviewResult:
+def _run_review_sync(
+    doc_id: str, document_text: str, rulebook: RuleBook, extra_absence_check_rule_ids: frozenset[str] = frozenset()
+) -> ReviewResult:
     # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
     # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
     #
@@ -271,7 +273,9 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
     # 정밀) = Sonnet은 그대로.
     screen_llm = GeminiClient(model=settings.sunnic_gemini_model, api_keys=settings.gemini_api_keys)
     confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
-    result = review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
+    result = review_document(
+        doc_id, document_text, rulebook, screen_llm, confirm_llm, extra_absence_check_rule_ids=extra_absence_check_rule_ids
+    )
 
     deduped_issues = _dedupe_conflicting_categories(result.issues, rulebook)
     return replace(result, issues=deduped_issues)
@@ -395,13 +399,16 @@ async def _execute_qa_job(job_id: str, document_id: str, document_text: str, tea
     if job is None:
         return
     rulebook = _load_rulebook()
+    absence_check_rule_ids: frozenset[str] = frozenset()
     if team_code:
         team_rules = await store.list_team_rules_for_team(team_code)
-        rulebook = merge_team_rules(rulebook, [rule for rule in team_rules if rule.enabled])
+        rulebook, absence_check_rule_ids = merge_team_rules(rulebook, [rule for rule in team_rules if rule.enabled])
     ticker: asyncio.Task[None] | None = None
     try:
         ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
-        result = await asyncio.to_thread(_run_review_sync, document_id, document_text, rulebook)
+        result = await asyncio.to_thread(
+            _run_review_sync, document_id, document_text, rulebook, absence_check_rule_ids
+        )
         heading_numbers = _build_heading_numbers(document_text)
         for issue in result.issues:
             await store.save_issue(_to_issue_record(job_id, document_text, rulebook, issue, heading_numbers))

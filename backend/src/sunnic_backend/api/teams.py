@@ -1,3 +1,4 @@
+import asyncio
 import secrets
 import string
 import uuid
@@ -5,8 +6,11 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from sunnic_backend.config import settings
 from sunnic_backend.models.team import Team
-from sunnic_backend.models.team_rule import TeamRule, TeamRuleExamples
+from sunnic_backend.models.team_rule import TeamRule, TeamRuleExamples, TeamRuleScope
+from sunnic_backend.qa_engine.review_agent.llm.gemini import GeminiClient
+from sunnic_backend.qa_engine.team_rule_classifier import classify_scope
 from sunnic_backend.storage.store import store
 
 router = APIRouter(tags=["teams"])
@@ -41,6 +45,7 @@ class TeamRuleResponse(BaseModel):
     exception_text: str | None
     examples: TeamRuleExamples
     enabled: bool
+    scope: TeamRuleScope
 
 
 class TeamRuleEnabledIn(BaseModel):
@@ -55,7 +60,25 @@ def _to_response(rule: TeamRule) -> TeamRuleResponse:
         exception_text=rule.exception_text,
         examples=rule.examples,
         enabled=rule.enabled,
+        scope=rule.scope,
     )
+
+
+# 팀 관리자가 직접 고르는 게 아니라 룰 저장 시점에 자동 분류(team_rule_classifier)한다 — 여기서
+# LLM 클라이언트 생성 자체가 실패하면(API 키 미설정 등, 테스트 환경 포함) 룰 저장을 막지 않고
+# 안전한 기본값(paragraph)으로 조용히 폴백한다. GeminiClient.complete_json은 동기/블로킹
+# 호출이라 asyncio.to_thread로 감싸 이벤트 루프를 막지 않는다 — qa_jobs.py의 리뷰 실행과 같은
+# 이유.
+def _classify_scope_sync(rule_name: str, description: str, exception_text: str | None) -> TeamRuleScope:
+    try:
+        llm = GeminiClient(model=settings.sunnic_gemini_model, api_keys=settings.gemini_api_keys)
+    except Exception:  # noqa: BLE001 - classification is best-effort, never blocks saving the rule
+        return "paragraph"
+    return classify_scope(rule_name, description, exception_text, llm)
+
+
+async def _classify_scope(rule_name: str, description: str, exception_text: str | None) -> TeamRuleScope:
+    return await asyncio.to_thread(_classify_scope_sync, rule_name, description, exception_text)
 
 
 async def _create_team_with_unique_code(team_name: str, description: str) -> Team:
@@ -107,6 +130,7 @@ async def list_team_rules(team_code: str) -> list[TeamRuleResponse]:
 @router.post("/teams/{team_code}/rules", response_model=TeamRuleResponse)
 async def create_team_rule(team_code: str, request: TeamRuleIn) -> TeamRuleResponse:
     await _get_team_or_404(team_code)
+    scope = await _classify_scope(request.rule_name, request.description, request.exception_text)
     rule = TeamRule(
         id=str(uuid.uuid4()),
         team_code=team_code,
@@ -115,6 +139,7 @@ async def create_team_rule(team_code: str, request: TeamRuleIn) -> TeamRuleRespo
         exception_text=request.exception_text,
         examples=request.examples,
         enabled=request.enabled,
+        scope=scope,
     )
     await store.save_team_rule(rule)
     return _to_response(rule)
@@ -123,6 +148,9 @@ async def create_team_rule(team_code: str, request: TeamRuleIn) -> TeamRuleRespo
 @router.patch("/teams/{team_code}/rules/{rule_id}", response_model=TeamRuleResponse)
 async def update_team_rule(team_code: str, rule_id: str, request: TeamRuleIn) -> TeamRuleResponse:
     existing = await _get_team_rule_or_404(team_code, rule_id)
+    # rule_name/description/exception_text can all change here, and scope is a function of
+    # exactly those — re-classify rather than carrying the old scope forward stale.
+    scope = await _classify_scope(request.rule_name, request.description, request.exception_text)
     updated = existing.model_copy(
         update={
             "rule_name": request.rule_name,
@@ -130,6 +158,7 @@ async def update_team_rule(team_code: str, rule_id: str, request: TeamRuleIn) ->
             "exception_text": request.exception_text,
             "examples": request.examples,
             "enabled": request.enabled,
+            "scope": scope,
         }
     )
     await store.save_team_rule(updated)

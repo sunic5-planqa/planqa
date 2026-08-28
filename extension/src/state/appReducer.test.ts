@@ -11,6 +11,7 @@ function teamRule(overrides: Partial<TeamRuleResponse> = {}): TeamRuleResponse {
     exception_text: null,
     examples: { error1: { error: '', correction: '' }, error2: { error: '', correction: '' }, exception: '' },
     enabled: true,
+    scope: 'paragraph',
     ...overrides,
   }
 }

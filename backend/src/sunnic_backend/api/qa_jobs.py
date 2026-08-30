@@ -3,8 +3,6 @@ import logging
 import math
 import re
 import uuid
-from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,10 +15,6 @@ from sunnic_backend.models.issue import FrameType, IssueStatus
 from sunnic_backend.models.issue import Issue as IssueRecord
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
 from sunnic_backend.qa_engine.review_agent.document import parse_document
-from sunnic_backend.qa_engine.review_agent.instrumentation import (
-    isolate_client,
-    merge_usage,
-)
 from sunnic_backend.qa_engine.review_agent.llm.anthropic import AnthropicClient
 from sunnic_backend.qa_engine.review_agent.llm.gemini import GeminiClient
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
@@ -34,18 +28,35 @@ from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import (
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import (
     Level,
 )
+from sunnic_backend.qa_engine.review_agent.structures import xdc
 from sunnic_backend.qa_engine.review_agent.structures.bundled_screen_hybrid import (
     review_document,
 )
 from sunnic_backend.qa_engine.review_agent.tiers import TIER_CATEGORIES
+from sunnic_backend.qa_engine.team_rule_adapter import (
+    TEAM_CATEGORY,
+    TEAM_RULE_ID_PREFIX,
+    merge_team_rules,
+)
 from sunnic_backend.storage.store import store
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["qa-jobs"])
 
-_RULEBOOK_PATH = Path(__file__).resolve().parent.parent / "qa_engine" / "review_agent" / "data" / "rulebook_v1.0.md"
+_QA_ENGINE_DIR = Path(__file__).resolve().parent.parent / "qa_engine" / "review_agent"
+_RULEBOOK_PATH = _QA_ENGINE_DIR / "data" / "rulebook_v1.0.md"
+_XDC_RULEBOOK_PATH = _QA_ENGINE_DIR / "data" / "xdc" / "xdc_rulebook_v1.0.md"
+_XDC_ALIASES_PATH = _QA_ENGINE_DIR / "data" / "xdc" / "aliases.json"
 _rulebook: RuleBook | None = None
+_xdc_rulebook: RuleBook | None = None
+_xdc_aliases: dict[str, str] | None = None
+# 프로세스 생애 동안 유지되는 참고문서 인덱스 캐시 — review_document()의 reference_cache=
+# 인자로 그대로 넘긴다. 키는 review-agent 쪽에서 (doc_id, sha256(text)[:16])로 계산하므로,
+# 같은 참고문서를 여러 QA job이 반복 참조해도(팀이 정책 문서 하나를 계속 기준으로 쓰는 흔한
+# 경우) 매번 다시 인덱싱(Gemini 콜)하지 않는다. 문서가 수정되면 해시가 바뀌어 자연히
+# 무효화된다.
+_reference_cache: dict[str, xdc.ReferenceIndex] = {}
 
 
 def _load_rulebook() -> RuleBook:
@@ -55,6 +66,20 @@ def _load_rulebook() -> RuleBook:
     if _rulebook is None:
         _rulebook = parse_rulebook(_RULEBOOK_PATH)
     return _rulebook
+
+
+def _load_xdc_rulebook() -> RuleBook:
+    global _xdc_rulebook
+    if _xdc_rulebook is None:
+        _xdc_rulebook = parse_rulebook(_XDC_RULEBOOK_PATH)
+    return _xdc_rulebook
+
+
+def _load_xdc_aliases() -> dict[str, str]:
+    global _xdc_aliases
+    if _xdc_aliases is None:
+        _xdc_aliases = xdc.load_aliases(_XDC_ALIASES_PATH)
+    return _xdc_aliases
 
 
 class CategoryItemOut(BaseModel):
@@ -86,7 +111,10 @@ def _korean_label(category_label: str) -> str:
 #   LG/LF/GA: 두 위치 간 관계 오류라 range 프레임 — review-agent가 related_location을 채워주면
 #     (요청 이슈 sunic5-planqa/planqa-agent#4, 2026-08-10 재벤더링으로 반영됨) range, 모델이
 #     특정 못 해 비어 있으면 object로 안전하게 폴백한다.
-_RANGE_CATEGORIES = frozenset({"LG", "LF", "GA"})
+#   XDC: 관계형과 같은 이유(두 위치 간 관계)로 range — 다만 두 번째 위치가 같은 문서가 아니라
+#     참고문서 쪽이라 related_location이 아니라 reference_section에 담겨 온다(_to_issue_record
+#     참고). 카테고리 판정만으로 봤을 땐 LG/LF/GA와 동일하게 취급하면 됨.
+_RANGE_CATEGORIES = frozenset({"LG", "LF", "GA", "XDC"})
 _INSERT_RANGE_CATEGORIES = frozenset({"MI"})
 
 
@@ -205,82 +233,13 @@ class IssueResponse(BaseModel):
     related_original_text: str | None
 
 
-_MI_VERIFY_SYSTEM = (
-    "You are double-checking a document-review agent's claim that specific information is "
-    "missing from a document — this exact failure mode (claiming X is missing when X is "
-    "actually stated elsewhere in the document, because the agent's own review only saw one "
-    "narrow chunk of it) has been observed live in production. You will be given the FULL "
-    "document text and the agent's claim. Re-read the ENTIRE document carefully, not just "
-    "whatever section the agent focused on, before deciding.\n"
-    'Respond with JSON only: {"actually_missing": <bool>, "reason": "<one short sentence>"}'
-)
-
-_AE_VERIFY_SYSTEM = (
-    "You are double-checking a document-review agent's claim that a specific phrase is "
-    "ambiguous/vague (모호한 표현) — this category is vulnerable to the same narrow-context "
-    "failure mode as missing-information claims: a number, referent, or actor that looks "
-    "unspecified in isolation may actually be defined or referenced elsewhere in the same "
-    "document (e.g. a quantity defined in another section and referenced here per AE-01's own "
-    "exception condition, a pronoun whose antecedent is clear from surrounding context, an "
-    "actor implied by a system-wide policy stated elsewhere per AE-04's exception). You will "
-    "be given the FULL document text and the agent's claim. Re-read the ENTIRE document "
-    "carefully, not just whatever section the agent focused on, before deciding whether the "
-    "flagged text is genuinely ambiguous in context.\n"
-    'Respond with JSON only: {"actually_ambiguous": <bool>, "reason": "<one short sentence>"}'
-)
-
-
-# MI(정보 누락)에서, 문서에 실제로 있는 정보를 "없다"고 잘못 주장하는 오탐이 실사용 중 확인됨
-# (DOC-001 "8. 런칭 계획"의 날짜 — 파서는 정확히 뽑아냈는데 confirm이 좁은 chunk만 보고 놓침,
-# 2026-08-10). planqa-agent의 services/eval-service(judge.py)로 걸러볼 수 있는지 먼저 검토했으나,
-# 그건 문서 원문 없이 에이전트 본인의 근거/이유만 재검토하는 reference-free 구조라
-# (judge_review_result가 document_text를 아예 안 받음) "근거 자체는 논리적이지만 전제가 문서와
-# 안 맞는" 이런 유형은 애초에 못 잡는다 — 그래서 대신 여기서 문서 전체를 다시 보여주고 재확인한다.
-# AE(모호한 표현)도 같은 방식으로 추가(2026-08-11, 실사용 과탐지 재보고) — AE-01/AE-04 예외조건이
-# 둘 다 "문서 다른 곳에 정의/참조돼 있으면 예외"라, 좁은 chunk만 본 confirm이 그 정의를 놓치고
-# "모호하다"고 오판하는 게 MI와 정확히 같은 실패 패턴이기 때문. 나머지 카테고리로는 안 넓힘 — 이
-# 둘만 "문서 전체를 봐야 판단 가능한 예외조건"을 갖고 있고, 모든 카테고리에 걸면 비용/시간이
-# 크게 늘어난다.
-def _verify_mi_finding(document_text: str, issue: ReviewIssue, llm: AnthropicClient) -> bool:
-    prompt = (
-        f"Full document:\n{document_text}\n\n"
-        f"Agent's claim — location: {issue.location!r}\n"
-        f"  what's allegedly missing: {issue.description!r}\n"
-        f"  rationale: {issue.rationale!r}\n"
-        f"  quoted context: {issue.original_text!r}\n\n"
-        "Return the JSON."
-    )
-    try:
-        response = llm.complete_json(system=_MI_VERIFY_SYSTEM, prompt=prompt)
-    except Exception:  # noqa: BLE001 - a verification failure must not block/hide the original finding
-        return True
-    if not isinstance(response, dict):
-        return True
-    return bool(response.get("actually_missing", True))
-
-
-def _verify_ae_finding(document_text: str, issue: ReviewIssue, llm: AnthropicClient) -> bool:
-    prompt = (
-        f"Full document:\n{document_text}\n\n"
-        f"Agent's claim — location: {issue.location!r}\n"
-        f"  flagged text: {issue.original_text!r}\n"
-        f"  what's allegedly ambiguous: {issue.description!r}\n"
-        f"  rationale: {issue.rationale!r}\n\n"
-        "Return the JSON."
-    )
-    try:
-        response = llm.complete_json(system=_AE_VERIFY_SYSTEM, prompt=prompt)
-    except Exception:  # noqa: BLE001 - a verification failure must not block/hide the original finding
-        return True
-    if not isinstance(response, dict):
-        return True
-    return bool(response.get("actually_ambiguous", True))
-
-
-_FALSE_POSITIVE_VERIFIERS: dict[str, Callable[[str, ReviewIssue, AnthropicClient], bool]] = {
-    "MI": _verify_mi_finding,
-    "AE": _verify_ae_finding,
-}
+# review-agent가 이 MI/AE 재검증을 소스 안에서 직접 정식으로 구현하면서(bundled_screen_hybrid.py
+# 상단 주석 참고 — "백엔드는... 우회로 추가했지만, 여긴 소스를 직접 소유하므로 정식으로 구현") 여기
+# 있던 _verify_mi_finding/_verify_ae_finding/_FALSE_POSITIVE_VERIFIERS는 review_document()가 이미
+# 내부적으로 수행한 검증을 결과에 대고 한 번 더 독립적으로 돌리는 이중 검증이 됐다 — 두 판정 중
+# 어느 한쪽만 "없다"고 봐도 그 이슈가 사라지므로, 원래 의도(narrow-context 오탐 제거)보다 훨씬
+# 공격적으로 과탐지를 걸러내는 부작용이 있었다. 그래서 삭제하고 review_document()의 판정을 그대로
+# 신뢰한다(2026-08-21).
 
 
 # 관계형·상위목표충돌(GA/LG/LF)이 자구단위 문제(TC/TM)보다 실제 서비스에 미치는 영향이 커서 더
@@ -288,6 +247,7 @@ _FALSE_POSITIVE_VERIFIERS: dict[str, Callable[[str, ReviewIssue, AnthropicClient
 # 하나로 정해진 값은 아니라 팀 판단이 바뀌면 순서만 조정하면 됨(카테고리 코드는 rulebook_v1.0.md
 # §1~8 순서, 이 딕셔너리는 그와 무관하게 시급도로 재배열한 것).
 _CATEGORY_PRIORITY: dict[str, int] = {
+    "XDC": 0,  # 타 문서 정합성 — 참고문서와의 확정사항 불일치, GA와 동급의 시급도
     "GA": 0,  # 상위 목표와 세부 내용의 정합성 — 문서 자체 목적과 충돌
     "LG": 1,  # 논리비약
     "LF": 2,  # 논리흐름
@@ -312,22 +272,47 @@ def _category_priority(rule_id: str, rulebook: RuleBook) -> int:
 # dedupe.py의 dedupe_issues()는 "같은 rule_id + 겹치는 위치"만 접도록 의도적으로 짜여 있어서(서로
 # 다른 rule_id는 별개 이슈로 보존) 이건 그 위에 얹는 우리 쪽 후처리다.
 def _dedupe_conflicting_categories(issues: tuple[ReviewIssue, ...], rulebook: RuleBook) -> tuple[ReviewIssue, ...]:
-    best_by_key: dict[tuple[str, str], ReviewIssue] = {}
+    best_by_key: dict[tuple[str, str, str | None], ReviewIssue] = {}
     passthrough: list[ReviewIssue] = []
     for issue in issues:
-        if not issue.original_text:
-            # MI(정보 누락) 등 원문 인용이 없는 이슈는 "같은 문구"를 판단할 근거가 없다 — 잘못
-            # 묶으면 서로 다른 결측 항목이 하나로 사라질 수 있어 건드리지 않는다.
+        if not issue.original_text or issue.rule_id.startswith(TEAM_RULE_ID_PREFIX):
+            # MI(정보 누락) 등 원문 인용이 없는 이슈는 "같은 문구"를 판단할 근거가 없어 건드리지
+            # 않는다. 팀 규칙(TEAM-*)도 여기서 건드리지 않는다 — _CATEGORY_PRIORITY는 8개 기본
+            # 카테고리의 시급도표라 TEAM은 항상 최하위로 떨어져서, 기본 규칙과 같은 문구를
+            # 가리키기만 하면 팀이 일부러 추가한 규칙이 매번 조용히 사라지게 된다.
             passthrough.append(issue)
             continue
-        key = (issue.location, issue.original_text)
+        # reference_document를 키에 포함 — XDC 이슈는 같은 (위치, 인용문)이라도 참고문서가
+        # 다르면 서로 다른 발견이다(같은 문단이 참고문서 A/B 둘 다와 따로 충돌하는 경우). XDC가
+        # 아닌 이슈는 reference_document가 항상 None이라 이 키 확장이 기존 동작을 안 바꾼다.
+        key = (issue.location, issue.original_text, issue.reference_document)
         existing = best_by_key.get(key)
         if existing is None or _category_priority(issue.rule_id, rulebook) < _category_priority(existing.rule_id, rulebook):
             best_by_key[key] = issue
     return tuple(best_by_key.values()) + tuple(passthrough)
 
 
-def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> ReviewResult:
+# review_document()의 rulebook(팀 룰 병합분) 인자에 XDC-01~04를 같이 합쳐 넣지 않는 이유:
+# _paragraph_and_document_rules()가 category만으로 버킷을 나누는데, XDC는 참고문서와 비교
+# 해야만 의미 있는 룰이라 그 안에 섞이면 참고문서 없이 현재 문서 혼자 스크리닝/컨펌하는
+# 엉뚱한 내부 판정이 돼버린다 — 그래서 review_document()엔 xdc_rulebook= 전용 인자로 별도
+# 전달한다. 다만 _to_issue_record/_dedupe_conflicting_categories는 rulebook.rule(rule_id)로
+# category/category_label을 찾으므로, 그 두 곳에서 쓸 조회용 사본에는 XDC도 합쳐 넣는다.
+def _rulebook_for_lookup(rulebook: RuleBook, xdc_rulebook: RuleBook | None) -> RuleBook:
+    if xdc_rulebook is None:
+        return rulebook
+    return replace(rulebook, rules={**rulebook.rules, **xdc_rulebook.rules})
+
+
+def _run_review_sync(
+    doc_id: str,
+    document_text: str,
+    rulebook: RuleBook,
+    reference_documents: list[tuple[str, str]],
+    xdc_rulebook: RuleBook | None,
+    xdc_aliases: dict[str, str] | None,
+    extra_absence_check_rule_ids: frozenset[str] = frozenset(),
+) -> ReviewResult:
     # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
     # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
     #
@@ -339,37 +324,21 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
     # 정밀) = Sonnet은 그대로.
     screen_llm = GeminiClient(model=settings.sunnic_gemini_model, api_keys=settings.gemini_api_keys)
     confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
-    result = review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
+    result = review_document(
+        doc_id,
+        document_text,
+        rulebook,
+        screen_llm,
+        confirm_llm,
+        reference_documents=reference_documents,
+        xdc_rulebook=xdc_rulebook,
+        xdc_aliases=xdc_aliases,
+        reference_cache=_reference_cache,
+        extra_absence_check_rule_ids=extra_absence_check_rule_ids,
+    )
 
-    passthrough: list[ReviewIssue] = []
-    to_verify: list[tuple[ReviewIssue, Callable[[str, ReviewIssue, AnthropicClient], bool]]] = []
-    for issue in result.issues:
-        rule = rulebook.rule(issue.rule_id)
-        verify = _FALSE_POSITIVE_VERIFIERS.get(rule.category) if rule is not None else None
-        (passthrough.append(issue) if verify is None else to_verify.append((issue, verify)))
-
-    verified_issues = list(passthrough)
-    if to_verify:
-        # Each MI/AE finding's verify() call is independent (its own confirm_llm round-trip over
-        # the full document), and running them one at a time was why server-side review took
-        # ~2x as long as the bare review agent (2026-08-13 user report) — a document with 10
-        # MI/AE findings paid 10 serial round-trips on top of the review itself. isolate_client()
-        # gives each thread its own client copy so concurrent calls don't race on the shared
-        # usage list, same pattern/rationale as bundled_screen_hybrid._run_pass; merge_usage
-        # folds each copy's stats back onto the original confirm_llm once done.
-        with ThreadPoolExecutor(max_workers=len(to_verify)) as pool:
-            pending: list[tuple[ReviewIssue, AnthropicClient, Future[bool]]] = []
-            for issue, verify in to_verify:
-                isolated = isolate_client(confirm_llm, key=issue.rule_id)
-                pending.append((issue, isolated, pool.submit(verify, document_text, issue, isolated)))
-            for issue, isolated, future in pending:
-                try:
-                    if future.result():
-                        verified_issues.append(issue)
-                finally:
-                    merge_usage(confirm_llm, isolated)
-
-    deduped_issues = _dedupe_conflicting_categories(tuple(verified_issues), rulebook)
+    lookup_rulebook = _rulebook_for_lookup(rulebook, xdc_rulebook)
+    deduped_issues = _dedupe_conflicting_categories(result.issues, lookup_rulebook)
     return replace(result, issues=deduped_issues)
 
 
@@ -420,8 +389,24 @@ def _to_issue_record(
     job_id: str, document_text: str, rulebook: RuleBook, issue: ReviewIssue, heading_numbers: dict[str, str]
 ) -> IssueRecord:
     rule = rulebook.rule(issue.rule_id)
-    criteria = _korean_label(rule.category_label) if rule else issue.rule_id
+    # _korean_label()은 rulebook_v1.0.md의 "<한글> <English Title Case>" 헤더에서 영어 절반을
+    # 잘라내려고 만든 함수라, 팀 규칙의 자유 텍스트 rule_name(category_label로 재사용됨)에 돌리면
+    # "회원가입 API 정책" 같은 이름이 첫 영어 단어 앞에서 잘려나간다 — 팀 카테고리는 원문 그대로 쓴다.
+    if rule is None:
+        criteria = issue.rule_id
+    elif rule.category == TEAM_CATEGORY:
+        criteria = rule.category_label
+    else:
+        criteria = _korean_label(rule.category_label)
     related_location = issue.related_location
+    related_original_text = issue.related_original_text
+    # XDC의 "두 번째 위치"는 같은 문서 안이 아니라 참고문서 쪽이라 별도 필드
+    # (reference_document/reference_section/reference_quote)로 담겨 온다 — 새 스키마 필드를
+    # 프론트까지 뚫는 대신, 관계형(LG/LF/GA)이 이미 쓰는 related_location/related_original_text
+    # 표시 경로를 그대로 재사용한다(어느 문서 소속인지 알 수 있게 라벨에 doc_id를 붙임).
+    if issue.reference_document:
+        related_location = f"[{issue.reference_document}] {issue.reference_section}"
+        related_original_text = issue.reference_quote
     frame_type = _frame_type(rule.category, related_location) if rule else FrameType.OBJECT
     input_text = issue.original_text or ""
     start = _issue_start(document_text, input_text, issue.location)
@@ -440,7 +425,7 @@ def _to_issue_record(
         end=start + len(input_text),
         frame_type=frame_type,
         related_location=related_location,
-        related_original_text=issue.related_original_text,
+        related_original_text=related_original_text,
     )
 
 
@@ -478,18 +463,46 @@ async def _tick_progress(job_id: str, started_at: datetime) -> None:
         pass
 
 
-async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> None:
+async def _execute_qa_job(
+    job_id: str,
+    document_id: str,
+    document_text: str,
+    team_code: str | None = None,
+    reference_document_ids: list[str] | None = None,
+) -> None:
     job = await store.get_qa_job(job_id)
     if job is None:
         return
     rulebook = _load_rulebook()
+    absence_check_rule_ids: frozenset[str] = frozenset()
+    if team_code:
+        team_rules = await store.list_team_rules_for_team(team_code)
+        rulebook, absence_check_rule_ids = merge_team_rules(rulebook, [rule for rule in team_rules if rule.enabled])
+
+    reference_documents: list[tuple[str, str]] = []
+    for reference_document_id in reference_document_ids or []:
+        reference_document = await store.get_document(reference_document_id)
+        if reference_document is not None:
+            reference_documents.append((reference_document_id, reference_document.raw_text))
+    xdc_rulebook = _load_xdc_rulebook() if reference_documents else None
+    lookup_rulebook = _rulebook_for_lookup(rulebook, xdc_rulebook)
+
     ticker: asyncio.Task[None] | None = None
     try:
         ticker = asyncio.create_task(_tick_progress(job_id, job.started_at))
-        result = await asyncio.to_thread(_run_review_sync, document_id, document_text, rulebook)
+        result = await asyncio.to_thread(
+            _run_review_sync,
+            document_id,
+            document_text,
+            rulebook,
+            reference_documents,
+            xdc_rulebook,
+            _load_xdc_aliases() if reference_documents else None,
+            absence_check_rule_ids,
+        )
         heading_numbers = _build_heading_numbers(document_text)
         for issue in result.issues:
-            await store.save_issue(_to_issue_record(job_id, document_text, rulebook, issue, heading_numbers))
+            await store.save_issue(_to_issue_record(job_id, document_text, lookup_rulebook, issue, heading_numbers))
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.DONE, "progress": 100}))
     except Exception:
         logger.exception("QA job %s failed for document %s", job_id, document_id)
@@ -499,11 +512,20 @@ async def _execute_qa_job(job_id: str, document_id: str, document_text: str) -> 
             ticker.cancel()
 
 
+class CreateQAJobRequest(BaseModel):
+    team_code: str | None = None
+    reference_document_ids: list[str] = []
+
+
 @router.post("/documents/{document_id}/qa-jobs", response_model=CreateQAJobResponse)
-async def create_qa_job(document_id: str, background_tasks: BackgroundTasks) -> CreateQAJobResponse:
+async def create_qa_job(
+    document_id: str, background_tasks: BackgroundTasks, request: CreateQAJobRequest | None = None
+) -> CreateQAJobResponse:
     document = await store.get_document(document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="document not found")
+    team_code = request.team_code if request else None
+    reference_document_ids = request.reference_document_ids if request else []
 
     job = QAJob(
         id=str(uuid.uuid4()),
@@ -514,7 +536,9 @@ async def create_qa_job(document_id: str, background_tasks: BackgroundTasks) -> 
         started_at=datetime.now(UTC),
     )
     await store.save_qa_job(job)
-    background_tasks.add_task(_execute_qa_job, job.id, document_id, document.raw_text)
+    background_tasks.add_task(
+        _execute_qa_job, job.id, document_id, document.raw_text, team_code, reference_document_ids
+    )
     return CreateQAJobResponse(job_id=job.id)
 
 

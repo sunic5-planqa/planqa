@@ -3,6 +3,8 @@ import asyncio
 from sunnic_backend.models.document import Document
 from sunnic_backend.models.issue import Issue
 from sunnic_backend.models.qa_job import QAJob
+from sunnic_backend.models.team import Team
+from sunnic_backend.models.team_rule import TeamRule
 
 
 class Store:
@@ -11,6 +13,8 @@ class Store:
         self._documents: dict[str, Document] = {}
         self._qa_jobs: dict[str, QAJob] = {}
         self._issues: dict[str, Issue] = {}
+        self._teams: dict[str, Team] = {}
+        self._team_rules: dict[str, TeamRule] = {}
 
     async def save_document(self, document: Document) -> None:
         async with self._lock:
@@ -43,6 +47,41 @@ class Store:
     async def list_issues_for_job(self, job_id: str) -> list[Issue]:
         async with self._lock:
             return [issue for issue in self._issues.values() if issue.job_id == job_id]
+
+    async def save_team(self, team: Team) -> None:
+        async with self._lock:
+            self._teams[team.team_code] = team
+
+    async def save_team_if_new(self, team: Team) -> bool:
+        # Combines the "is this code taken" check and the save into one lock acquisition —
+        # a separate get_team() + save_team() pair (the previous shape) leaves a window
+        # between the two calls where two concurrent creates can both pass the check for
+        # the same generated code, and the second save silently overwrites the first team.
+        async with self._lock:
+            if team.team_code in self._teams:
+                return False
+            self._teams[team.team_code] = team
+            return True
+
+    async def get_team(self, team_code: str) -> Team | None:
+        async with self._lock:
+            return self._teams.get(team_code)
+
+    async def save_team_rule(self, rule: TeamRule) -> None:
+        async with self._lock:
+            self._team_rules[rule.id] = rule
+
+    async def get_team_rule(self, rule_id: str) -> TeamRule | None:
+        async with self._lock:
+            return self._team_rules.get(rule_id)
+
+    async def list_team_rules_for_team(self, team_code: str) -> list[TeamRule]:
+        async with self._lock:
+            return [rule for rule in self._team_rules.values() if rule.team_code == team_code]
+
+    async def delete_team_rule(self, rule_id: str) -> bool:
+        async with self._lock:
+            return self._team_rules.pop(rule_id, None) is not None
 
 
 store = Store()

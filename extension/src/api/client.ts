@@ -1,12 +1,18 @@
 import { ApiError, NotImplementedError } from './errors'
 import type {
   CreateDocumentResponse,
+  CreateQAJobRequest,
   CreateQAJobResponse,
+  CreateTeamRequest,
   DocumentCountResponse,
   ExportDocumentResponse,
   IssueResponse,
   QAJobStatusResponse,
+  RulebookCategoryResponse,
   SimilarityCheckResponse,
+  TeamResponse,
+  TeamRuleInput,
+  TeamRuleResponse,
   UpdateIssueRequest,
   UpdateIssueResponse,
 } from './types'
@@ -35,8 +41,10 @@ export const api = {
       body: JSON.stringify({ raw_text: rawText }),
     }),
 
-  createQAJob: (documentId: string) =>
-    request<CreateQAJobResponse>(`/documents/${documentId}/qa-jobs`, { method: 'POST' }),
+  createQAJob: (documentId: string, teamCode?: string | null) => {
+    const body: CreateQAJobRequest = { team_code: teamCode ?? null }
+    return request<CreateQAJobResponse>(`/documents/${documentId}/qa-jobs`, { method: 'POST', body: JSON.stringify(body) })
+  },
 
   getQAJobStatus: (jobId: string) => request<QAJobStatusResponse>(`/qa-jobs/${jobId}/status`),
 
@@ -69,4 +77,28 @@ export const api = {
     }),
 
   getDocumentCount: () => request<DocumentCountResponse>('/documents/count'),
+
+  getRulebookCategories: () => request<RulebookCategoryResponse[]>('/rulebook/categories'),
+
+  createTeam: (body: CreateTeamRequest) =>
+    request<TeamResponse>('/teams', { method: 'POST', body: JSON.stringify(body) }),
+
+  getTeam: (teamCode: string) => request<TeamResponse>(`/teams/${teamCode}`),
+
+  listTeamRules: (teamCode: string) => request<TeamRuleResponse[]>(`/teams/${teamCode}/rules`),
+
+  createTeamRule: (teamCode: string, body: TeamRuleInput) =>
+    request<TeamRuleResponse>(`/teams/${teamCode}/rules`, { method: 'POST', body: JSON.stringify(body) }),
+
+  updateTeamRule: (teamCode: string, ruleId: string, body: TeamRuleInput) =>
+    request<TeamRuleResponse>(`/teams/${teamCode}/rules/${ruleId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  setTeamRuleEnabled: (teamCode: string, ruleId: string, enabled: boolean) =>
+    request<TeamRuleResponse>(`/teams/${teamCode}/rules/${ruleId}/enabled`, {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    }),
+
+  deleteTeamRule: (teamCode: string, ruleId: string) =>
+    request<{ id: string }>(`/teams/${teamCode}/rules/${ruleId}`, { method: 'DELETE' }),
 }

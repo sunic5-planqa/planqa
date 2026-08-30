@@ -5,7 +5,7 @@ from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from sunnic_backend.api import documents, issues, qa_jobs
+from sunnic_backend.api import documents, issues, qa_jobs, rulebook, teams
 from sunnic_backend.config import settings
 
 
@@ -28,6 +28,8 @@ app.add_middleware(
 app.include_router(documents.router)
 app.include_router(qa_jobs.router)
 app.include_router(issues.router)
+app.include_router(teams.router)
+app.include_router(rulebook.router)
 
 
 @app.get("/healthz")

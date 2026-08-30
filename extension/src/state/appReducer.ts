@@ -1,4 +1,12 @@
-import type { IssueAction, IssueResponse, ParsedStructure, QAJobStatusResponse } from '../api/types'
+import type {
+  IssueAction,
+  IssueResponse,
+  ParsedStructure,
+  QAJobStatusResponse,
+  RulebookCategoryResponse,
+  TeamResponse,
+  TeamRuleResponse,
+} from '../api/types'
 import type { AppState, ConfluenceSiblingDoc, ReferenceFile, Screen } from './types'
 
 export type Action =
@@ -31,6 +39,12 @@ export type Action =
   | { type: 'CONFLUENCE_SIBLINGS_DETECT_FAILED'; detail: string }
   | { type: 'REFERENCE_FILES_ADDED'; files: ReferenceFile[] }
   | { type: 'REMOVE_REFERENCE_FILE'; fileId: string }
+  | { type: 'RULE_CATEGORIES_LOADED'; categories: RulebookCategoryResponse[] }
+  | { type: 'TEAM_CONNECTED'; team: TeamResponse }
+  | { type: 'TEAM_RULES_LOADED'; rules: TeamRuleResponse[] }
+  | { type: 'TEAM_RULE_ADDED'; rule: TeamRuleResponse }
+  | { type: 'TEAM_RULE_UPDATED'; rule: TeamRuleResponse }
+  | { type: 'TEAM_RULE_DELETED'; ruleId: string }
 
 export function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -162,6 +176,29 @@ export function appReducer(state: AppState, action: Action): AppState {
         referenceFiles: state.referenceFiles.filter((f) => f.id !== action.fileId),
         selectedReferenceFileIds: state.selectedReferenceFileIds.filter((id) => id !== action.fileId),
       }
+
+    case 'RULE_CATEGORIES_LOADED':
+      return { ...state, ruleCategories: action.categories }
+
+    case 'TEAM_CONNECTED':
+      return {
+        ...state,
+        teamCode: action.team.team_code,
+        teamName: action.team.team_name,
+        teamDescription: action.team.description,
+      }
+
+    case 'TEAM_RULES_LOADED':
+      return { ...state, teamRules: action.rules }
+
+    case 'TEAM_RULE_ADDED':
+      return { ...state, teamRules: [...state.teamRules, action.rule] }
+
+    case 'TEAM_RULE_UPDATED':
+      return { ...state, teamRules: state.teamRules.map((rule) => (rule.id === action.rule.id ? action.rule : rule)) }
+
+    case 'TEAM_RULE_DELETED':
+      return { ...state, teamRules: state.teamRules.filter((rule) => rule.id !== action.ruleId) }
 
     default:
       return state

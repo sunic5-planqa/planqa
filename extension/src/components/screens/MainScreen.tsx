@@ -6,9 +6,10 @@ import { useAppDispatch, useAppState } from '../../state/hooks'
 import { Button } from '../common/Button'
 import { ErrorBanner } from '../common/ErrorBanner'
 import { ReferencesSection } from '../main/ReferencesSection'
+import { RuleSection } from '../main/RuleSection'
 
 export function MainScreen() {
-  const { confluenceStatus, confluenceMarkdown, error } = useAppState()
+  const { confluenceStatus, confluenceMarkdown, error, teamCode } = useAppState()
   const dispatch = useAppDispatch()
   const { detect } = useConfluenceAutoDetect()
   const [submitting, setSubmitting] = useState(false)
@@ -38,7 +39,7 @@ export function MainScreen() {
       dispatch({ type: 'DOCUMENT_CREATED', documentId: doc.document_id, parsedStructure: doc.parsed_structure })
 
       try {
-        const job = await api.createQAJob(doc.document_id)
+        const job = await api.createQAJob(doc.document_id, teamCode)
         dispatch({ type: 'JOB_STARTED', jobId: job.job_id })
       } catch (jobError) {
         if (!(jobError instanceof NotImplementedError)) throw jobError
@@ -93,6 +94,7 @@ export function MainScreen() {
         )}
 
         <ReferencesSection />
+        <RuleSection />
 
         {error && <ErrorBanner message={error} />}
       </div>

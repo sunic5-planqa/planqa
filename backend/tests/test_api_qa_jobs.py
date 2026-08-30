@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from sunnic_backend.api import qa_jobs
 from sunnic_backend.main import app
 from sunnic_backend.qa_engine.review_agent.llm.base import CallStats
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import RuleBook
 
 _TEST_DOCUMENT = (
     "# 결제 시스템 개선 기획서\n\n"
@@ -46,14 +47,6 @@ class FakeAnthropicClient:
         self.usage.append(CallStats(elapsed_seconds=0.0, prompt_tokens=None, completion_tokens=None, total_tokens=None))
         if '"summary"' in system:
             return {"summary": "결제 시스템 개선을 다루는 테스트 문서."}
-        if '"actually_missing"' in system:
-            # _verify_mi_finding's follow-up check — whichever rule the rulebook happens to
-            # list first for this document may or may not be MI, so this test double must
-            # handle it regardless (dedicated tests exercise the actual filtering behavior).
-            return {"actually_missing": True, "reason": "테스트 더블 기본 응답"}
-        if '"actually_ambiguous"' in system:
-            # _verify_ae_finding's follow-up check — same reasoning as actually_missing above.
-            return {"actually_ambiguous": True, "reason": "테스트 더블 기본 응답"}
         if '"candidates"' in system:
             rule_match = _RULE_ID_LINE_RE.search(prompt)
             chunk_match = _CHUNK_ZERO_RE.search(prompt)
@@ -133,6 +126,48 @@ async def test_qa_job_create_returns_404_for_unknown_document() -> None:
     assert response.status_code == 404
 
 
+# team_code 없이 호출하는 기존 경로가 이전(팀 규칙 기능 도입 전)과 동일하게 동작하는지에 대한
+# 회귀 테스트 — CreateQAJobRequest에 기본값이 있어 바디 없이 POST해도 그대로 통과해야 한다.
+async def test_qa_job_create_without_body_still_works(monkeypatch) -> None:
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_response = await client.post("/documents", json={"raw_text": _TEST_DOCUMENT})
+        document_id = create_response.json()["document_id"]
+
+        job_response = await client.post(f"/documents/{document_id}/qa-jobs")
+        job_id = job_response.json()["job_id"]
+        status_response = await client.get(f"/qa-jobs/{job_id}/status")
+
+    assert job_response.status_code == 200
+    assert status_response.json()["status"] == "done"
+
+
+# team_code를 보내되 해당 팀에 등록된 규칙이 없는 경우 — merge_team_rules([])가 원본 rulebook을
+# 그대로 반환하는 어댑터 계약(test_team_rule_adapter.py에서 단위 테스트됨)이 실제 API 경로에서도
+# QA 실행을 방해하지 않는지 확인.
+async def test_qa_job_create_with_team_code_but_no_team_rules_still_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        team_response = await client.post("/teams", json={"team_name": "테스트팀", "description": "설명"})
+        team_code = team_response.json()["team_code"]
+
+        create_response = await client.post("/documents", json={"raw_text": _TEST_DOCUMENT})
+        document_id = create_response.json()["document_id"]
+
+        job_response = await client.post(f"/documents/{document_id}/qa-jobs", json={"team_code": team_code})
+        job_id = job_response.json()["job_id"]
+        status_response = await client.get(f"/qa-jobs/{job_id}/status")
+
+    assert job_response.status_code == 200
+    assert status_response.json()["status"] == "done"
+
+
 async def test_qa_job_marks_failed_when_llm_client_cannot_be_built(monkeypatch) -> None:
     # review_document() itself isolates each stage's LLM errors into tier_errors and still
     # returns a (empty) result — by design, see pipeline.py's docstring — so the only way a
@@ -176,6 +211,8 @@ async def test_qa_job_marks_failed_when_llm_client_cannot_be_built(monkeypatch) 
         ("LG", "3-1", qa_jobs.FrameType.RANGE),
         ("LF", "2. 배경 및 문제 정의", qa_jobs.FrameType.RANGE),
         ("GA", "5-2", qa_jobs.FrameType.RANGE),
+        ("XDC", None, qa_jobs.FrameType.OBJECT),
+        ("XDC", "[DOC-005] §2-1", qa_jobs.FrameType.RANGE),
     ],
 )
 def test_frame_type_mapping(category: str, related_location: str | None, expected: qa_jobs.FrameType) -> None:
@@ -245,6 +282,12 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
         rulebook: Any,
         screen_llm: Any,
         confirm_llm: Any,
+        *,
+        reference_documents: list[tuple[str, str]] | None = None,
+        xdc_rulebook: Any = None,
+        xdc_aliases: Any = None,
+        reference_cache: Any = None,
+        extra_absence_check_rule_ids: frozenset[str] = frozenset(),
     ) -> qa_jobs.ReviewResult:
         nonlocal call_count
         call_count += 1
@@ -282,6 +325,71 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
     assert len(issues1) == 1
     assert len(issues2) == 1
     assert issues1[0]["id"] != issues2[0]["id"]
+
+
+# reference_document_ids가 실제로 review_document()까지 (id, raw_text) 쌍으로 도달하는지,
+# 그리고 XDC 이슈가 API 응답까지 관계형 필드가 매핑된 채로 나오는지 — 전체 배선 확인.
+async def test_qa_job_with_reference_document_ids_passes_texts_and_maps_xdc_issue(monkeypatch) -> None:
+    captured_reference_documents: list[tuple[str, str]] = []
+    captured_reference_caches: list[Any] = []
+
+    def fake_review_document(
+        doc_id: str,
+        document_text: str,
+        rulebook: Any,
+        screen_llm: Any,
+        confirm_llm: Any,
+        *,
+        reference_documents: list[tuple[str, str]] | None = None,
+        xdc_rulebook: Any = None,
+        xdc_aliases: Any = None,
+        reference_cache: Any = None,
+        extra_absence_check_rule_ids: frozenset[str] = frozenset(),
+    ) -> qa_jobs.ReviewResult:
+        captured_reference_documents.extend(reference_documents or [])
+        captured_reference_caches.append(reference_cache)
+        issue = qa_jobs.ReviewIssue(
+            doc_id=doc_id,
+            level="Paragraph",
+            rule_id="XDC-01",
+            location="1. 배경 및 문제 정의",
+            description="신청 기한이 다름",
+            original_text="간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원.",
+            rationale="참고문서와 지원 범위가 다름",
+            reference_document="REF-DOC",
+            reference_section="§2-1",
+            reference_quote="참고문서 원문",
+            difference_type="scope",
+        )
+        return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(issue,))
+
+    monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        current_doc = (await client.post("/documents", json={"raw_text": _TEST_DOCUMENT})).json()["document_id"]
+        reference_doc = (await client.post("/documents", json={"raw_text": "참고문서 본문"})).json()["document_id"]
+
+        job_id = (
+            await client.post(
+                f"/documents/{current_doc}/qa-jobs", json={"reference_document_ids": [reference_doc]}
+            )
+        ).json()["job_id"]
+        status = (await client.get(f"/qa-jobs/{job_id}/status")).json()
+        issues = (await client.get(f"/qa-jobs/{job_id}/issues")).json()
+
+    assert status["status"] == "done"
+    assert captured_reference_documents == [(reference_doc, "참고문서 본문")]
+    # 프로세스 생애 동안 유지되는 같은 딕셔너리가 넘어가는지 — 매 job마다 새로 만들어지면
+    # 참고문서를 캐시할 수 없다(매번 재인덱싱하게 됨).
+    assert captured_reference_caches == [qa_jobs._reference_cache]
+    [issue] = issues
+    assert issue["criteria"] == "타 문서 정합성"
+    assert issue["related_location"] == "[REF-DOC] §2-1"
+    assert issue["related_original_text"] == "참고문서 원문"
+    assert issue["frame_type"] == "range"
 
 
 # 문서 본문 순서로 이슈를 내려주려면(SCREEN 02 "다음"/오버뷰가 왼쪽 원본을 위→아래로 훑도록) 각
@@ -349,168 +457,10 @@ async def test_qa_job_issues_are_sorted_by_position_in_the_document() -> None:
     assert ids == ["early", "middle", "late"]
 
 
-class _StubVerifyLLM:
-    def __init__(self, response: Any | None) -> None:
-        self._response = response
-        self.calls: list[tuple[str, str]] = []
-
-    def complete_json(self, *, system: str, prompt: str, cache_prefix: str | None = None) -> Any:
-        self.calls.append((system, prompt))
-        if self._response is None:
-            raise RuntimeError("boom")
-        return self._response
-
-
-def _mi_issue(original_text: str = "목표 런칭일: - QA 기간: ~") -> qa_jobs.ReviewIssue:
-    return qa_jobs.ReviewIssue(
-        doc_id="DOC-TEST",
-        level="Paragraph",
-        rule_id="MI-01",
-        location="8. 런칭 계획",
-        description="런칭일/QA 기간이 구체적으로 명시되지 않음",
-        original_text=original_text,
-        rationale="시간 조건이 정의되지 않음",
-    )
-
-
-# MI(정보 누락) 카테고리에서 문서에 실제로 있는 정보를 "없다"고 잘못 주장하는 오탐이 실사용 중
-# 확인됨(DOC-001 "8. 런칭 계획"의 날짜) — confirm이 좁은 chunk만 보고 판단한 게 원인으로 보여,
-# 문서 전체를 다시 보여주고 재확인하는 검증 단계를 추가함.
-def test_verify_mi_finding_keeps_the_issue_when_verification_confirms_it_is_missing() -> None:
-    llm = _StubVerifyLLM({"actually_missing": True, "reason": "정말 없음"})
-
-    assert qa_jobs._verify_mi_finding("문서 전문", _mi_issue(), llm) is True
-
-
-def test_verify_mi_finding_drops_the_issue_when_verification_finds_it_present() -> None:
-    llm = _StubVerifyLLM({"actually_missing": False, "reason": "8장에 날짜가 있음"})
-
-    assert qa_jobs._verify_mi_finding("문서 전문", _mi_issue(), llm) is False
-
-
-def test_verify_mi_finding_fails_safe_by_keeping_the_issue_on_llm_error() -> None:
-    llm = _StubVerifyLLM(None)
-
-    assert qa_jobs._verify_mi_finding("문서 전문", _mi_issue(), llm) is True
-
-
-def test_verify_mi_finding_fails_safe_on_malformed_response() -> None:
-    llm = _StubVerifyLLM("not a dict")
-
-    assert qa_jobs._verify_mi_finding("문서 전문", _mi_issue(), llm) is True
-
-
-def _ae_issue(original_text: str = "적당한 기간 내에 처리한다") -> qa_jobs.ReviewIssue:
-    return qa_jobs.ReviewIssue(
-        doc_id="DOC-TEST",
-        level="Paragraph",
-        rule_id="AE-03",
-        location="4. 처리 정책",
-        description="판단 기준이 불명확함",
-        original_text=original_text,
-        rationale="구체적 기준이 없음",
-    )
-
-
-# AE(모호한 표현)에서도 MI와 같은 패턴의 과탐지가 실사용 중 재보고됨(2026-08-11) — AE-01/AE-04
-# 예외조건이 둘 다 "문서 다른 곳에 정의/참조돼 있으면 예외"라 좁은 chunk만 본 confirm이 그 정의를
-# 놓치고 오판할 수 있음. MI와 동일한 문서 전체 재검증 로직을 추가함.
-def test_verify_ae_finding_keeps_the_issue_when_verification_confirms_it_is_ambiguous() -> None:
-    llm = _StubVerifyLLM({"actually_ambiguous": True, "reason": "정말 모호함"})
-
-    assert qa_jobs._verify_ae_finding("문서 전문", _ae_issue(), llm) is True
-
-
-def test_verify_ae_finding_drops_the_issue_when_verification_finds_it_defined_elsewhere() -> None:
-    llm = _StubVerifyLLM({"actually_ambiguous": False, "reason": "3장에 기준이 정의돼 있음"})
-
-    assert qa_jobs._verify_ae_finding("문서 전문", _ae_issue(), llm) is False
-
-
-def test_verify_ae_finding_fails_safe_by_keeping_the_issue_on_llm_error() -> None:
-    llm = _StubVerifyLLM(None)
-
-    assert qa_jobs._verify_ae_finding("문서 전문", _ae_issue(), llm) is True
-
-
-def test_verify_ae_finding_fails_safe_on_malformed_response() -> None:
-    llm = _StubVerifyLLM("not a dict")
-
-    assert qa_jobs._verify_ae_finding("문서 전문", _ae_issue(), llm) is True
-
-
-def test_run_review_sync_drops_ae_false_positive_but_keeps_other_issues(monkeypatch) -> None:
-    ae_issue = _ae_issue()
-    other_issue = qa_jobs.ReviewIssue(
-        doc_id="DOC-TEST",
-        level="Paragraph",
-        rule_id="TC-01",
-        location="1. 목적",
-        description="d",
-        original_text="x",
-        rationale="r",
-    )
-
-    def fake_review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm):
-        return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(ae_issue, other_issue))
-
-    verify_calls: list[str] = []
-
-    class _FakeConfirmClient(FakeAnthropicClient):
-        def complete_json(self, *, system: str, prompt: str, cache_prefix: str | None = None) -> Any:
-            if '"actually_ambiguous"' in system:
-                verify_calls.append(prompt)
-                return {"actually_ambiguous": False, "reason": "실제로는 다른 곳에 정의됨"}
-            return super().complete_json(system=system, prompt=prompt, cache_prefix=cache_prefix)
-
-    monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", _FakeConfirmClient)
-    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
-
-    rulebook = qa_jobs._load_rulebook()
-    result = qa_jobs._run_review_sync("DOC-TEST", _TEST_DOCUMENT, rulebook)
-
-    assert [issue.rule_id for issue in result.issues] == ["TC-01"]
-    assert len(verify_calls) == 1
-    assert _TEST_DOCUMENT in verify_calls[0]
-
-
-def test_run_review_sync_drops_mi_false_positive_but_keeps_other_issues(monkeypatch) -> None:
-    mi_issue = _mi_issue()
-    other_issue = qa_jobs.ReviewIssue(
-        doc_id="DOC-TEST",
-        level="Paragraph",
-        rule_id="TC-01",
-        location="1. 목적",
-        description="d",
-        original_text="x",
-        rationale="r",
-    )
-
-    def fake_review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm):
-        return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(mi_issue, other_issue))
-
-    verify_calls: list[str] = []
-
-    class _FakeConfirmClient(FakeAnthropicClient):
-        def complete_json(self, *, system: str, prompt: str, cache_prefix: str | None = None) -> Any:
-            if '"actually_missing"' in system:
-                verify_calls.append(prompt)
-                return {"actually_missing": False, "reason": "실제로는 문서에 있음"}
-            return super().complete_json(system=system, prompt=prompt, cache_prefix=cache_prefix)
-
-    monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", _FakeConfirmClient)
-    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
-
-    rulebook = qa_jobs._load_rulebook()
-    result = qa_jobs._run_review_sync("DOC-TEST", _TEST_DOCUMENT, rulebook)
-
-    assert [issue.rule_id for issue in result.issues] == ["TC-01"]
-    assert len(verify_calls) == 1
-    assert _TEST_DOCUMENT in verify_calls[0]
-
-
+# review_document()가 이제 MI/AE 과탐지 재검증을 내부에서 직접 수행하므로(qa_jobs.py 상단
+# 주석 참고), 여기 있던 _verify_mi_finding/_verify_ae_finding 및 _run_review_sync의 이중
+# 재검증 관련 테스트는 함께 제거함(2026-08-21) — _run_review_sync가 review_document()의
+# 결과를 그대로 신뢰하는 동작은 아래 dedupe 테스트들이 계속 커버한다.
 def _issue(rule_id: str, location: str, original_text: str | None) -> qa_jobs.ReviewIssue:
     return qa_jobs.ReviewIssue(
         doc_id="DOC-TEST",
@@ -565,6 +515,110 @@ def test_dedupe_conflicting_categories_never_collapses_issues_without_a_quote() 
     kept = qa_jobs._dedupe_conflicting_categories((a, b), rulebook)
 
     assert {issue.rule_id for issue in kept} == {"MI-01", "MI-02"}
+
+
+# 회귀 테스트(PR #113) — TEAM은 _CATEGORY_PRIORITY에 없는 합성 카테고리라 _category_priority()가
+# 항상 최하위 점수를 매긴다. 팀 규칙 이슈가 기본 규칙 이슈와 같은 문구를 가리키기만 하면 무조건
+# 지워지던 버그를 막는다: TEAM-* 이슈는 인용문이 있어도 이 dedup 대상에서 제외한다.
+def test_dedupe_conflicting_categories_never_drops_team_rule_issues() -> None:
+    rulebook = qa_jobs._load_rulebook()
+    ga_issue = _issue("GA-01", "6. FAQ", "같은 문구")
+    team_issue = _issue("TEAM-abc-123", "6. FAQ", "같은 문구")
+
+    kept = qa_jobs._dedupe_conflicting_categories((ga_issue, team_issue), rulebook)
+
+    assert {issue.rule_id for issue in kept} == {"GA-01", "TEAM-abc-123"}
+
+
+# 회귀 테스트(sunic5-planqa/planqa#115 리뷰) — dedup 키가 (location, original_text)만 쓰면
+# 같은 문단이 참고문서 A/B 둘 다와 따로 충돌해도 XDC 이슈 하나만 남고 하나는 사라진다.
+# reference_document를 키에 포함시켜서 막는다.
+def test_dedupe_conflicting_categories_keeps_xdc_issues_from_different_reference_docs() -> None:
+    rulebook = _xdc_lookup_rulebook()
+    against_doc_a = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="6. FAQ",
+        description="d",
+        original_text="같은 문구",
+        reference_document="DOC-A",
+    )
+    against_doc_b = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="6. FAQ",
+        description="d",
+        original_text="같은 문구",
+        reference_document="DOC-B",
+    )
+
+    kept = qa_jobs._dedupe_conflicting_categories((against_doc_a, against_doc_b), rulebook)
+
+    assert {issue.reference_document for issue in kept} == {"DOC-A", "DOC-B"}
+
+
+# 회귀 테스트(PR #113) — _korean_label()은 rulebook_v1.0.md의 "<한글> <English>" 헤더에서
+# 영어 절반을 잘라내려고 만든 함수라, 팀 규칙의 자유 텍스트 rule_name에 그대로 돌리면 첫 영어
+# 단어 앞에서 잘려나간다. TEAM 카테고리는 원문 rule_name을 그대로 criteria로 써야 한다.
+def test_to_issue_record_keeps_team_rule_name_with_english_words_intact() -> None:
+    from sunnic_backend.models.team_rule import TeamRule
+    from sunnic_backend.qa_engine.team_rule_adapter import merge_team_rules
+
+    rulebook, _ = merge_team_rules(
+        qa_jobs._load_rulebook(),
+        [TeamRule(id="abc-123", team_code="T1", rule_name="회원가입 API 정책 검토", description="설명")],
+    )
+    issue = _issue("TEAM-abc-123", "1. 개요", "원문 인용")
+
+    record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, {})
+
+    assert record.criteria == "회원가입 API 정책 검토"
+
+
+def _xdc_lookup_rulebook() -> RuleBook:
+    return qa_jobs._rulebook_for_lookup(qa_jobs._load_rulebook(), qa_jobs._load_xdc_rulebook())
+
+
+# XDC-01~04는 _CATEGORY_PRIORITY에 GA와 동급(0)으로 등록돼 있다 — 등록 전엔 TEAM처럼 미등록
+# 카테고리라 최하위 취급되어, 기본 룰과 같은 문구를 가리키기만 하면 XDC 이슈가 조용히
+# 사라지는 버그가 있었다(sunic5-planqa/planqa#115에서 발견).
+def test_dedupe_conflicting_categories_keeps_xdc_over_lower_priority_category() -> None:
+    rulebook = _xdc_lookup_rulebook()
+    tc_issue = _issue("TC-01", "6. FAQ", "같은 문구")
+    xdc_issue = _issue("XDC-01", "6. FAQ", "같은 문구")
+
+    kept = qa_jobs._dedupe_conflicting_categories((tc_issue, xdc_issue), rulebook)
+
+    assert [issue.rule_id for issue in kept] == ["XDC-01"]
+
+
+# XDC의 "두 번째 위치"는 같은 문서가 아니라 참고문서 쪽이라 reference_document/
+# reference_section/reference_quote에 담겨 온다 — 프론트까지 새 필드를 뚫지 않고, 관계형
+# (LG/LF/GA)이 이미 쓰는 related_location/related_original_text 표시 경로를 재사용한다.
+def test_to_issue_record_maps_xdc_reference_into_related_location_fields() -> None:
+    rulebook = _xdc_lookup_rulebook()
+    issue = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="4-1",
+        description="신청 기한이 다름",
+        original_text="단순 변심 | 상품 수령일로부터 7일 이내",
+        rationale="현재 문서는 7일, 참고문서는 14일",
+        reference_document="DOC-005",
+        reference_section="§2-1",
+        reference_quote="신청 기한: 상품 수령일로부터 14일 이내",
+        difference_type="value",
+    )
+
+    record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, {})
+
+    assert record.criteria == "타 문서 정합성"
+    assert record.related_location == "[DOC-005] §2-1"
+    assert record.related_original_text == "신청 기한: 상품 수령일로부터 14일 이내"
+    assert record.frame_type == qa_jobs.FrameType.RANGE
 
 
 # 원문 헤딩 자체의 번호는 작성자마다 있기도 없기도 해서 신뢰할 수 없다는 게 실사용 피드백으로

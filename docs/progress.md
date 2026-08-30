@@ -2359,3 +2359,129 @@ ThreadPoolExecutor 재검증 블록)이 review_document() 결과에 대해 독�
 - **Claude가 검증 불가능한 것**: 실제 서비스에서 이중 검증 제거로 MI/AE 이슈 노출 개수가
   실제로 늘어나는지는 재검증(예: 20문서 재검증)으로 확인 필요 — 사용자가 review-agent 쪽
   과탐지 완화(진행 중)와 함께 측정할 예정.
+
+## 2026-08-25 — Fix Suggestions 패널(3a~3d) 디자인 핸드오프 구현
+
+디자인 핸드오프(`design_handoff_fix_suggestions/`)의 3a(목록)~3d(완료 요약) 4개 화면을
+사이드패널에 새로 구현하고, 기존 `IssueListScreen` 하나짜리 화면을 대체했다. 범위는
+`extension/`만 — 백엔드는 건드리지 않았다. 디자인이 전제하는 "팀 규칙/기본 규칙" 구분,
+규칙명/설명/예외상황 필드가 실제 `IssueResponse`에 없어서(백엔드에 그 개념 자체가 없음,
+확인 완료) `state/ruleSourceDefaults.ts`에서 `criteria`→규칙명, `reason`→규칙 설명으로
+추론하고 소스는 항상 `'builtin'`으로 채운다(타입은 `'team'|'builtin'` 그대로 둬서 나중에
+백엔드가 팀 규칙을 내려주면 바로 반영되게만 함) — 예외 상황은 데이터가 없어 행 자체를
+렌더링하지 않는다.
+
+- **상태**: `AppState.currentIssueIndex`(인덱스 기반) 제거 → `activeIssueId`(null=목록,
+  값 있으면 상세) + `activeLocationIndex`(0|1, 관계형 이슈의 두 위치 순회)로 교체.
+  `NAVIGATE_ISSUE` 제거, `CLEAR_ACTIVE_ISSUE`/`CYCLE_ACTIVE_LOCATION`/`UNSTAGE_ISSUE_EDIT`
+  (완료 카드 "되돌리기") 신규. `IssueEdit`에 `skipReason` 추가. 신규 순수 함수 모듈
+  `state/suggestionProgress.ts`(진행률/다음 미해결 이슈 계산)와 `state/ruleSourceDefaults.ts`.
+- **화면**: `SuggestionListScreen`(3a), `SuggestionDetailScreen`(3b+3c를 하나로 합침 — 완료
+  스택/남은 목록이 진행 상황에 따라 비었다가 채워질 뿐 같은 화면이라고 판단), `SuggestionSummaryScreen`
+  (3d, "팀 규칙 충족 현황"은 실제 데이터가 없어 criteria별 집계로 대체)을 새로 만들고
+  `IssueListScreen`/`OverviewPanel`은 삭제. 하위 컴포넌트(`components/suggestions/`):
+  `SuggestionCard`/`RuleEvidenceCard`/`SuggestionDirectionCard`(기존 인라인 편집·저장 로직을
+  거의 그대로 이식)/`LocationNavigator`/`SourceBadge`/`SkipReasonPrompt`(건너뛰기 사유 UI —
+  기존에 이런 UI 자체가 없어서 신규).
+- **판단 지점(사람 확인 필요)**: 문서 원문 편집은 계속 사이드패널에서 처리하기로 함(호스트
+  페이지에 취소/저장 버튼을 직접 심지 않음 — 스코프를 가장 크게 줄이는 결정). "수정 방향성
+  제안" 본문이 실제로는 `issue.suggestion`(교체 문구)이라 디자인 예시 문구보다 딱딱하게
+  보일 것. 3a 카드는 팀/기본 규칙으로 그룹핑하지 않고 위치 순서 그대로 나열(실제 `.dc.html`
+  레퍼런스가 README 설명과 달리 뒤섞인 순서였음). "다시 검사"는 `main` 화면 이동 정도로만
+  처리(원클릭 재스캔은 범위 밖).
+- **content script(`issueOverlay.ts`)**: "모든 이슈를 항상 다 하이라이트 + 클릭하면 툴팁"
+  방식을 폐기하고, 지금 작업 중인 제안의 위치만 문단 단위로 틴트+마커, 나머지는 흐리게
+  (`opacity:.4`) 표시하는 방식으로 전면 교체(`setActiveSuggestion`/`clearActiveSuggestion`).
+  텍스트 매칭 로직(`buildLooseTextRegex`, `collectTextSpans`)은 재사용. 저장 로직
+  (`applyIssueEdit`)은 그대로 유지. `HistoryExportScreen`은 지속 마크 없이 스크롤만 하는
+  `scrollToLocation`을 새로 씀(재작성 안 하고 최소 변경). `useIssueOverlaySync` →
+  `useSuggestionOverlaySync`로 재작성(클릭 기반 포커스 리스너 제거 — 상호작용은 전부 패널에서
+  시작).
+- `eslint.config.js`: `@typescript-eslint/no-unused-vars`에 `_` 접두사 예외 패턴 추가(향후
+  확장용으로 남겨둔 매개변수, 예: `getRuleSource(_issue)`, 기존 `_sender` 관례와 통일).
+- 검증: 확장 `tsc -b`(빌드), `eslint .`(클린), `vitest run`(95개 전부 통과 — 관련 테스트
+  대폭 교체: `issueOverlay.test.ts`를 새 하이라이트 모델에 맞게 다시 쓰고, `appReducer.test.ts`
+  갱신, 신규 `suggestionProgress.test.ts` 추가).
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 크롬에 언팩 로드해서 3a→3b/3c→3d 전체 흐름을 눈으로
+  확인 필요(문단 틴트/dim, 위치 내비게이터 순회, 완료 스택 되돌리기, 건너뛰기 사유 입력,
+  3d에서 QA 통과 배지/기록 화면 링크). 자동 테스트는 DOM 조작 로직 단위로만 커버함.
+- 커밋은 보미님이 로컬에서 직접 확인한 뒤 진행하기로 함 — 아직 커밋 안 함.
+
+## 2026-08-25 (이어서) — 문서에서 직접 편집으로 전환
+
+위 3a~3d를 실제로 써본 보미님 피드백으로, "수정은 패널 텍스트 영역에서"(판단 지점 #1)를
+뒤집었다 — 이제 **왼쪽 Confluence 문서의 current(실선 틴트) 문단을 직접 클릭해서 바로
+고치고**, 옆에 뜨는 취소/저장 버튼으로 저장한다. 저장되면 패널이 자동으로 다음 제안으로
+넘어간다. 패널의 기존 텍스트 영역 편집(`SuggestionDirectionCard`)은 지우지 않고 폴백으로
+남겼다 — 문서에서 앵커를 못 찾거나(`insert_range`처럼 편집할 원문 자체가 없는 경우 포함)
+컨플루언스 탭이 없을 때만 쓴다.
+
+- **`content/issueOverlay.ts`**: `setActiveSuggestion`이 current 문단을
+  `contentEditable=true`로 켜고 원문을 `dataset.sunnicOriginalText`에 저장. 옆에는 실제 DOM
+  형제가 아니라(표/리스트 구조가 깨질 수 있어서) 예전 AI 제안 툴팁처럼
+  `position:fixed`+`getBoundingClientRect` 기반 플로팅 박스(`.sunnic-edit-actions`)로 취소/저장
+  버튼을 띄운다(스크롤 애니메이션 중 위치 추적도 예전 툴팁 로직을 재사용). 저장 전 검증도
+  패널에 있던 걸 그대로 옮겼다: ① 원래 문제 문구가 아직 남아있는지(로컬, `isIssueLikelyResolved`)
+  ② AI 유사도 체크(`api.checkEditSimilarity`, content script도 우리 백엔드는 문제없이 fetch
+  가능 — Confluence 인증이 필요한 건 저장 자체뿐). 관련 위치(related) 편집은 비교 기준이 될
+  "AI 제안"이 없어 ②를 건너뛴다. 저장 성공 시 패널에 `SUGGESTION_EDIT_SAVED`(fire-and-forget,
+  issueId는 안 실음 — content script는 여전히 issueId를 모름)를 보낸다. 장식용으로 넣었던
+  깜빡이는 커서 바는 제거(진짜 caret이 생기니 불필요).
+- **`content/messages.ts`**: `EditableSuggestionLocation`(criteria/reason/suggestion 포함,
+  suggestion이 null이면 유사도 체크 생략) 신규, `SetActiveSuggestionRequest.current`가 이 타입을
+  씀. `SuggestionEditSavedMessage` 신규.
+- **`hooks/useSuggestionOverlaySync.ts`**: current/related/doneLocations 계산 시 이미 저장된
+  위치는 `issueEdits[...]?.editedText`(원본이 아니라 저장된 텍스트) 기준으로 앵커를 다시 찾도록
+  수정 — 안 그러면 저장 직후 재순회 시 문서 텍스트가 이미 바뀌어 있어 매칭이 깨진다.
+- **`components/screens/SuggestionDetailScreen.tsx`**: `chrome.runtime.onMessage`로
+  `SUGGESTION_EDIT_SAVED`를 받아 `STAGE_ISSUE_EDIT`+`api.updateIssue`+다음 제안 이동을 처리하는
+  리스너 추가(패널 안에서 저장하는 기존 경로와 같은 일을 하는 두 번째 트리거).
+- **`components/suggestions/SuggestionDirectionCard.tsx`**: 기본 표시를 읽기 전용으로 바꾸고
+  "왼쪽 문서에서 직접 고치세요" 안내 추가, "오류 수정하기" 링크는 "여기서 직접 수정"(폴백)으로
+  라벨만 변경 — 로직은 그대로.
+- 테스트: `issueOverlay.test.ts`에 contentEditable 토글/취소 복원/저장(REST+메시지)/유사도 체크
+  생략(related) 케이스 추가, 기존 "커서 바" 테스트는 제거. 전체 101개 통과.
+- 검증: `tsc -b`/`eslint .`/`vitest run` 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 문서에서 문단 클릭 → 타이핑 → 저장 → 자동으로 다음
+  제안 넘어가는지, 취소 시 원문 복원되는지, related로 전환 시 편집 가능한 문단이 바뀌는지
+  눈으로 확인 필요 — 보미님이 직접 확인 중.
+- 완료 카드 "되돌리기"는 패널 기록만 지운다 — Confluence 복제본에 저장된 텍스트 자체는
+  되돌리지 않는다(기존부터 있던 갭, 이번에 새로 생긴 문제 아님).
+- 커밋은 여전히 보미님 확인 후 진행.
+
+## 2026-08-25 (이어서 2) — 클릭으로 편집 진입 + scrollIntoView 제거
+
+실제 컨플루언스 페이지에서 테스트하다 두 가지가 스펙과 다르다는 피드백: ① current 문단이 되는
+순간 자동으로 편집 가능해지는 게 아니라 **클릭해야** 편집 모드로 들어가야 하고, 그 클릭 지점에
+캐럿이 정확히 놓여야 한다. ② `scrollIntoView`를 쓰고 있었는데, 디자인 핸드오프가 애초에
+"컨테이너 스크롤 오프셋 계산 사용, scrollIntoView 금지"라고 명시했었다 — 실제 컨플루언스처럼
+중첩 스크롤 컨테이너가 있는 페이지에서 엉뚱한 조상을 스크롤하거나 아예 안 움직이는 것처럼
+보일 수 있어서, "‹›가 반응 없어 보이는" 증상의 유력한 원인이었다.
+
+- **`content/issueOverlay.ts`**: current 문단은 이제 틴트만 되고 `contentEditable`은 꺼진
+  채로 있다가, **클릭해야** `enterEditMode`가 켜진다 — 클릭 좌표(`clientX/clientY`)로
+  `document.caretRangeFromPoint`(크롬 전용 API)를 구해 Selection에 반영해서 캐럿을 정확히
+  놓는다(contentEditable을 클릭 "이후"에 켜서 브라우저가 자동으로 캐럿을 안 놔주기 때문에
+  수동으로 해야 함). "취소"는 텍스트 원복 + `contentEditable=false` + 박스 닫기까지 완전히
+  편집 모드를 해제한다(저장 성공 시도 동일) — 다시 고치려면 또 클릭해야 한다.
+- 신규 `findScrollableAncestor`/`scrollElementToCenter`: `scrollIntoView` 대신 실제 스크롤
+  가능한 조상(`overflow-y: auto/scroll` + `scrollHeight > clientHeight`)을 직접 찾아 그
+  컨테이너의(또는 없으면 `window`의) 스크롤 위치를 계산해서 옮긴다. `setActiveSuggestion`과
+  `scrollToLocation` 두 곳 다 교체.
+- 테스트: 클릭 전엔 read-only, 클릭 후에만 편집 가능/박스 노출로 전부 갱신, 취소/저장 후
+  `contentEditable`이 다시 꺼지는지 확인 추가, 스크롤 스파이를 `scrollIntoView`→`window.scrollTo`
+  로 교체. 101개 전부 통과.
+- 검증: `tsc -b`/`eslint .`/`vitest run` 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 컨플루언스 페이지에서 문단 클릭 시 클릭 지점에 캐럿이
+  정확히 놓이는지(happy-dom엔 `caretRangeFromPoint`가 없어 자동 테스트로 커버 불가), ‹›로
+  위치를 옮길 때 실제로 눈에 보이는 스크롤이 일어나는지 확인 필요 — 보미님이 직접 확인 중.
+- 커밋은 여전히 보미님 확인 후 진행.

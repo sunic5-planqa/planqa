@@ -17,22 +17,21 @@ function teamRule(overrides: Partial<TeamRuleResponse> = {}): TeamRuleResponse {
 }
 
 describe('appReducer', () => {
-  it('ISSUES_LOADED resets index, editing state, and stale edits from a previous review', () => {
+  it('ISSUES_LOADED resets active issue and stale edits from a previous review', () => {
     const stale = {
       ...initialAppState,
-      currentIssueIndex: 2,
-      editingIssueId: 'old-issue',
+      activeIssueId: 'old-issue',
+      activeLocationIndex: 1 as const,
       issueEdits: { 'old-issue': { action: 'edit' as const, editedText: '이전 리뷰의 수정' } },
     }
 
     const state = appReducer(stale, { type: 'ISSUES_LOADED', issues: [{ id: 'a' }, { id: 'b' }] as IssueResponse[] })
 
-    expect(state.currentIssueIndex).toBe(0)
-    expect(state.editingIssueId).toBeNull()
+    expect(state.activeIssueId).toBeNull()
+    expect(state.activeLocationIndex).toBe(0)
     expect(state.issueEdits).toEqual({})
     expect(state.screen).toBe('issues')
   })
-
 
   // 관계형(LG/LF/GA) 이슈는 두 위치를 독립적으로 편집·저장할 수 있어야 한다 — 한쪽을 저장할 때
   // 다른 쪽에 이미 저장해둔 걸 지워버리면 안 된다.
@@ -56,6 +55,7 @@ describe('appReducer', () => {
       action: 'edit',
       editedText: '첫 번째 위치 수정본',
       relatedEditedText: '두 번째 위치 수정본',
+      skipReason: undefined,
     })
   })
 
@@ -79,26 +79,57 @@ describe('appReducer', () => {
       action: 'edit',
       editedText: '첫 번째 위치 수정본',
       relatedEditedText: '두 번째 위치 수정본',
+      skipReason: undefined,
     })
   })
 
-  it('CONFLUENCE_DETECTED sets title, markdown, and status', () => {
+  it('STAGE_ISSUE_EDIT with a skipReason persists it, and a later stage without one keeps it', () => {
+    const skipped = appReducer(initialAppState, {
+      type: 'STAGE_ISSUE_EDIT',
+      issueId: 'issue-1',
+      action: 'skip',
+      skipReason: '이번 릴리스에서는 다루지 않기로 함',
+    })
+
+    expect(skipped.issueEdits['issue-1'].skipReason).toBe('이번 릴리스에서는 다루지 않기로 함')
+
+    const restaged = appReducer(skipped, { type: 'STAGE_ISSUE_EDIT', issueId: 'issue-1', action: 'apply' })
+
+    expect(restaged.issueEdits['issue-1'].skipReason).toBe('이번 릴리스에서는 다루지 않기로 함')
+  })
+
+  it('UNSTAGE_ISSUE_EDIT removes the issue from issueEdits entirely ("되돌리기")', () => {
+    const staged = appReducer(initialAppState, { type: 'STAGE_ISSUE_EDIT', issueId: 'issue-1', action: 'apply' })
+    expect(staged.issueEdits['issue-1']).toBeDefined()
+
+    const state = appReducer(staged, { type: 'UNSTAGE_ISSUE_EDIT', issueId: 'issue-1' })
+
+    expect(state.issueEdits['issue-1']).toBeUndefined()
+  })
+
+  it('CONFLUENCE_DETECTED sets title, markdown, pageId, tabId, and status', () => {
     const state = appReducer(initialAppState, {
       type: 'CONFLUENCE_DETECTED',
       title: '기획서',
       markdown: '# 기획서',
+      pageId: '12345',
+      tabId: 7,
     })
 
     expect(state.confluenceStatus).toBe('detected')
     expect(state.confluencePageTitle).toBe('기획서')
     expect(state.confluenceMarkdown).toBe('# 기획서')
+    expect(state.confluencePageId).toBe('12345')
+    expect(state.confluenceTabId).toBe(7)
   })
 
-  it('CONFLUENCE_NOT_A_PAGE clears title/markdown', () => {
+  it('CONFLUENCE_NOT_A_PAGE clears title/markdown/pageId/tabId', () => {
     const detected = appReducer(initialAppState, {
       type: 'CONFLUENCE_DETECTED',
       title: '기획서',
       markdown: '# 기획서',
+      pageId: '12345',
+      tabId: 7,
     })
 
     const state = appReducer(detected, { type: 'CONFLUENCE_NOT_A_PAGE' })
@@ -106,6 +137,8 @@ describe('appReducer', () => {
     expect(state.confluenceStatus).toBe('not_confluence')
     expect(state.confluencePageTitle).toBeNull()
     expect(state.confluenceMarkdown).toBeNull()
+    expect(state.confluencePageId).toBeNull()
+    expect(state.confluenceTabId).toBeNull()
   })
 
   it('CONFLUENCE_SIBLINGS_LOADED stores the sibling docs', () => {
@@ -159,67 +192,39 @@ describe('appReducer', () => {
     expect(state.selectedReferenceFileIds).toEqual([])
   })
 
-  it('NAVIGATE_ISSUE does not go below index 0', () => {
-    const withIssues = { ...initialAppState, issues: [{}, {}] as IssueResponse[], currentIssueIndex: 0 }
-
-    const state = appReducer(withIssues, { type: 'NAVIGATE_ISSUE', direction: 'prev' })
-
-    expect(state.currentIssueIndex).toBe(0)
-  })
-
-  it('NAVIGATE_ISSUE does not go past the last issue', () => {
-    const withIssues = { ...initialAppState, issues: [{}, {}] as IssueResponse[], currentIssueIndex: 1 }
-
-    const state = appReducer(withIssues, { type: 'NAVIGATE_ISSUE', direction: 'next' })
-
-    expect(state.currentIssueIndex).toBe(1)
-  })
-
-  it('SELECT_ISSUE_BY_ID jumps to the matching issue', () => {
+  it('SELECT_ISSUE_BY_ID sets the active issue and resets the location index', () => {
     const withIssues = {
       ...initialAppState,
       issues: [{ id: 'a' }, { id: 'b' }, { id: 'c' }] as IssueResponse[],
-      currentIssueIndex: 0,
+      activeIssueId: 'a',
+      activeLocationIndex: 1 as const,
     }
 
     const state = appReducer(withIssues, { type: 'SELECT_ISSUE_BY_ID', issueId: 'c' })
 
-    expect(state.currentIssueIndex).toBe(2)
+    expect(state.activeIssueId).toBe('c')
+    expect(state.activeLocationIndex).toBe(0)
   })
 
-  it('SELECT_ISSUE_BY_ID is a no-op for an unknown id', () => {
-    const withIssues = {
+  it('CLEAR_ACTIVE_ISSUE resets to the list view (3a)', () => {
+    const inDetail = {
       ...initialAppState,
-      issues: [{ id: 'a' }, { id: 'b' }] as IssueResponse[],
-      currentIssueIndex: 1,
+      activeIssueId: 'a',
+      activeLocationIndex: 1 as const,
     }
 
-    const state = appReducer(withIssues, { type: 'SELECT_ISSUE_BY_ID', issueId: 'does-not-exist' })
+    const state = appReducer(inDetail, { type: 'CLEAR_ACTIVE_ISSUE' })
 
-    expect(state.currentIssueIndex).toBe(1)
+    expect(state.activeIssueId).toBeNull()
+    expect(state.activeLocationIndex).toBe(0)
   })
 
-  it('START_EDIT_ISSUE and STOP_EDIT_ISSUE toggle editingIssueId', () => {
-    const editing = appReducer(initialAppState, { type: 'START_EDIT_ISSUE', issueId: 'a' })
-    expect(editing.editingIssueId).toBe('a')
+  it('CYCLE_ACTIVE_LOCATION toggles between 0 and 1', () => {
+    const toRelated = appReducer(initialAppState, { type: 'CYCLE_ACTIVE_LOCATION' })
+    expect(toRelated.activeLocationIndex).toBe(1)
 
-    const stopped = appReducer(editing, { type: 'STOP_EDIT_ISSUE' })
-    expect(stopped.editingIssueId).toBeNull()
-  })
-
-  it('NAVIGATE_ISSUE and SELECT_ISSUE_BY_ID clear an in-progress edit', () => {
-    const withIssues = {
-      ...initialAppState,
-      issues: [{ id: 'a' }, { id: 'b' }] as IssueResponse[],
-      currentIssueIndex: 0,
-      editingIssueId: 'a',
-    }
-
-    const afterNav = appReducer(withIssues, { type: 'NAVIGATE_ISSUE', direction: 'next' })
-    expect(afterNav.editingIssueId).toBeNull()
-
-    const afterSelect = appReducer({ ...withIssues, editingIssueId: 'a' }, { type: 'SELECT_ISSUE_BY_ID', issueId: 'b' })
-    expect(afterSelect.editingIssueId).toBeNull()
+    const backToPrimary = appReducer(toRelated, { type: 'CYCLE_ACTIVE_LOCATION' })
+    expect(backToPrimary.activeLocationIndex).toBe(0)
   })
 
   it('RULE_CATEGORIES_LOADED stores the categories', () => {

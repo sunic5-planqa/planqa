@@ -1,72 +1,148 @@
+import { api } from '../api/client'
+import { isIssueLikelyResolved } from '../state/editValidation'
 import type {
-  ApplyIssueEditRequest,
-  ApplyIssueEditResponse,
-  ClearIssueOverlayRequest,
-  ClearIssueOverlayResponse,
-  IssueOverlayFocusMessage,
-  OverlayIssue,
-  ScrollToIssueRequest,
-  ScrollToIssueResponse,
-  ShowIssueOverlayRequest,
-  ShowIssueOverlayResponse,
+  ClearActiveSuggestionRequest,
+  ClearActiveSuggestionResponse,
+  ClearQaPassedBadgeRequest,
+  EditableSuggestionLocation,
+  QaPassedBadgeResponse,
+  ScrollToLocationRequest,
+  ScrollToLocationResponse,
+  SetActiveSuggestionRequest,
+  SetActiveSuggestionResponse,
+  ShowQaPassedBadgeRequest,
+  SuggestionEditSavedMessage,
+  SuggestionLocation,
 } from './messages'
-import { splitQuotedSegments } from '../utils/quoteSegments'
 
-// 문서 본문 위에 모든 이슈를 한 번에 하이라이트 박스로 표시하고, 클릭하면 통일된 "AI 제안" 말풍선(읽기
-// 전용)을 보여준다. 실제 수정/저장은 여기서 하지 않고 사이드패널(오른쪽 패널)에서 하도록 포커스만
-// 넘긴다 — Figma SCREEN 04: 본문 위 말풍선은 안내만, 편집은 오른쪽 "수정 진행 중..." 카드에서.
-// 컨플루언스에 실제로 쓰는 fetch만 이 컨텐츠 스크립트가 대신 수행한다(세션 쿠키가 페이지와 동일 출처
-// 여야 붙어서 나가므로) — 사이드패널이 APPLY_ISSUE_EDIT 요청을 보내면 여기서 처리해 응답한다.
-const HIGHLIGHT_CLASS = 'sunnic-issue-highlight'
-const RESOLVED_CLASS = 'sunnic-issue-resolved'
-const ACTIVE_CLASS = 'sunnic-issue-active'
-const TOOLTIP_CLASS = 'sunnic-issue-tooltip'
+// 지금 작업 중인 제안의 위치(current/related/done)만 문단 단위로 틴트 표시하고, 나머지 문단은
+// 흐리게(dim) 만든다 — 다만 편집 가능 여부는 이제 틴트와 무관하다: 표시된 문단만 고칠 수 있게
+// 막아둔 게 오히려 불편하다는 실사용 피드백(2026-08-30)으로, 문서 전체를 항상 편집 가능하게
+// 열어둔다. 틴트는 순수하게 "AI가 지목한 위치"라는 시각적 안내로만 남는다. 저장은 여기서 직접
+// 수행한다 — 컨텐츠 스크립트가 페이지와 동일 출처라 세션 쿠키로 컨플루언스 REST API를 호출할
+// 수 있어서다. 저장 시 실제로 바뀐 문단이 몇 개든 전부 하나의 저장 요청에 담아 반영하고,
+// 그중 current 문단의 새 텍스트로 SUGGESTION_EDIT_SAVED를 사이드패널에 알려 다음 제안으로
+// 넘어가게 한다(패널은 issueId를 이미 알고 있으므로 그쪽에서 상태를 갱신).
+const CURRENT_CLASS = 'sunnic-loc-current'
+const RELATED_CLASS = 'sunnic-loc-related'
+const DONE_CLASS = 'sunnic-loc-done'
+const DIM_CLASS = 'sunnic-loc-dim'
+const FLASH_CLASS = 'sunnic-scroll-flash'
+const QA_BADGE_CLASS = 'sunnic-qa-passed-badge'
+const EDIT_ACTIONS_CLASS = 'sunnic-edit-actions'
 const STYLE_ID = 'sunnic-issue-overlay-style'
 
-// Figma SCREEN 03/04의 하이라이트 박스 실측값 — 배경 채움 없이 solid 2px 보라 테두리(#b583ef)만,
-// 둥근 모서리 10px. 그라데이션이 아니다. 단, "지금 오른쪽 패널에서 보고 있는 이슈"(active)만 예외로
-// 그라데이션 테두리를 줘서 여러 박스 중 어디를 보고 있는지 한눈에 띄게 한다 — border-image는
-// border-radius를 무시하는 CSS 한계가 있어서, padding-box/border-box 이중 background로 우회한다
-// (내부는 여전히 투명 — Figma 스펙 그대로 유지).
+// 문단 단위 앵커로 볼 블록 엘리먼트들 — 표/리스트/제목까지 포함해야 실제 문서 구조를 커버한다.
+const BLOCK_SELECTOR = 'p, li, td, th, blockquote, h2, h3, h4, h5, h6'
+
+// 최종 스펙(2026-08-30 정리) — 배경 틴트만으로 위치를 표시한다. 예전엔 border-left 세로 바 +
+// ::before 원형 마커 + 전체 테두리까지 겹쳐서 붙였는데("스크롤은 되는데 표시가 없다"는 실사용
+// 보고 대응용으로 한 겹씩 추가해온 결과), 정작 디버그 아웃라인처럼 보인다는 피드백으로 전부
+// 걷어내고 배경색+살짝 둥근 모서리만 남긴다. border-radius는 세 상태가 공유하므로 한 군데
+// (이 셀렉터)에서만 관리한다.
 const STYLE = `
-.${HIGHLIGHT_CLASS} {
-  background: transparent;
-  border: 2px solid #b583ef;
-  border-radius: 10px;
-  padding: 1px 3px;
-  cursor: pointer;
+.${CURRENT_CLASS}, .${RELATED_CLASS}, .${DONE_CLASS} {
+  border-radius: 8px;
+  transition: background-color .22s ease;
 }
-.${HIGHLIGHT_CLASS}.${RESOLVED_CLASS} {
-  border-color: #2ea043;
+/* current(지금 보는 위치)와 related(같은 이슈의 다른 위치)를 예전엔 다른 색(보라/핑크)으로
+   구분했는데, 어느 쪽을 먼저 고칠지는 AI가 임의로 정한 순서일 뿐 실제로는 기획자가 문서를 보고
+   판단할 몫이다 — 색으로 "여기가 먼저"라는 인상을 주면 안 된다는 피드백(2026-08-30)으로 둘을
+   같은 색으로 통일한다. 구분은 내비게이터(‹›)의 "1/2" 텍스트로만 한다. */
+.${CURRENT_CLASS}, .${RELATED_CLASS} {
+  background: rgba(180, 122, 207, .22);
+  cursor: text;
 }
-.${HIGHLIGHT_CLASS}.${ACTIVE_CLASS} {
-  border: 2.5px solid transparent;
-  background: linear-gradient(transparent, transparent) padding-box, linear-gradient(135deg, #c9a9ff, #ffc9e8) border-box;
+.${DONE_CLASS} {
+  position: relative;
+  background: rgba(52, 168, 83, .14);
 }
-.${TOOLTIP_CLASS} {
+.${DONE_CLASS}::before {
+  content: '\\2713';
+  position: absolute;
+  left: -20px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #34A853;
+  color: #fff;
+  font-size: 9px;
+  line-height: 15px;
+  text-align: center;
+}
+.${DIM_CLASS} {
+  opacity: .4;
+  transition: opacity .22s ease;
+}
+.${CURRENT_CLASS}[contenteditable='true'] {
+  outline: none;
+  cursor: text;
+}
+.${FLASH_CLASS} {
+  animation: sunnic-scroll-flash-anim 1.2s ease;
+}
+@keyframes sunnic-scroll-flash-anim {
+  0% { background-color: rgba(201, 169, 255, .25); }
+  100% { background-color: transparent; }
+}
+.${QA_BADGE_CLASS} {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 10px;
+  padding: 5px 12px;
+  border-radius: 20px;
+  background: #F2F9F4;
+  border: 1px solid #DCEDE2;
+  color: #3F6B4C;
+  font-size: 11px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+.${EDIT_ACTIONS_CLASS} {
   position: fixed;
   z-index: 2147483647;
   max-width: 280px;
   background: #fff;
-  color: #172b4d;
   border-radius: 8px;
-  box-shadow: 0 4px 16px rgba(9, 30, 66, 0.25);
+  box-shadow: 0 4px 16px rgba(9, 30, 66, .25);
   padding: 10px 12px;
   font-family: -apple-system, "Apple SD Gothic Neo", sans-serif;
-  font-size: 12.5px;
+}
+.${EDIT_ACTIONS_CLASS}-notice {
+  margin-bottom: 6px;
+  font-size: 11px;
   line-height: 1.5;
+  color: #6E6B79;
 }
-.${TOOLTIP_CLASS} .sunnic-tooltip-heading {
-  font-weight: 700;
-  color: #7c5cff;
-  margin-bottom: 2px;
+.${EDIT_ACTIONS_CLASS}-notice:empty {
+  display: none;
 }
-.${TOOLTIP_CLASS} .sunnic-tooltip-quote {
+.${EDIT_ACTIONS_CLASS}-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.${EDIT_ACTIONS_CLASS} button {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
   font-weight: 700;
-  background: linear-gradient(135deg, #c9a9ff, #ffc9e8);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: none;
+}
+.${EDIT_ACTIONS_CLASS}-cancel {
+  color: #939393;
+}
+.${EDIT_ACTIONS_CLASS}-save {
+  color: #6B4FC0;
+}
+.${EDIT_ACTIONS_CLASS} button:disabled {
+  opacity: .5;
+  cursor: default;
 }
 `
 
@@ -78,9 +154,13 @@ function ensureStyleInjected(): void {
   document.head.appendChild(style)
 }
 
+// 우리가 직접 주입한 장식 요소(QA 통과 배지, 저장/취소 플로팅 박스) 안의 텍스트 노드는 문서 본문
+// 매칭 대상에서 제외한다 — 배지는 "✓ QA 통과", 플로팅 박스는 "취소"/"저장" 같은 실제 텍스트를
+// 갖고 있어 다음 매칭에 잘못 걸릴 수 있다(플로팅 박스는 document.documentElement에 붙어 원래
+// document.body 트리워커에 안 잡히지만, 방어적으로 같이 걸러둔다).
 function isInsideOverlayNode(node: Node): boolean {
   const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : (node as Element)
-  return !!element?.closest(`.${HIGHLIGHT_CLASS}, .${TOOLTIP_CLASS}`)
+  return !!element?.closest(`.${QA_BADGE_CLASS}, .${EDIT_ACTIONS_CLASS}`)
 }
 
 // input_text가 목록/표 항목에서 나온 경우, 백엔드가 마크다운으로 평탄화할 때 넣은 "- " 불릿
@@ -143,259 +223,414 @@ function collectTextSpans(): { fullText: string; spans: TextSpan[] } {
   return { fullText, spans }
 }
 
-const marksByIssueId = new Map<string, HTMLElement[]>()
-const issuesById = new Map<string, OverlayIssue>()
-
-let activeIssueId: string | null = null
-
-// "지금 보고 있는" 박스 하나에만 그라데이션 테두리(ACTIVE_CLASS)를 준다 — 클릭이든 오른쪽 패널
-// 네비게이션(scrollToIssue)이든 이슈 포커스가 바뀌는 모든 경로가 이걸 거친다.
-function setActiveMark(issueId: string): void {
-  if (activeIssueId && activeIssueId !== issueId) {
-    for (const mark of marksByIssueId.get(activeIssueId) ?? []) mark.classList.remove(ACTIVE_CLASS)
-  }
-  for (const mark of marksByIssueId.get(issueId) ?? []) mark.classList.add(ACTIVE_CLASS)
-  activeIssueId = issueId
-}
-
-function attachIssueMarkHandlers(mark: HTMLElement, issue: OverlayIssue): void {
-  mark.className = HIGHLIGHT_CLASS
-  mark.dataset.sunnicIssueId = issue.id
-  mark.addEventListener('click', (event) => {
-    event.stopPropagation()
-    // 이미 이 이슈의 말풍선이 떠 있는 채로 같은 박스를 다시 누르면 닫는다(토글) — 다른 이슈를
-    // 보다가 이 박스를 누른 거면 그냥 새로 연다.
-    if (activeTooltip?.dataset.sunnicForIssue === issue.id) closeTooltip()
-    else showTooltip(mark, issue)
-    setActiveMark(issue.id)
-    chrome.runtime.sendMessage<IssueOverlayFocusMessage>({ type: 'ISSUE_OVERLAY_FOCUS', issueId: issue.id }).catch(() => {
-      // 사이드패널이 닫혀있으면 받는 쪽이 없어도 말풍선 표시 자체는 유효하니 무시한다.
-    })
-  })
-}
-
 function normalizeHeadingText(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
 
-// input_text로 못 찾을 때의 최후 수단 — "정보 누락(MI)"처럼 애초에 원문에 없는 걸 지적하는 이슈는
-// 매치 대상 자체가 없어서 항상 여기로 온다(그 외 사소한 매칭 실패의 안전망 역할도 겸함). issue.location
-// (예: "6. 프로덕트 기능 > 6-1. 메인 배너 (캐러셀)")의 가장 안쪽 위계와 텍스트가 일치하는 제목(h1~h6)을
-// 찾아 그 제목 자체를 감싼다 — location은 htmlToChapterMarkdown이 만든 헤딩 텍스트 그대로라 실제
-// 문서 제목과 일치해야 정상이다. 이렇게라도 하이라이트가 있어야 "다음"으로 넘겼을 때 문서가 스크롤돼
-// 어느 부분을 고쳐야 하는지 보여줄 수 있다 — 정밀한 range/insert_range 프레임 렌더링은 아직 없음.
-function wrapIssueByLocationHeading(issue: OverlayIssue): boolean {
-  // location이 없는 이슈(예: 이 필드가 추가되기 전에 저장/캐시된 예전 데이터)가 섞여 들어와도 여기서
-  // 죽지 않게 방어한다 — 이 함수 하나가 던지면 호출부의 filter() 전체가 멈춰서, 뒤에 있던 멀쩡한
-  // 이슈들의 하이라이트까지 통째로 사라지는 사고로 이어진다(실제로 한번 겪음).
-  const target = normalizeHeadingText(issue.location?.split('>').pop() ?? '')
-  if (!target) return false
-
-  // h1은 일부러 뺀다 — review-agent의 Document 위계(문서 전체를 대상으로 한 판정) 이슈는
-  // location이 곧 "문서 제목"이라서(백엔드 document.py의 _doc_title), 여길 막지 않으면 컨플루언스
-  // 페이지 자체의 제목(h1)을 감싸버려 "제목이 문제"인 것처럼 보이는 엉뚱한 하이라이트가 된다(실제
-  // 사용자 보고). 본문 소제목(h2~h6)만 유효한 폴백 대상 — 못 찾으면 하이라이트 없이 넘어간다.
-  const heading = Array.from(document.querySelectorAll<HTMLElement>('h2, h3, h4, h5, h6')).find(
-    (h) => !isInsideOverlayNode(h) && normalizeHeadingText(h.textContent ?? '') === target,
-  )
-  if (!heading) return false
-
-  const mark = document.createElement('mark')
-  attachIssueMarkHandlers(mark, issue)
-  while (heading.firstChild) mark.appendChild(heading.firstChild)
-  heading.appendChild(mark)
-
-  marksByIssueId.set(issue.id, [mark])
-  issuesById.set(issue.id, issue)
-  return true
-}
-
-// 프레이밍(본문 하이라이트) 실패의 정확한 원인은 실사용 보고만으로는 알 수 없다(엔티티 인코딩,
-// 목록/표 합성 기호, 매크로 렌더링 차이 등 여러 후보가 있었고 그때마다 재현 데이터가 있어야
-// 고칠 수 있었다) — 실패 시 콘솔에 실제 본문 텍스트 조각을 남겨서 다음 재현 보고와 함께 바로
-// 진단할 수 있게 한다. logStorageMatchFailure(저장 실패용)와 같은 패턴.
+// 프레이밍(본문 매칭) 실패의 정확한 원인은 실사용 보고만으로는 알 수 없다(엔티티 인코딩, 목록/표
+// 합성 기호, 매크로 렌더링 차이 등 여러 후보가 있었고 그때마다 재현 데이터가 있어야 고칠 수
+// 있었다) — 실패 시 콘솔에 실제 본문 텍스트 조각을 남겨서 다음 재현 보고와 함께 바로 진단할 수
+// 있게 한다.
 function logFramingMatchFailure(fullText: string, inputText: string): void {
   const probe = inputText.slice(0, 15)
   const probeIndex = fullText.indexOf(probe)
   if (probeIndex === -1) {
-    console.warn('[SunniC] input_text 앞부분조차 본문에서 찾지 못함:', { probe, inputTextLength: inputText.length })
+    console.warn('[SunniC] 위치 텍스트 앞부분조차 본문에서 찾지 못함:', { probe, inputTextLength: inputText.length })
     return
   }
   const context = fullText.slice(Math.max(0, probeIndex - 20), probeIndex + inputText.length + 60)
-  console.warn('[SunniC] input_text 앞부분은 찾았지만 전체 매칭 실패. input_text와 실제 본문을 비교해보세요:', {
+  console.warn('[SunniC] 위치 텍스트 앞부분은 찾았지만 전체 매칭 실패. text와 실제 본문을 비교해보세요:', {
     inputText,
     surroundingText: context,
   })
 }
 
-// issue.input_text와 일치하는 구간을 찾아 하이라이트한다. 매치가 텍스트 노드 하나에 다 들어있으면
-// <mark> 하나로 감싸고, 라벨+뱃지처럼 여러 노드에 걸쳐 있으면 겹치는 구간마다 각각 <mark>로 감싸서
-// (같은 issue id를 공유) 이어 붙은 것처럼 보이게 한다 — Range.surroundContents는 엘리먼트 경계를
-// 넘나드는 단일 범위를 감쌀 수 없어서, 노드별로 쪼개 감싸는 쪽을 택했다.
-function wrapIssue(issue: OverlayIssue): boolean {
+// input_text로 못 찾을 때의 최후 수단 — "정보 누락(MI)"처럼 애초에 원문에 없는 걸 지적하는 위치는
+// 매치 대상 자체가 없어서 항상 여기로 온다(그 외 사소한 매칭 실패의 안전망 역할도 겸함). location
+// (예: "6. 프로덕트 기능 > 6-1. 메인 배너 (캐러셀)")의 가장 안쪽 위계와 텍스트가 일치하는 제목
+// (h2~h6)을 찾아 그 제목 엘리먼트 자체를 앵커로 돌려준다.
+function findHeadingAnchor(location: string | null): HTMLElement | null {
+  const target = normalizeHeadingText(location?.split('>').pop() ?? '')
+  if (!target) return null
+
+  // h1은 일부러 뺀다 — review-agent의 Document 위계(문서 전체를 대상으로 한 판정) 이슈는 location이
+  // 곧 "문서 제목"이라서(백엔드 document.py의 _doc_title), 여길 막지 않으면 컨플루언스 페이지
+  // 자체의 제목(h1)을 틴트해버려 "제목이 문제"인 것처럼 보이는 엉뚱한 표시가 된다. 본문 소제목
+  // (h2~h6)만 유효한 폴백 대상 — 못 찾으면 앵커 없이 넘어간다.
+  return (
+    Array.from(document.querySelectorAll<HTMLElement>('h2, h3, h4, h5, h6')).find(
+      (h) => !isInsideOverlayNode(h) && normalizeHeadingText(h.textContent ?? '') === target,
+    ) ?? null
+  )
+}
+
+// location의 text를 문서에서 찾아, 그 텍스트를 담고 있는 문단/리스트항목/셀/제목 등 블록 엘리먼트를
+// 앵커로 돌려준다(예전처럼 매치된 글자 구간만 <mark>로 감싸지 않는다 — 새 디자인은 글자 단위
+// 하이라이트를 쓰지 않고 문단 블록 전체를 틴트한다). 못 찾으면 location 헤딩으로 폴백한다.
+function findAnchorElement(loc: SuggestionLocation): HTMLElement | null {
+  // 빈 text(정보 누락처럼 애초에 원문에 없는 걸 지적하는 위치)로 정규식을 돌리면 빈 문자열이
+  // 본문 맨 앞에서 항상 "매치"돼버려 엉뚱한 문단이 앵커로 잡힌다 — 이 경우 텍스트 매칭을 아예
+  // 건너뛰고 곧장 헤딩 폴백으로 간다.
+  if (!loc.text) return findHeadingAnchor(loc.location)
+
   const { fullText, spans } = collectTextSpans()
-  const match = buildLooseTextRegex(issue.input_text).exec(fullText)
-  if (!match) {
-    if (issue.input_text) logFramingMatchFailure(fullText, issue.input_text)
-    return wrapIssueByLocationHeading(issue)
+  const match = buildLooseTextRegex(loc.text).exec(fullText)
+  if (match) {
+    const matchStart = match.index
+    const containingSpan = spans.find((span) => matchStart >= span.start && matchStart < span.end)
+    const block = containingSpan?.node.parentElement?.closest<HTMLElement>(BLOCK_SELECTOR)
+    if (block) return block
+  }
+  logFramingMatchFailure(fullText, loc.text)
+  return findHeadingAnchor(loc.location)
+}
+
+// scrollIntoView는 실제 컨플루언스처럼 중첩된 스크롤 컨테이너가 있는 페이지에서 엉뚱한 조상을
+// 스크롤하거나(호스트 페이지 레이아웃을 건드림) 전혀 안 움직이는 것처럼 보일 수 있다(디자인
+// 핸드오프도 이걸 피하라고 명시했었다) — 대신 실제로 스크롤 가능한 조상을 직접 찾아 그 컨테이너의
+// scrollTop을 계산해서 옮긴다.
+function findScrollableAncestor(el: HTMLElement): HTMLElement | null {
+  let node = el.parentElement
+  while (node && node !== document.body && node !== document.documentElement) {
+    const overflowY = getComputedStyle(node).overflowY
+    if ((overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight) {
+      return node
+    }
+    node = node.parentElement
+  }
+  return null
+}
+
+function scrollElementToCenter(el: HTMLElement): void {
+  const container = findScrollableAncestor(el)
+  const elRect = el.getBoundingClientRect()
+
+  if (container) {
+    const containerRect = container.getBoundingClientRect()
+    const offset = elRect.top - containerRect.top - (containerRect.height / 2 - elRect.height / 2)
+    container.scrollTo({ top: container.scrollTop + offset, behavior: 'smooth' })
+    return
   }
 
-  const matchStart = match.index
-  const matchEnd = match.index + match[0].length
-  const marks: HTMLElement[] = []
+  const targetY = window.scrollY + elRect.top - (window.innerHeight / 2 - elRect.height / 2)
+  window.scrollTo({ top: targetY, behavior: 'smooth' })
+}
 
-  for (const span of spans) {
-    const overlapStart = Math.max(matchStart, span.start)
-    const overlapEnd = Math.min(matchEnd, span.end)
-    if (overlapStart >= overlapEnd) continue
+// current 문단 하나(플로팅 저장/취소 박스를 앵커링하고, "원래 문제 문구가 남아있는지" 등 검증의
+// 기준이 되는 위치) — editableElements 중 하나를 가리킨다.
+let editingEl: HTMLElement | null = null
+// 지금 활성화된 제안 동안 틴트/dim 클래스를 붙이고 contentEditable='true'로 열어둔 문서 내
+// 모든 블록 — 문서 전체가 편집 가능하므로(2026-08-30) current 하나만이 아니라 여기 담긴 전부가
+// 클래스 제거/저장/취소/정리 대상이다.
+let editableElements: HTMLElement[] = []
+let editActionsEl: HTMLElement | null = null
+let editRepositionRafId: number | null = null
 
-    const range = document.createRange()
-    range.setStart(span.node, overlapStart - span.start)
-    range.setEnd(span.node, overlapEnd - span.start)
+// position:fixed 기준이라 스크롤 오프셋을 더하면 안 된다 — viewport 좌표 그대로 쓴다. 예전 AI 제안
+// 툴팁의 포지셔닝 로직과 동일(같은 이유로 fixed를 씀: 컨플루언스 조상 엘리먼트에 걸린
+// transform/filter의 영향을 안 받으려고).
+function positionEditActions(): void {
+  if (!editActionsEl || !editingEl) return
+  const rect = editingEl.getBoundingClientRect()
+  editActionsEl.style.top = `${rect.bottom + 6}px`
+  editActionsEl.style.left = `${rect.left}px`
+}
 
-    const mark = document.createElement('mark')
-    attachIssueMarkHandlers(mark, issue)
-    range.surroundContents(mark)
-    marks.push(mark)
+// currentEl.scrollIntoView({behavior:'smooth'})가 끝나기 전에 위치를 한 번만 계산하면 스크롤
+// 애니메이션이 끝난 뒤 엉뚱한 곳에 떠 있게 된다(예전 툴팁에서 겪은 것과 같은 문제) — 열리고 나서
+// 한동안 매 프레임 다시 계산해 최종적으로는 항상 실제 위치에 맞게 만든다.
+function startEditActionsReposition(durationMs: number): void {
+  if (editRepositionRafId !== null) cancelAnimationFrame(editRepositionRafId)
+  const deadline = performance.now() + durationMs
+  const tick = () => {
+    if (!editActionsEl || !editingEl) {
+      editRepositionRafId = null
+      return
+    }
+    positionEditActions()
+    editRepositionRafId = performance.now() < deadline ? requestAnimationFrame(tick) : null
+  }
+  editRepositionRafId = requestAnimationFrame(tick)
+}
+
+function hideEditActions(): void {
+  editActionsEl?.remove()
+  editActionsEl = null
+  window.removeEventListener('scroll', positionEditActions, true)
+  window.removeEventListener('resize', positionEditActions)
+  if (editRepositionRafId !== null) {
+    cancelAnimationFrame(editRepositionRafId)
+    editRepositionRafId = null
+  }
+}
+
+// current 문단 옆에 "취소"/"저장" 플로팅 박스를 띄운다 — 실제 DOM 형제로 끼워 넣지 않고(표/리스트
+// 구조가 깨질 수 있어서) 예전 AI 제안 툴팁처럼 document.documentElement에 별도로 붙인다. 문서
+// 전체가 이미 contentEditable이라(setActiveSuggestion 참고) 클릭하면 브라우저 기본 동작으로
+// 캐럿이 정확히 놓인다 — 예전엔 클릭 "전"엔 편집 불가 상태였어서 캐럿을 수동으로 놓는
+// caretRangeFromPoint 트릭이 필요했지만, 이제 필요 없다.
+function showEditActions(current: EditableSuggestionLocation): void {
+  hideEditActions()
+  if (!editingEl) return
+  const anchor = editingEl
+
+  const box = document.createElement('div')
+  box.className = EDIT_ACTIONS_CLASS
+  box.innerHTML =
+    `<div class="${EDIT_ACTIONS_CLASS}-notice"></div>` +
+    `<div class="${EDIT_ACTIONS_CLASS}-row">` +
+    `<button type="button" class="${EDIT_ACTIONS_CLASS}-cancel">취소</button>` +
+    `<button type="button" class="${EDIT_ACTIONS_CLASS}-save">저장</button>` +
+    `</div>`
+  document.documentElement.appendChild(box)
+  editActionsEl = box
+  positionEditActions()
+  window.addEventListener('scroll', positionEditActions, true)
+  window.addEventListener('resize', positionEditActions)
+  startEditActionsReposition(800)
+
+  const noticeEl = box.querySelector<HTMLElement>(`.${EDIT_ACTIONS_CLASS}-notice`)
+  const saveBtn = box.querySelector<HTMLButtonElement>(`.${EDIT_ACTIONS_CLASS}-save`)
+  const cancelBtn = box.querySelector<HTMLButtonElement>(`.${EDIT_ACTIONS_CLASS}-cancel`)
+  if (!noticeEl || !saveBtn || !cancelBtn) return
+
+  // 처음 누르면: (1) 원래 문제 문구가 아직 남아있는지(로컬, 즉시) → (2) related가 아니면 이 수정이
+  // 검증기준을 실질적으로 해결하는지(백엔드 LLM 판단)까지 확인한다. 걸리면 저장하지 않고 경고만
+  // 띄운 채 리턴 — "그래도 저장"을 한 번 더 눌러야 그대로 반영된다. 패널의 기존 편집 흐름
+  // (SuggestionDirectionCard)과 동일한 2단계 확인 UX를 문서 쪽에도 그대로 옮긴 것.
+  let warningAcknowledged = false
+
+  // 취소는 current 문단만이 아니라, 이 제안이 활성화된 동안 편집 가능했던 문서 전체 블록을
+  // 전부 원래 스냅샷으로 되돌린다 — 문서 전체가 편집 가능해진 뒤로는 사용자가 current 밖의
+  // 다른 문단도 고쳤을 수 있기 때문(2026-08-30).
+  cancelBtn.addEventListener('click', () => {
+    for (const el of editableElements) {
+      if (el.dataset.sunnicOriginalText !== undefined) el.textContent = el.dataset.sunnicOriginalText
+    }
+    warningAcknowledged = false
+    noticeEl.textContent = ''
+    saveBtn.textContent = '저장'
+    hideEditActions()
+  })
+
+  const handleSaveClick = async () => {
+    const oldText = anchor.dataset.sunnicOriginalText ?? ''
+    const newText = anchor.textContent ?? ''
+    // 문서 전체가 편집 가능해지면서(2026-08-30) "이 문단은 그대로 두고 다른 문단만 고쳤다"가
+    // 정상적인 사용법이 됐다 — current를 안 건드렸으면 isIssueLikelyResolved(oldText, oldText)가
+    // 항상 false(자기 자신을 포함하니까)를 돌려줘서 매번 "문제 문구가 남아있다" 경고가 뜨고
+    // "그래도 저장"을 한 번 더 눌러야 하는 게 불편함을 넘어 실사용 버그로 보고됨(다른 문단만
+    // 고쳤는데 그 경고를 못 보고 넘어가면 저장 자체가 하나도 안 나감). current를 실제로 안
+    // 건드렸으면 이 검증들(문구 잔존 확인 + AI 유사도 확인) 자체를 건너뛴다 — 둘 다 current의
+    // 수정이 "그 이슈를 해결했는지"를 판단하는 목적이라, current가 그대로면 판단할 대상이 없다.
+    if (!warningAcknowledged && oldText !== newText) {
+      // 여기서 "문제였던 문구"는 oldText(문단 전체 스냅샷)가 아니라 current.text(AI가 지목한
+      // 인용구, 문단 전체가 아니라 그 안의 한 구절일 수 있음)여야 한다 — 문단 전체를 넣으면 그
+      // 인용구를 안 건드린 다른 부분만 고쳐도 "해결됨"으로 잘못 통과된다.
+      if (!isIssueLikelyResolved(current.text, newText)) {
+        noticeEl.textContent = '원래 문제였던 표현이 아직 남아있어요. 정말 해결됐으면 한 번 더 눌러주세요.'
+        warningAcknowledged = true
+        saveBtn.textContent = '그래도 저장'
+        return
+      }
+
+      if (current.suggestion !== null) {
+        saveBtn.disabled = true
+        saveBtn.textContent = '확인 중...'
+        try {
+          const result = await api.checkEditSimilarity({
+            originalText: current.text,
+            criteria: current.criteria,
+            reason: current.reason,
+            suggestion: current.suggestion,
+            editedText: newText,
+          })
+          if (!result.addresses_issue) {
+            noticeEl.textContent = `${result.reason || 'AI 제안과 다소 달라요.'} 의도한 수정이 맞으면 한 번 더 눌러주세요.`
+            warningAcknowledged = true
+            saveBtn.disabled = false
+            saveBtn.textContent = '그래도 저장'
+            return
+          }
+        } catch {
+          // 검사 실패는 무시하고 저장은 계속 진행한다.
+        }
+      }
+    }
+
+    saveBtn.disabled = true
+    cancelBtn.disabled = true
+    saveBtn.textContent = '저장 중...'
+    noticeEl.textContent = ''
+
+    // current 하나만이 아니라, 이 제안이 떠 있는 동안 사용자가 실제로 고친 모든 블록을 찾아
+    // 한 번의 저장 요청에 같이 담는다(문서 전체 편집 허용, 2026-08-30). current는 항상 맨
+    // 앞에 둬서, 혹시 같은 문구가 여러 블록에 겹치더라도 의도한 위치부터 먼저 치환되게 한다.
+    const changedElements = editableElements.filter(
+      (el) => el !== anchor && (el.dataset.sunnicOriginalText ?? '') !== (el.textContent ?? ''),
+    )
+    const edits = [
+      { oldText, newText },
+      ...changedElements.map((el) => ({ oldText: el.dataset.sunnicOriginalText ?? '', newText: el.textContent ?? '' })),
+    ]
+
+    const result = await applyIssueEdits(edits)
+    if (!result.ok) {
+      noticeEl.textContent = result.error
+      saveBtn.disabled = false
+      cancelBtn.disabled = false
+      saveBtn.textContent = '저장'
+      warningAcknowledged = false
+      return
+    }
+
+    anchor.dataset.sunnicOriginalText = newText
+    for (const el of changedElements) el.dataset.sunnicOriginalText = el.textContent ?? ''
+    hideEditActions()
+    chrome.runtime.sendMessage<SuggestionEditSavedMessage>({ type: 'SUGGESTION_EDIT_SAVED', newText }).catch(() => {
+      // 사이드패널이 닫혀있으면 받는 쪽이 없어도 저장 자체는 이미 성공한 것이니 무시한다.
+    })
   }
 
-  if (marks.length === 0) return wrapIssueByLocationHeading(issue)
-  marksByIssueId.set(issue.id, marks)
-  issuesById.set(issue.id, issue)
+  saveBtn.addEventListener('click', () => void handleSaveClick())
+}
+
+export function clearActiveSuggestion(): void {
+  for (const el of editableElements) {
+    el.classList.remove(CURRENT_CLASS, RELATED_CLASS, DONE_CLASS, DIM_CLASS)
+    el.contentEditable = 'false'
+    delete el.dataset.sunnicOriginalText
+  }
+  editableElements = []
+  editingEl = null
+  hideEditActions()
+}
+
+// 지금 작업 중인 제안 하나를 문서에 반영한다 — 현재 위치(실선 틴트, 클릭해서 바로 편집 가능),
+// 연관 위치(점선 틴트, 읽기 전용), 이미 완료된 위치들(초록 체크)만 도드라져 보이게 하고 나머지
+// 모든 문단은 흐리게(dim) 만든다.
+// 반환값은 current 위치의 앵커를 실제로 찾아 틴트/스크롤까지 했는지 여부 — 내비게이터(‹›)로
+// 관련 위치를 오갈 때 매칭이 조용히 실패하면 "버튼을 눌러도 아무 반응이 없다"로 보이던 문제라,
+// 호출부(useSuggestionOverlaySync)가 실패를 알아채고 최소한 콘솔에라도 남길 수 있게 한다.
+export function setActiveSuggestion(payload: {
+  current: EditableSuggestionLocation
+  related: SuggestionLocation | null
+  doneLocations: SuggestionLocation[]
+}): boolean {
+  ensureStyleInjected()
+  clearActiveSuggestion()
+
+  const currentEl = findAnchorElement(payload.current)
+  const relatedEl = payload.related ? findAnchorElement(payload.related) : null
+  const doneEls = payload.doneLocations
+    .map((loc) => findAnchorElement(loc))
+    .filter((el): el is HTMLElement => el !== null)
+
+  const highlighted = new Set<HTMLElement>()
+
+  if (currentEl) {
+    currentEl.classList.add(CURRENT_CLASS)
+    highlighted.add(currentEl)
+    editingEl = currentEl
+    scrollElementToCenter(currentEl)
+  } else {
+    console.warn('[SunniC] current 위치 앵커를 찾지 못해 틴트/스크롤을 건너뜀:', {
+      location: payload.current.location,
+      text: payload.current.text.slice(0, 30),
+    })
+  }
+
+  if (relatedEl && relatedEl !== currentEl) {
+    relatedEl.classList.add(RELATED_CLASS)
+    highlighted.add(relatedEl)
+  }
+
+  for (const el of doneEls) {
+    if (highlighted.has(el)) continue
+    el.classList.add(DONE_CLASS)
+    highlighted.add(el)
+  }
+
+  // 나머지 문단은 전부 흐리게 — 지금 작업 중인/완료된 위치만 눈에 띄게 한다("글자 단위 하이라이트는
+  // 쓰지 않는다"는 디자인 스펙에 따라 dim이 유일한 "그 외" 처리 방식이다). 표시 여부와 무관하게
+  // 문서 전체를 편집 가능하게 열어둔다 — 표시된 위치만 고칠 수 있게 막아둔 게 오히려 불편하다는
+  // 피드백(2026-08-30)으로, dim된 문단도 자유롭게 클릭해서 고칠 수 있다.
+  //
+  // dataset.sunnicOriginalText는 모든 블록에 대해 "지금 보이는 문단 전체 텍스트"(el.textContent)
+  // 를 스냅샷으로 쓴다 — current/related도 예외가 아니다. payload.current.text/related.text는
+  // AI가 지목한 인용구(문단 전체가 아니라 그 안의 한 구절일 수 있음)라 여기 쓰면 "사용자가 이
+  // 문단을 건드렸는지"를 판단할 수 없다(인용구 ≠ 문단 전체라서 손도 안 댔는데 항상 달라 보임 —
+  // 실사용 버그로 확인됨, 2026-08-30). 문단 전체 스냅샷으로 통일하면 (a) 변경 여부 판단이 모든
+  // 블록에서 동일한 기준으로 일관되고, (b) 저장 시 storage HTML 치환도 "인용구 한 조각을 문단
+  // 전체로 교체"(주변 문맥이 중복 삽입되는 버그)가 아니라 "문단 전체를 문단 전체로" 치환하게
+  // 되어 더 안전하다. 인용구 자체(payload.current.text)는 "그 문제 문구가 아직 남아있는지"
+  // 검증(isIssueLikelyResolved)에서만 별도로 쓴다 — handleSaveClick이 closure로 참조.
+  for (const el of document.querySelectorAll<HTMLElement>(BLOCK_SELECTOR)) {
+    if (isInsideOverlayNode(el)) continue
+    if (!highlighted.has(el)) el.classList.add(DIM_CLASS)
+    el.contentEditable = 'true'
+    el.dataset.sunnicOriginalText = el.textContent ?? ''
+    editableElements.push(el)
+  }
+
+  // current를 찾았을 때만 저장/취소 박스를 띄운다 — 문서 전체가 이미 편집 가능한 상태이므로
+  // (위 루프) 클릭해서 "편집 모드로 들어가야" 뜨는 게 아니라 이 제안이 활성화된 순간부터 항상
+  // 떠 있다.
+  if (currentEl) showEditActions(payload.current)
+
+  return currentEl !== null
+}
+
+// 활성 제안 개념이 없는 화면(HistoryExportScreen)에서 쓰는 가벼운 버전 — 지속되는 틴트/마커 없이
+// 스크롤만 하고 잠깐 배경을 반짝여 위치를 알려준다.
+export function scrollToLocation(loc: SuggestionLocation): boolean {
+  ensureStyleInjected()
+  const el = findAnchorElement(loc)
+  if (!el) return false
+  scrollElementToCenter(el)
+  el.classList.add(FLASH_CLASS)
+  window.setTimeout(() => el.classList.remove(FLASH_CLASS), 1200)
   return true
 }
 
-let activeTooltip: HTMLElement | null = null
-let activeAnchorMark: HTMLElement | null = null
-let repositionRafId: number | null = null
+// 페이지를 새로고침한 직후엔 이 배지 요청이 컨플루언스 자신의 SPA가 h1을 렌더링하기도 전에
+// 도착할 수 있다 — 그러면 h1을 못 찾아 조용히 아무 것도 안 하고 끝나버린다("배지가 백엔드엔
+// 통과로 기록돼 있는데 화면엔 안 뜬다"는 실사용 보고로 확인됨, 2026-08-30). h1이 나타날 때까지
+// 짧게 재시도한다.
+const _BADGE_MAX_RETRIES = 10
+const _BADGE_RETRY_DELAY_MS = 300
+let badgeRetryTimeout: ReturnType<typeof setTimeout> | null = null
 
-function closeTooltip(): void {
-  activeTooltip?.remove()
-  activeTooltip = null
-  activeAnchorMark = null
-  window.removeEventListener('scroll', repositionActiveTooltip, true)
-  window.removeEventListener('resize', repositionActiveTooltip)
-  if (repositionRafId !== null) {
-    cancelAnimationFrame(repositionRafId)
-    repositionRafId = null
+function cancelBadgeRetry(): void {
+  if (badgeRetryTimeout !== null) {
+    clearTimeout(badgeRetryTimeout)
+    badgeRetryTimeout = null
   }
 }
 
-// scroll 이벤트만 믿고 재계산하면, scrollIntoView가 시작되기도 전(같은 틱)에 읽은 첫 rect가
-// "스크롤 전 옛 위치" 그대로 굳어버리는 경우가 있다 — 어떤 스크롤 컨테이너를 컨플루언스가 쓰든,
-// 애니메이션이 스크롤 이벤트를 우리가 잡을 수 있는 타이밍/방식으로 안 낼 수도 있어서. 이벤트에
-// 의존하는 대신 열리고 나서 한동안(smooth scrollIntoView가 끝나기 충분한 시간) 매 프레임 강제로
-// 다시 계산해 최종적으로는 항상 실제 위치에 맞게 만든다.
-function startContinuousReposition(durationMs: number): void {
-  if (repositionRafId !== null) cancelAnimationFrame(repositionRafId)
-  const deadline = performance.now() + durationMs
-  const tick = () => {
-    if (!activeTooltip || !activeAnchorMark) {
-      repositionRafId = null
-      return
-    }
-    positionNear(activeTooltip, activeAnchorMark)
-    repositionRafId = performance.now() < deadline ? requestAnimationFrame(tick) : null
+function attemptShowBadge(retriesLeft: number): void {
+  const h1 = document.querySelector('h1')
+  if (!h1) {
+    if (retriesLeft <= 0) return
+    badgeRetryTimeout = setTimeout(() => attemptShowBadge(retriesLeft - 1), _BADGE_RETRY_DELAY_MS)
+    return
   }
-  repositionRafId = requestAnimationFrame(tick)
+  const badge = document.createElement('span')
+  badge.className = QA_BADGE_CLASS
+  badge.textContent = '✓ QA 통과'
+  h1.appendChild(badge)
 }
 
-// scrollToIssue()가 scrollIntoView({behavior:'smooth'})로 스크롤을 걸어 놓고 바로 이어서 말풍선을
-// 띄우면, 그 시점의 mark 위치는 아직 스크롤 애니메이션이 끝나기 전(도착지가 아닌) 값이라 말풍선이
-// 엉뚱한 곳에 자리잡는다 — "어떤 이슈는 말풍선이 뜨는데 어떤 건 안 뜨는" 것처럼 보였던 원인. 스크롤
-// 애니메이션이 끝날 때까지 기다리는 대신, 열려 있는 동안 스크롤/리사이즈마다 위치를 계속 다시 계산해서
-// 애니메이션이 어떻게 끝나든 최종적으로는 항상 mark 바로 아래에 오도록 한다. capture:true라 컨플루언스
-// 내부의 어떤 스크롤 컨테이너(꼭 window가 아니어도)에서 스크롤이 나도 잡아낸다.
-function repositionActiveTooltip(): void {
-  if (activeTooltip && activeAnchorMark) positionNear(activeTooltip, activeAnchorMark)
-}
-
-// position:fixed 기준이라 스크롤 오프셋을 더하면 안 된다 — viewport 좌표 그대로 쓴다.
-// body/상위 요소에 position:relative 같은 게 있는 실제 컨플루언스 페이지에서도(대부분의 경우) 정확한
-// 위치에 뜨게 하려고 absolute 대신 fixed를 쓴다(transform/filter가 걸린 조상만 예외).
-function positionNear(el: HTMLElement, anchor: HTMLElement): void {
-  const rect = anchor.getBoundingClientRect()
-  el.style.top = `${rect.bottom + 6}px`
-  el.style.left = `${rect.left}px`
-}
-
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-
-// AI 제안 문장 전체를 다 강조하면 오히려 뭐가 핵심인지 안 보인다 — 따옴표로 감싼 부분(예: '핵클
-// SDK 연동...'처럼 구체적인 대안/인용구)만 골라 그라데이션으로 강조한다. 분리 로직 자체는
-// utils/quoteSegments.ts에서 사이드패널(React)과 공유 — 여기서는 HTML 문자열로 조립하는 부분만.
-function highlightQuotedSpans(text: string): string {
-  return splitQuotedSegments(text)
-    .map((segment) =>
-      segment.quoted ? `<span class="sunnic-tooltip-quote">${escapeHtml(segment.text)}</span>` : escapeHtml(segment.text),
-    )
-    .join('')
-}
-
-// 통일된 읽기 전용 "AI 제안" 말풍선 — 어떤 이슈든 항상 같은 모양(제목 + 제안 한 줄)이고 버튼이 없다.
-// 실제 수정은 오른쪽 패널에서 하므로 여기서는 안내만 한다. 항상 열기만 하고(닫힌 상태 유지는 호출부
-// 책임) — 오른쪽 패널에서 이슈를 옮겨다닐 때도 이 함수로 자동으로 띄운다.
-function showTooltip(mark: HTMLElement, issue: OverlayIssue): void {
-  closeTooltip()
-
-  const tooltip = document.createElement('div')
-  tooltip.className = TOOLTIP_CLASS
-  tooltip.dataset.sunnicForIssue = issue.id
-  tooltip.innerHTML = `
-    <div class="sunnic-tooltip-heading">AI 제안</div>
-    <div>${highlightQuotedSpans(issue.suggestion)}</div>
-  `
-  positionNear(tooltip, mark)
-  // body가 아니라 html에 직접 붙인다 — 실제 컨플루언스 페이지의 body(또는 그 사이 어딘가)에
-  // transform/filter가 걸려 있으면 그게 fixed 요소의 containing block이 돼버려서 위치가 또
-  // 틀어질 수 있는데, html까지 그런 경우는 사실상 없다.
-  document.documentElement.appendChild(tooltip)
-  activeTooltip = tooltip
-  activeAnchorMark = mark
-  window.addEventListener('scroll', repositionActiveTooltip, true)
-  window.addEventListener('resize', repositionActiveTooltip)
-  // smooth scrollIntoView는 보통 500ms 안팎에 끝난다 — 800ms면 여유 있게 덮는다. 그 이후로도
-  // 열려 있는 동안의 스크롤/리사이즈는 위 이벤트 리스너가 계속 처리한다.
-  startContinuousReposition(800)
-}
-
-export function applyIssueOverlay(issues: OverlayIssue[]): { matched: number; total: number } {
+export function showQaPassedBadge(): void {
   ensureStyleInjected()
-  clearIssueOverlay()
-  // 이슈 하나에서 예상 못 한 에러가 나도(예: 데이터 이상) filter() 전체를 멈추지 않게 감싼다 —
-  // 그러지 않으면 그 이슈 뒤에 있는 멀쩡한 이슈들까지 전부 하이라이트가 안 그려진다.
-  const matched = issues.filter((issue) => {
-    try {
-      return wrapIssue(issue)
-    } catch (error) {
-      console.warn('[SunniC] 이슈 하이라이트 실패:', issue.id, error)
-      return false
-    }
-  }).length
-  return { matched, total: issues.length }
+  clearQaPassedBadge()
+  attemptShowBadge(_BADGE_MAX_RETRIES)
 }
 
-export function clearIssueOverlay(): void {
-  closeTooltip()
-  marksByIssueId.clear()
-  issuesById.clear()
-  activeIssueId = null
-  for (const mark of Array.from(document.querySelectorAll(`.${HIGHLIGHT_CLASS}`))) {
-    const parent = mark.parentNode
-    if (!parent) continue
-    parent.replaceChild(document.createTextNode(mark.textContent ?? ''), mark)
-    parent.normalize()
-  }
+export function clearQaPassedBadge(): void {
+  cancelBadgeRetry()
+  document.querySelector(`.${QA_BADGE_CLASS}`)?.remove()
 }
-
-document.addEventListener('click', (event) => {
-  const target = event.target as Element | null
-  if (activeTooltip && !target?.closest(`.${TOOLTIP_CLASS}, .${HIGHLIGHT_CLASS}`)) {
-    closeTooltip()
-  }
-})
 
 // 컨플루언스 URL(/pages/{id}/..., /pages/edit-v2/{id} 등 또는 ?pageId=)에서 페이지 id를 뽑는다.
 // confluence-extractor.ts와 동일 로직(그쪽의 edit-v2 URL 인식 수정과 동기화됨) — content script
@@ -511,8 +746,18 @@ function logStorageMatchFailure(html: string, oldText: string): void {
   })
 }
 
-// pageId가 가리키는 페이지의 body.storage에서 oldText → newText로 문자열 치환한 뒤 PUT으로 저장한다.
-async function replaceTextAndSave(pageId: string, oldText: string, newText: string): Promise<ApplyResult> {
+export interface EditPair {
+  oldText: string
+  newText: string
+}
+
+// pageId가 가리키는 페이지의 body.storage에서 edits를 순서대로 문자열 치환한 뒤 한 번만 PUT으로
+// 저장한다. 문서 전체가 편집 가능해지면서(2026-08-30) 한 번의 저장에 여러 블록이 걸릴 수 있어
+// GET/PUT을 한 번씩만 하고 그 사이에 치환을 전부 누적한다 — 블록마다 왕복하면 버전 충돌 위험도
+// 커지고 느려진다. 한 pair라도 매칭에 실패하면 그 자리에서 즉시 중단하고 실패를 반환한다 — 이미
+// 성공한 치환까지 포함해서 부분 저장해버리면 사용자가 의도한 것과 다른 어중간한 상태로 PUT될
+// 수 있다.
+async function replaceAllAndSave(pageId: string, edits: EditPair[]): Promise<ApplyResult> {
   const getRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=body.storage,version`, {
     credentials: 'include',
   })
@@ -523,11 +768,14 @@ async function replaceTextAndSave(pageId: string, oldText: string, newText: stri
     version: { number: number }
     body: { storage: { value: string } }
   }
-  const html = data.body.storage.value
-  const updatedHtml = replaceInStorageHtml(html, oldText, newText)
-  if (updatedHtml === null) {
-    logStorageMatchFailure(html, oldText)
-    return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
+  let html = data.body.storage.value
+  for (const { oldText, newText } of edits) {
+    const updatedHtml = replaceInStorageHtml(html, oldText, newText)
+    if (updatedHtml === null) {
+      logStorageMatchFailure(html, oldText)
+      return { ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' }
+    }
+    html = updatedHtml
   }
 
   const putRes = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}`, {
@@ -538,7 +786,7 @@ async function replaceTextAndSave(pageId: string, oldText: string, newText: stri
       version: { number: data.version.number + 1 },
       title: data.title,
       type: 'page',
-      body: { storage: { value: updatedHtml, representation: 'storage' } },
+      body: { storage: { value: html, representation: 'storage' } },
     }),
   })
   if (!putRes.ok) return { ok: false, error: `저장에 실패했습니다 (${putRes.status})` }
@@ -609,69 +857,61 @@ async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: tru
   return { ok: true, pageId: created.id }
 }
 
-// 저장이 실제로 반영되는 곳(복제본)과 지금 보고 있는 화면(원본)이 다르므로, 저장 성공 후에도 그냥
-// 두면 화면엔 여전히 고치기 전 원문이 남아있어 사용자가 "진짜 반영됐나?" 헷갈린다. 그래서 성공하면
-// 왼쪽 문서에서도 그 자리를 새 텍스트로 덮어써서 눈으로 바로 확인되게 한다 — 실제 저장 대상(복제본)과
-// 무관하게 순수 로컬 DOM 표시일 뿐이다. 매치가 여러 엘리먼트에 걸쳐 나뉜 경우(라벨+뱃지 등) 전부를
-// 정확히 나눠 넣을 방법이 없어 첫 mark에 새 텍스트를 몰아넣고 나머지는 비워 하나로 합친다.
-function overwriteMarkText(issueId: string, newText: string): void {
-  const marks = marksByIssueId.get(issueId)
-  if (!marks || marks.length === 0) return
-  const [first, ...rest] = marks
-  first.textContent = newText
-  for (const extra of rest) extra.remove()
-  marksByIssueId.set(issueId, [first])
-}
+// 문서 전체가 편집 가능해지면서(2026-08-30) 한 번의 저장이 여러 블록을 동시에 치환해야 할 수
+// 있다 — 실제 치환/저장은 이 복수형이 전담하고, 단일 치환은 그 특수 케이스(길이 1짜리 배열)로
+// 구현한다. 두 함수 모두 이 파일 안에서만 직접 호출되는 일반 함수다(패널 쪽에서 이 메시지를
+// 보내는 코드는 없다 — chrome.runtime 메시지가 아니라 여기 handleSaveClick이 직접 호출).
+export async function applyIssueEdits(edits: EditPair[]): Promise<ApplyResult> {
+  if (edits.length === 0) return { ok: true }
 
-export async function applyIssueEdit(issueId: string, oldText: string, newText: string): Promise<ApplyIssueEditResponse> {
   const originalPageId = extractPageId(location.href)
   if (!originalPageId) return { ok: false, error: '컨플루언스 문서 URL이 아니라 복제본을 만들 수 없습니다.' }
 
   const session = await ensureDuplicateSession(originalPageId)
   if (!session.ok) return session
 
-  const result = await replaceTextAndSave(session.pageId, oldText, newText)
-  if (!result.ok) return result
-
-  overwriteMarkText(issueId, newText)
-  for (const mark of marksByIssueId.get(issueId) ?? []) mark.classList.add(RESOLVED_CLASS)
-  closeTooltip()
-  return { ok: true }
+  return replaceAllAndSave(session.pageId, edits)
 }
 
-// 오른쪽 패널에서 이슈가 바뀔 때(이전/다음, Overview 카드 클릭 등) 호출 — 해당 박스로 스크롤하는
-// 동시에 그 이슈의 AI 제안 말풍선도 자동으로 띄운다. 문서에서 직접 클릭해야만 말풍선이 보이던 걸,
-// 오른쪽에서 옮겨다닐 때도 굳이 왼쪽을 따로 클릭할 필요 없게 만든 것.
-export function scrollToIssue(issueId: string): boolean {
-  const mark = marksByIssueId.get(issueId)?.[0]
-  const issue = issuesById.get(issueId)
-  if (!mark || !issue) return false
-  mark.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  showTooltip(mark, issue)
-  setActiveMark(issueId)
-  return true
+export async function applyIssueEdit(_issueId: string, oldText: string, newText: string): Promise<ApplyResult> {
+  return applyIssueEdits([{ oldText, newText }])
 }
 
-type OverlayRequest = ShowIssueOverlayRequest | ClearIssueOverlayRequest | ApplyIssueEditRequest | ScrollToIssueRequest
-type OverlayResponse = ShowIssueOverlayResponse | ClearIssueOverlayResponse | ApplyIssueEditResponse | ScrollToIssueResponse
+type OverlayRequest =
+  | SetActiveSuggestionRequest
+  | ClearActiveSuggestionRequest
+  | ScrollToLocationRequest
+  | ShowQaPassedBadgeRequest
+  | ClearQaPassedBadgeRequest
+type OverlayResponse =
+  | SetActiveSuggestionResponse
+  | ClearActiveSuggestionResponse
+  | ScrollToLocationResponse
+  | QaPassedBadgeResponse
 
 chrome.runtime.onMessage.addListener(
   (message: OverlayRequest, _sender, sendResponse: (response: OverlayResponse) => void) => {
-    if (message.type === 'SHOW_ISSUE_OVERLAY') {
-      sendResponse({ ok: true, ...applyIssueOverlay(message.issues) })
+    if (message.type === 'SET_ACTIVE_SUGGESTION') {
+      sendResponse({ ok: setActiveSuggestion(message) })
       return true
     }
-    if (message.type === 'CLEAR_ISSUE_OVERLAY') {
-      clearIssueOverlay()
+    if (message.type === 'CLEAR_ACTIVE_SUGGESTION') {
+      clearActiveSuggestion()
       sendResponse({ ok: true })
       return true
     }
-    if (message.type === 'SCROLL_TO_ISSUE') {
-      sendResponse({ ok: scrollToIssue(message.issueId) })
+    if (message.type === 'SCROLL_TO_LOCATION') {
+      sendResponse({ ok: scrollToLocation(message.location) })
       return true
     }
-    if (message.type === 'APPLY_ISSUE_EDIT') {
-      void applyIssueEdit(message.issueId, message.oldText, message.newText).then(sendResponse)
+    if (message.type === 'SHOW_QA_PASSED_BADGE') {
+      showQaPassedBadge()
+      sendResponse({ ok: true })
+      return true
+    }
+    if (message.type === 'CLEAR_QA_PASSED_BADGE') {
+      clearQaPassedBadge()
+      sendResponse({ ok: true })
       return true
     }
     return undefined

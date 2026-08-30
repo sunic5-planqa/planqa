@@ -16,14 +16,21 @@ export type Action =
   | { type: 'ISSUES_LOADED'; issues: IssueResponse[] }
   | { type: 'QA_ENGINE_UNAVAILABLE' }
   | { type: 'NAVIGATE'; screen: Screen }
-  | { type: 'NAVIGATE_ISSUE'; direction: 'prev' | 'next' }
   | { type: 'SELECT_ISSUE_BY_ID'; issueId: string }
-  | { type: 'START_EDIT_ISSUE'; issueId: string }
-  | { type: 'STOP_EDIT_ISSUE' }
-  | { type: 'STAGE_ISSUE_EDIT'; issueId: string; action: IssueAction; target?: 'primary' | 'related'; editedText?: string }
+  | { type: 'CLEAR_ACTIVE_ISSUE' }
+  | { type: 'CYCLE_ACTIVE_LOCATION' }
+  | {
+      type: 'STAGE_ISSUE_EDIT'
+      issueId: string
+      action: IssueAction
+      target?: 'primary' | 'related'
+      editedText?: string
+      skipReason?: string
+    }
+  | { type: 'UNSTAGE_ISSUE_EDIT'; issueId: string }
   | { type: 'SET_ERROR'; error: string | null }
   | { type: 'CONFLUENCE_DETECT_START' }
-  | { type: 'CONFLUENCE_DETECTED'; title: string; markdown: string }
+  | { type: 'CONFLUENCE_DETECTED'; title: string; markdown: string; pageId: string; tabId: number }
   | { type: 'CONFLUENCE_NOT_A_PAGE' }
   | { type: 'CONFLUENCE_DETECT_FAILED'; error: string }
   | { type: 'CONFLUENCE_SIBLINGS_DETECT_START' }
@@ -51,7 +58,14 @@ export function appReducer(state: AppState, action: Action): AppState {
       return { ...state, jobStatus: action.status }
 
     case 'ISSUES_LOADED':
-      return { ...state, issues: action.issues, currentIssueIndex: 0, editingIssueId: null, issueEdits: {}, screen: 'issues' }
+      return {
+        ...state,
+        issues: action.issues,
+        activeIssueId: null,
+        activeLocationIndex: 0,
+        issueEdits: {},
+        screen: 'issues',
+      }
 
     case 'QA_ENGINE_UNAVAILABLE':
       return { ...state, qaEngineUnavailable: true }
@@ -59,24 +73,17 @@ export function appReducer(state: AppState, action: Action): AppState {
     case 'NAVIGATE':
       return { ...state, screen: action.screen }
 
-    case 'NAVIGATE_ISSUE': {
-      const delta = action.direction === 'next' ? 1 : -1
-      const nextIndex = Math.min(Math.max(state.currentIssueIndex + delta, 0), Math.max(state.issues.length - 1, 0))
-      // 다른 이슈로 넘어가면 진행 중이던 편집은 취소된 것으로 본다 — 저장 안 된 초안을 들고 있다가
-      // 나중에 같은 이슈로 돌아왔을 때 예상 못하게 다시 편집 모드로 뜨는 걸 막는다.
-      return { ...state, currentIssueIndex: nextIndex, editingIssueId: null }
-    }
+    case 'SELECT_ISSUE_BY_ID':
+      // 다른 제안으로 넘어가면 진행 중이던 위치 순회는 초기화한다 — 예전엔 진행 중이던 편집도
+      // 같이 초기화했지만, 편집은 이제 왼쪽 문서에서만 일어나(SuggestionDirectionCard의 텍스트
+      // 영역 폴백은 제거됨, 2026-08-30) 패널 쪽엔 초기화할 편집 상태가 없다.
+      return { ...state, activeIssueId: action.issueId, activeLocationIndex: 0 }
 
-    case 'SELECT_ISSUE_BY_ID': {
-      const index = state.issues.findIndex((issue) => issue.id === action.issueId)
-      return index === -1 ? state : { ...state, currentIssueIndex: index, editingIssueId: null }
-    }
+    case 'CLEAR_ACTIVE_ISSUE':
+      return { ...state, activeIssueId: null, activeLocationIndex: 0 }
 
-    case 'START_EDIT_ISSUE':
-      return { ...state, editingIssueId: action.issueId }
-
-    case 'STOP_EDIT_ISSUE':
-      return { ...state, editingIssueId: null }
+    case 'CYCLE_ACTIVE_LOCATION':
+      return { ...state, activeLocationIndex: state.activeLocationIndex === 0 ? 1 : 0 }
 
     case 'STAGE_ISSUE_EDIT': {
       // target이 'related'면 relatedEditedText만 갱신하고 editedText(첫 번째 위치)는 기존 값을
@@ -84,11 +91,18 @@ export function appReducer(state: AppState, action: Action): AppState {
       // 쪽을 저장할 때 다른 쪽에 저장해둔 걸 지워버리면 안 된다.
       const existing = state.issueEdits[action.issueId]
       const target = action.target ?? 'primary'
+      const skipReason = action.skipReason ?? existing?.skipReason
       const updated =
         target === 'related'
-          ? { action: action.action, editedText: existing?.editedText, relatedEditedText: action.editedText }
-          : { action: action.action, editedText: action.editedText, relatedEditedText: existing?.relatedEditedText }
+          ? { action: action.action, editedText: existing?.editedText, relatedEditedText: action.editedText, skipReason }
+          : { action: action.action, editedText: action.editedText, relatedEditedText: existing?.relatedEditedText, skipReason }
       return { ...state, issueEdits: { ...state.issueEdits, [action.issueId]: updated } }
+    }
+
+    case 'UNSTAGE_ISSUE_EDIT': {
+      // 완료/건너뜀 카드의 "되돌리기" — 해당 이슈를 다시 미해결 상태로 되돌린다.
+      const { [action.issueId]: _removed, ...rest } = state.issueEdits
+      return { ...state, issueEdits: rest }
     }
 
     case 'SET_ERROR':
@@ -103,10 +117,19 @@ export function appReducer(state: AppState, action: Action): AppState {
         confluenceStatus: 'detected',
         confluencePageTitle: action.title,
         confluenceMarkdown: action.markdown,
+        confluencePageId: action.pageId,
+        confluenceTabId: action.tabId,
       }
 
     case 'CONFLUENCE_NOT_A_PAGE':
-      return { ...state, confluenceStatus: 'not_confluence', confluencePageTitle: null, confluenceMarkdown: null }
+      return {
+        ...state,
+        confluenceStatus: 'not_confluence',
+        confluencePageTitle: null,
+        confluenceMarkdown: null,
+        confluencePageId: null,
+        confluenceTabId: null,
+      }
 
     case 'CONFLUENCE_DETECT_FAILED':
       return { ...state, confluenceStatus: 'error', error: action.error }

@@ -29,12 +29,13 @@ _CHUNK_ZERO_RE = re.compile(r"\[0\] \([^)]*\)\n(.+?)(?:\n\n|\Z)", re.DOTALL)
 
 
 class FakeAnthropicClient:
-    """Stands in for review_agent's real AnthropicClient OR GeminiClient — no network call,
-    just enough of a contract (constructor kwargs + complete_json) to drive the real
-    bundled_screen_hybrid/qa_jobs wiring end to end without a live API key. Accepts arbitrary
-    keyword args (**_kwargs) so the same double works whether it's standing in for
-    AnthropicClient(model=, api_key=, ...) or GeminiClient(model=, api_keys=, ...) — qa_jobs
-    now uses Gemini for screen_llm and Anthropic for confirm_llm, and both need a double."""
+    """Stands in for review_agent's real AnthropicClient/GeminiClient/OpenAIClient — no
+    network call, just enough of a contract (constructor kwargs + complete_json) to drive the
+    real bundled_screen_hybrid/qa_jobs wiring end to end without a live API key. Accepts
+    arbitrary keyword args (**_kwargs) so the same double works regardless of which client
+    class qa_jobs._run_review_sync currently constructs (AnthropicClient(model=, api_key=),
+    GeminiClient(model=, api_keys=), or OpenAIClient(model=, api_key=) — see qa_jobs.py's own
+    TEMP comment for whichever wiring is active right now)."""
 
     def __init__(self, *, model: str | None = None, temperature: float = 0.0, **_kwargs: object) -> None:
         self.model = model
@@ -177,8 +178,9 @@ async def test_qa_job_marks_failed_when_llm_client_cannot_be_built(monkeypatch) 
         def __init__(self, *args: object, **kwargs: object) -> None:
             raise RuntimeError("no Anthropic API key configured")
 
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", BrokenAnthropicClient)
-    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+    # TEMP: see the matching note above — _run_review_sync currently builds screen_llm/
+    # confirm_llm from GeminiClient, so that's the constructor that needs to raise here.
+    monkeypatch.setattr(qa_jobs, "GeminiClient", BrokenAnthropicClient)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -304,7 +306,10 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
         return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(issue,))
 
     monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    # TEMP: _run_review_sync currently constructs GeminiClient for both screen_llm/confirm_llm
+    # (see its own TEMP comment) — patch that name instead until ANTHROPIC_API_KEY is ready and
+    # confirm_llm moves to AnthropicClient, or this double never gets used and the test hits the
+    # real Gemini API.
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)

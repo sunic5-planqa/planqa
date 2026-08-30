@@ -105,6 +105,10 @@ export interface DocumentCountResponse {
   count: number
 }
 
+export interface QaStatusResponse {
+  passed: boolean
+}
+
 export interface RulebookCategoryResponse {
   category: string
   label: string

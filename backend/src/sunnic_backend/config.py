@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     sunnic_sonnet_model: str = "claude-sonnet-5"
     sunnic_gemini_model: str = "gemini-flash-lite-latest"
     gemini_api_keys: Annotated[list[str], NoDecode] = []
+    openai_api_key: str = ""
+    sunnic_openai_model: str = "gpt-5-mini"
     allowed_origins: Annotated[list[str], NoDecode] = []
 
     @field_validator("gemini_api_keys", mode="before")

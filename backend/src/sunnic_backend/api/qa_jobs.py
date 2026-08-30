@@ -15,7 +15,9 @@ from sunnic_backend.models.issue import FrameType, IssueStatus
 from sunnic_backend.models.issue import Issue as IssueRecord
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
 from sunnic_backend.qa_engine.review_agent.document import parse_document
-from sunnic_backend.qa_engine.review_agent.llm.anthropic import AnthropicClient
+from sunnic_backend.qa_engine.review_agent.llm.anthropic import (
+    AnthropicClient,  # noqa: F401 — TEMP-disabled, see _run_review_sync
+)
 from sunnic_backend.qa_engine.review_agent.llm.gemini import GeminiClient
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
@@ -257,13 +259,18 @@ def _run_review_sync(doc_id: str, document_text: str, rulebook: RuleBook) -> Rev
     # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
     #
     # bundled_screen_hybrid.review_document()이 screen_llm/confirm_llm을 각각 한 번씩 받는
-    # 구조라, GeminiClient가 review_agent의 LLMClient 프로토콜(complete_json)만 만족하면 그대로
-    # 끼워 넣을 수 있다 — instrumentation.isolate_client()도 GeminiClient에 .isolate()가 따로
-    # 없어서 AnthropicClient와 똑같이 copy.copy() + 새 usage 리스트로 안전하게 격리된다(코드 변경
-    # 불필요). 1차 스크리닝(저비용, over-flag 의도) = Gemini Flash-Lite, 2차 정밀검증(고비용,
-    # 정밀) = Sonnet은 그대로.
+    # 구조라, LLMClient 프로토콜(complete_json)만 만족하면 어느 백엔드든 그대로 끼워 넣을 수
+    # 있다 — instrumentation.isolate_client()도 별도 .isolate() 없이 copy.copy() + 새 usage
+    # 리스트로 안전하게 격리된다(코드 변경 불필요). 1차 스크리닝(저비용, over-flag 의도) = Gemini
+    # Flash-Lite, 2차 정밀검증(고비용, 정밀) = Sonnet이 정상 경로다.
+    #
+    # TEMP(2026-08-30): 정상 Gemini 키 확보됨(무료 티어, aistudio.google.com/apikey) — OpenAI
+    # 임시 배선은 원복했다. ANTHROPIC_API_KEY는 아직 없어서 confirm_llm도 당분간 Gemini를 그대로
+    # 쓴다("진짜 Sonnet 정밀검증"은 아님). related_location 등 confirm 단계 산출물 자체는 그대로
+    # 나온다. ANTHROPIC_API_KEY가 준비되면 confirm_llm 줄만 AnthropicClient로 바꾸면 된다.
     screen_llm = GeminiClient(model=settings.sunnic_gemini_model, api_keys=settings.gemini_api_keys)
-    confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
+    confirm_llm = GeminiClient(model=settings.sunnic_gemini_model, api_keys=settings.gemini_api_keys)
+    # confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
     result = review_document(doc_id, document_text, rulebook, screen_llm, confirm_llm)
 
     deduped_issues = _dedupe_conflicting_categories(result.issues, rulebook)

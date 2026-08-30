@@ -95,6 +95,12 @@ _SCREEN_HYBRID_SYSTEM = (
     "separately, every stated constraint/capability/schedule sentence across the whole "
     "input, then check each pairing for a genuine conflict before flagging one.\n"
     f"{_CATEGORY_BOUNDARY_NOTES}\n"
+    # TEMP (2026-08-30): review_agent is vendored as-is from sunic5-planqa/planqa-agent — this
+    # line is a local patch, not an upstream change. File an issue upstream and drop this once
+    # re-vendored. Needed because the previous Gemini/Sonnet backends happened to answer in
+    # Korean just from the Korean rule text/few-shot examples in the prompt body, with no
+    # explicit instruction — a model swap (gpt-5-mini) broke that implicit assumption.
+    "Write \"reason\" in Korean, regardless of what language this instruction is written in.\n"
     'Respond with JSON only: {"candidates": [{"chunk_index": <int>, "rule_id": "<id>", '
     '"quoted_text": "<exact span from the chunk>", "reason": "<one short line>"}, ...]}'
 )
@@ -137,6 +143,12 @@ _CONFIRM_HYBRID_SYSTEM = (
     "rule_id by the screening pass, which can mis-tag exactly these two confusions — if the "
     "candidate doesn't actually fit the rule you were given for that reason, set "
     "violated=false rather than confirming a violation of the wrong rule.\n"
+    # TEMP (2026-08-30): see the matching note in _SCREEN_HYBRID_SYSTEM above — same
+    # vendoring caveat applies here.
+    "Write \"description\", \"rationale\", \"fix_direction\", and \"excuse_reason\" in "
+    "Korean, regardless of what language this instruction is written in. Leave "
+    "\"original_text\"/\"related_original_text\" as verbatim quotes from the document "
+    "(don't translate quoted text).\n"
     'Respond with JSON only: {"verdicts": [{"index": <int>, "violated": <bool>, '
     '"original_text": "<quote>", "description": "<what\'s wrong>", "rationale": '
     '"<why it violates the rule>", "fix_direction": "<suggested revision>", "excused": '

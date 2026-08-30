@@ -2509,6 +2509,58 @@ PR #113(팀 규칙 관리 기능) 코드 리뷰에서 나온 "설계 판단 필�
   호출부에서 TEAM 카테고리 룰을 별도로 챙겨 넣는 방식으로 고쳐야 함(이 파일 자체는 손대지
   않고).
 
+## 2026-08-28 — 팀 룰 3단계 자동 분류 (문단형/관계형/부재확인형)
+
+기존 룰(GA/LG/LF/LG-01/TC-02)의 위계 배정이 팀원이 매번 고르는 게 아니라 룰북 작성자가 룰
+하나하나마다 미리 정해두는 것처럼, 팀 룰도 작성자가 "이건 관계형이다" 같은 걸 고르게 하는 대신
+저장 시점에 자동 분류하도록 만듦. 유사도/임베딩 매칭이 아니라 LLM 분류 호출을 쓴 이유: "관계형
+이냐"는 룰의 토픽이 아니라 구조(두 위치를 비교해야 하는가)의 문제라, 기존 룰 예시와의 표면적
+유사도로는 잘 안 맞음(예: "환불 정책 두 문서 위치가 일치해야 한다"는 GA의 기존 예시들과 토픽은
+안 겹치지만 구조는 명백히 relational).
+
+### Done
+
+- **planqa-agent(모델 레포)에 먼저 확장 포인트 추가** — `ABSENCE_CHECK_RULE_IDS`가
+  `{"LG-01", "TC-02"}` 딱 2개 rule_id만 인식하는 폐쇄 집합이라, 동적으로 생성되는 팀 룰
+  rule_id는 절대 인식 못 함. `_paragraph_and_document_rules()`/`review_document()`에
+  `extra_absence_check_rule_ids: frozenset[str] = frozenset()` 키워드 인자 추가(기본값이라
+  기존 호출부 전부 영향 없음). PR sunic5-planqa/planqa-agent#44로 올려서 머지 후 재벤더링.
+  관계형은 반대로 기존 `category in {LG,LF,GA}` 판정을 그대로 재사용 가능해서(팀 룰
+  category를 내부적으로 "GA"로 세팅) 벤더링된 파일을 안 건드림 — 모델이 실제로 보는 건
+  `category_label`(팀이 지은 이름)뿐이고 raw category 코드는 프롬프트에 안 나가서 안전.
+- `TeamRule`에 `scope: "paragraph" | "relational" | "absence_check" = "paragraph"` 추가 —
+  팀 관리자가 고르는 필드 아님, 폼에도 선택지 없음.
+- 신규 `team_rule_classifier.classify_scope()` — rule_name/description/exception_text를
+  보고 구조 기준으로 분류하는 LLM 호출 1번(룰 생성/수정 시점에만, QA 실행마다가 아님).
+  분류 실패(모호함/LLM 에러 전부)는 안전하게 "paragraph"로 폴백.
+- `team_rule_adapter.py`: `team_rule_to_ruledef()`가 scope="relational"이면
+  category="GA", 그 외엔 기존과 동일 category="TEAM". `merge_team_rules()`는 이제
+  `(RuleBook, absence_check 인 rule_id 집합)` 튜플을 반환 — absence_check는 카테고리로
+  재사용할 자리가 없어서 rule_id로 직접 라우팅해야 함.
+- `qa_jobs.py`: `merge_team_rules()`의 두 번째 반환값을
+  `review_document(extra_absence_check_rule_ids=...)`로 그대로 전달.
+- `api/teams.py`: `create_team_rule`/`update_team_rule`이 저장 전 분류 호출(GeminiClient,
+  `asyncio.to_thread`로 이벤트 루프 안 막음, 클라이언트 생성 자체가 실패해도 paragraph로
+  폴백). `set_team_rule_enabled`는 재분류 안 함(내용이 안 바뀌니까) — scope 그대로 유지.
+  `TeamRuleResponse`에 `scope` 노출(투명성 목적, 클라이언트가 보낼 순 없음).
+- 프론트: `TeamRuleResponse` 타입에 `scope` 추가.
+- 신규 테스트: `team_rule_classifier` 5개(정상/잘못된 값/비-dict 응답/LLM 에러/프롬프트 내용
+  확인), `team_rule_adapter` 3개(relational→GA, absence_check→TEAM 유지,
+  merge_team_rules가 absence_check rule_id 집합을 정확히 반환), `api/teams` 4개(기본값
+  paragraph, 분류 결과 저장, update 시 재분류, enabled 토글은 재분류 안 함).
+- **실수로 실제 Gemini API를 호출할 뻔한 것을 잡음**: 이 저장소 `.env`에 진짜
+  `GEMINI_API_KEYS`가 있어서, 스텁 없이 그냥 뒀으면 팀 룰 테스트 전체가 매번 실제 네트워크
+  호출을 했을 것(느리고, flaky하고, 실제 쿼터 소모). `test_api_teams.py`에
+  `autouse=True` 픽스처로 `GeminiClient`를 가짜로 교체해서 해결 — 스텁 적용 전/후 같은
+  파일 테스트 실행 시간이 17초대 → 2초대로 확인됨.
+- 백엔드 176/176 테스트 통과(기존 167 + 신규 9), `ruff check` 통과. 프론트
+  typecheck/lint/vitest 111개 통과.
+
+### Next
+
+- planqa-agent#44 머지·재벤더링 완료됨 — 이 기능은 그 위에서 바로 동작.
+- 팀 룰 작성 폼에 분류 결과(scope)를 보여줄지는 아직 미정 — 지금은 API 응답에만 노출.
+
 ## 2026-08-28 (계속) — 타문서 정합성(XDC) 리뷰 파이프라인 연동
 
 승현이 독립적으로 XDC 기능을 구현(sunic5-planqa/planqa#115)했는데, 팀 룰 통합 코드를

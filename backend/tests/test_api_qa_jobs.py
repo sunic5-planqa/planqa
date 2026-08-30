@@ -287,6 +287,7 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
         xdc_rulebook: Any = None,
         xdc_aliases: Any = None,
         reference_cache: Any = None,
+        extra_absence_check_rule_ids: frozenset[str] = frozenset(),
     ) -> qa_jobs.ReviewResult:
         nonlocal call_count
         call_count += 1
@@ -343,6 +344,7 @@ async def test_qa_job_with_reference_document_ids_passes_texts_and_maps_xdc_issu
         xdc_rulebook: Any = None,
         xdc_aliases: Any = None,
         reference_cache: Any = None,
+        extra_absence_check_rule_ids: frozenset[str] = frozenset(),
     ) -> qa_jobs.ReviewResult:
         captured_reference_documents.extend(reference_documents or [])
         captured_reference_caches.append(reference_cache)
@@ -564,7 +566,7 @@ def test_to_issue_record_keeps_team_rule_name_with_english_words_intact() -> Non
     from sunnic_backend.models.team_rule import TeamRule
     from sunnic_backend.qa_engine.team_rule_adapter import merge_team_rules
 
-    rulebook = merge_team_rules(
+    rulebook, _ = merge_team_rules(
         qa_jobs._load_rulebook(),
         [TeamRule(id="abc-123", team_code="T1", rule_name="회원가입 API 정책 검토", description="설명")],
     )

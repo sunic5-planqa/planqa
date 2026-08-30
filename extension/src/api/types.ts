@@ -34,6 +34,10 @@ export interface CreateQAJobResponse {
   job_id: string
 }
 
+export interface CreateQAJobRequest {
+  team_code?: string | null
+}
+
 export type CategoryItemStatus = 'pending' | 'in_progress' | 'done'
 
 export interface CategoryItem {
@@ -103,4 +107,53 @@ export interface DocumentCountResponse {
 
 export interface QaStatusResponse {
   passed: boolean
+}
+
+export interface RulebookCategoryResponse {
+  category: string
+  label: string
+}
+
+export interface TeamResponse {
+  team_code: string
+  team_name: string
+  description: string
+}
+
+export interface CreateTeamRequest {
+  team_name: string
+  description: string
+}
+
+export interface RuleExamplePair {
+  error: string
+  correction: string
+}
+
+export interface TeamRuleExamples {
+  error1: RuleExamplePair
+  error2: RuleExamplePair
+  exception: string
+}
+
+// 팀 관리자가 고르는 값이 아니라 서버가 rule_name/description/exception_text를 보고 자동
+// 분류해서 내려주는 값 — TeamRuleInput(요청)에는 없고 응답에만 존재.
+export type TeamRuleScope = 'paragraph' | 'relational' | 'absence_check'
+
+export interface TeamRuleResponse {
+  id: string
+  rule_name: string
+  description: string
+  exception_text: string | null
+  examples: TeamRuleExamples
+  enabled: boolean
+  scope: TeamRuleScope
+}
+
+export interface TeamRuleInput {
+  rule_name: string
+  description: string
+  exception_text?: string | null
+  examples: TeamRuleExamples
+  enabled: boolean
 }

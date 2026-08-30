@@ -6,6 +6,7 @@ import { ProgressScreen } from '../components/screens/ProgressScreen'
 import { SuggestionDetailScreen } from '../components/screens/SuggestionDetailScreen'
 import { SuggestionListScreen } from '../components/screens/SuggestionListScreen'
 import { SuggestionSummaryScreen } from '../components/screens/SuggestionSummaryScreen'
+import { TeamRulesScreen } from '../components/screens/TeamRulesScreen'
 import { useSuggestionOverlaySync } from '../hooks/useSuggestionOverlaySync'
 import { useAppState } from '../state/hooks'
 
@@ -22,6 +23,7 @@ export function App() {
       {screen === 'issues' && (activeIssueId ? <SuggestionDetailScreen /> : <SuggestionListScreen />)}
       {screen === 'suggestion-summary' && <SuggestionSummaryScreen />}
       {screen === 'history' && <HistoryExportScreen />}
+      {screen === 'team-rules' && <TeamRulesScreen />}
     </main>
   )
 }

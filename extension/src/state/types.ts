@@ -1,6 +1,13 @@
-import type { IssueAction, IssueResponse, ParsedStructure, QAJobStatusResponse } from '../api/types'
+import type {
+  IssueAction,
+  IssueResponse,
+  ParsedStructure,
+  QAJobStatusResponse,
+  RulebookCategoryResponse,
+  TeamRuleResponse,
+} from '../api/types'
 
-export type Screen = 'main' | 'loading' | 'progress' | 'issues' | 'history' | 'suggestion-summary'
+export type Screen = 'main' | 'loading' | 'progress' | 'issues' | 'history' | 'suggestion-summary' | 'team-rules'
 
 export type ConfluenceStatus = 'idle' | 'detecting' | 'detected' | 'not_confluence' | 'error'
 
@@ -66,6 +73,12 @@ export interface AppState {
   issueEdits: Record<string, IssueEdit>
   qaEngineUnavailable: boolean
   error: string | null
+
+  ruleCategories: RulebookCategoryResponse[]
+  teamCode: string | null
+  teamName: string | null
+  teamDescription: string | null
+  teamRules: TeamRuleResponse[]
 }
 
 export const initialAppState: AppState = {
@@ -95,4 +108,10 @@ export const initialAppState: AppState = {
   issueEdits: {},
   qaEngineUnavailable: false,
   error: null,
+
+  ruleCategories: [],
+  teamCode: null,
+  teamName: null,
+  teamDescription: null,
+  teamRules: [],
 }

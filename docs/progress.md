@@ -2360,6 +2360,119 @@ ThreadPoolExecutor 재검증 블록)이 review_document() 결과에 대해 독�
   실제로 늘어나는지는 재검증(예: 20문서 재검증)으로 확인 필요 — 사용자가 review-agent 쪽
   과탐지 완화(진행 중)와 함께 측정할 예정.
 
+## 2026-08-23 — 팀 규칙 관리 기능 (`feature/eunseong-team-rule-wireframe`)
+
+은성님이 맡은 팀룰 추가 기능을 처음부터 구현했다. 조사 결과 프론트엔드에 "Rule 섹션" 자체가
+없었고(백엔드엔 8개 카테고리/41개 규칙 데이터만 존재), 팀 개념도 백엔드 어디에도 없어서
+기본 Rule 섹션 구축부터 팀 CRUD까지 함께 진행하기로 사용자와 합의했다(`AskUserQuestion`으로
+스코프 확정: 기본 Rule 섹션 포함 / 구조화된 폼 직접 입력(자연어→AI초안 흐름은 제외) / 팀은
+"팀 코드 입력" 아래 "팀 만들기"로 팀명+설명을 받아 코드를 생성). 계획은
+`EnterPlanMode`로 세운 뒤 승인받고 진행(`/Users/song-eunseong/.claude/plans/wondrous-fluttering-castle.md`).
+
+- **백엔드**: `models/team.py`(`Team`), `models/team_rule.py`(`TeamRule`, `RuleExample`) 신규.
+  `storage/store.py`에 팀/팀규칙 dict 추가(기존 in-memory 패턴 그대로, `delete_team_rule`이
+  이 스토어의 첫 삭제 메서드). `api/teams.py`(팀 생성/조회, 팀규칙 CRUD, `secrets` 기반 6자리
+  코드 생성) + `api/rulebook.py`(`GET /rulebook/categories` — 기존 `qa_jobs.py`의
+  `_load_rulebook`/`_korean_label`을 그대로 import해 재사용, 8개 카테고리만 반환) 신규 라우터
+  2개, `main.py`에 등록.
+- **프론트엔드**: `RuleSection.tsx`(References 아래 신규 — 기본 규칙 카테고리 목록 + "적용된
+  규칙: N개" 카운트, 팀 코드 입력/확인, 인라인 "팀 만들기" 폼, 팀 연결 시 "👥 팀명 ⚙" 필),
+  `TeamRulesScreen.tsx`(신규 5번째 화면, `.screen`/`.screen-scroll`/`.screen-footer` 셸 재사용),
+  `TeamRuleForm.tsx`/`TeamRuleAccordion.tsx`(규칙 사례 여러 개 입력, 수정/삭제),
+  `ConfirmDialog.tsx`(이 코드베이스 첫 모달 — `Button`의 `variant="danger"`를 처음 실사용).
+  전역 상태(`AppState`)에 `teamCode`/`teamName`/`teamDescription`/`teamRules`/`ruleCategories`
+  추가, `appReducer`에 관련 액션 6개 추가. 새 공용 Accordion 컴포넌트는 만들지 않고
+  `CategoryTree`/`ReferencesSection`의 기존 토글 패턴을 그대로 복사(사용처 2곳뿐이라 추상화가
+  오히려 손해).
+- **"적용된 규칙" 카운트 정정**: 계획 초안은 41개 세부 규칙 합산을 가정했으나, 사용자 스펙의
+  예시("기본 8개 + 팀 2개 → 10개")를 재확인해 8개 카테고리 + 팀 규칙 수로 정정.
+- 검증: 백엔드 `uv run pytest` 149개 전부 통과(`ruff check` 클린), 프론트 `npm run
+  typecheck`/`lint`/`test`(vitest 110개) 전부 통과, `npm run build` 프로덕션 빌드 성공. 로컬
+  백엔드를 띄워 `curl`로 팀 생성→조회→규칙 생성(최소/전체 필드)→목록→수정→삭제 전체 플로우
+  실제 실행 확인(8개 카테고리, 404, CRUD 전부 기대대로 동작).
+- **알려진 한계(사용자에게 명시적으로 flag)**: in-memory 저장이라 백엔드 재시작 시 팀/규칙
+  소실(기존 documents/qa_jobs와 동일), 인증 없음(팀 코드를 아는 사람은 누구나 수정 가능), 팀
+  규칙은 아직 실제 QA 리뷰 파이프라인(`review_document`)에 반영되지 않음(저장/표시만).
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 Chrome에 unpacked 로드해서 사이드패널 UI를 눈으로
+  보고 조작하는 것(아코디언 토글, 폼 검증, 확인 다이얼로그 등 시각적 동작) — 은성님이 직접
+  `chrome://extensions`에 로드해서 확인 필요.
+- 팀 규칙을 실제 LLM 리뷰 파이프라인에 반영하는 작업(`bundled_screen_hybrid.py` 연동)은
+  이번 스코프 밖으로 남겨둠 — 다음 단계로 고려.
+- 넘버링 하모나이징(은성님 두 번째 담당 기능)은 아직 시작 전, 범위는 혜서/가영님과 확인 필요.
+
+## 2026-08-24 — 팀 규칙 기능 Round 2: 데이터 구조 개편 + 화면 통합 + Agent 연동
+
+Round 1을 실제 Chrome에 로드해 확인한 사용자가 스크린샷 3장 + 상세 명세로 큰 폭의 수정을 요청.
+`AskUserQuestion`으로 세 가지 핵심 결정을 받은 뒤 `EnterPlanMode`로 계획을 다시 세우고 승인받아
+진행했다(계획: `/Users/song-eunseong/.claude/plans/wondrous-fluttering-castle.md`).
+
+- **데이터 구조 개편**: `TeamRule`에 `rule_name`(신규 필수, 규칙 설명과 분리)과 `enabled`(체크박스,
+  기본값 true) 추가. `examples`를 자유 배열에서 `{error1, error2, exception}` 고정 3슬롯 구조로
+  변경(`models/team_rule.py`, `api/teams.py`의 `TeamRuleIn`/`TeamRuleResponse`). PATCH는 계속 폼
+  전체 교체 방식 유지 — 체크박스 토글도 같은 PATCH로 처리(별도 엔드포인트 안 만듦).
+- **화면 구조 통합**: 별도였던 `TeamRulesScreen`을 삭제하고 `RuleSection.tsx` 하나에 기본 규칙
+  카드(번호+규칙명+설명, 8개 카테고리 설명은 백엔드에 없는 데이터라 프론트엔드에 하드코딩)와 팀
+  규칙 카드(체크박스/토글/✎/🗑/+추가 전부)를 합쳤다. 체크박스는 클릭 즉시 PATCH로 저장(별도 저장
+  버튼 없음), 토글은 읽기 전용 상세 보기, ✎만 편집 폼(`TeamRuleForm`)을 연다 — 이 구분은
+  `AskUserQuestion`으로 사용자에게 직접 확인받은 UX.
+- **Agent 연동(신규 스코프, 이전엔 명시적으로 제외했던 부분)**: `qa_engine/team_rule_adapter.py`
+  신규 — 활성화된(`enabled=true`) 팀 규칙을 synthetic `RuleDef`로 변환해 `review_document()`가
+  이미 받는 `RuleBook` 파라미터에 merge. 벤더 파일(`bundled_screen_hybrid.py`/`fewshot_bank.py`)은
+  한 줄도 안 건드림 — `RuleDef.text`가 `_hybrid_block()`이 파싱 없이 그대로 보간하는 자유 텍스트
+  필드라는 점을 이용해, `규칙 설명 + [오류 사례 1]/[수정 사례 1]/[오류 사례 2]/[수정 사례 2]/
+  [예외 사례]`를 하나의 문자열로 조합해 그 안에 담았다(저장 구조 자체는 계속 필드별로 분리 유지 —
+  합치는 건 Agent에 넘기는 마지막 순간뿐). 구현 전 실제 `RuleDef` 필드 구조와 매핑표를 먼저
+  보여달라는 사용자 요청에 따라, 계획 문서에 매핑표 + 라우팅 안전성 근거(코드 인용 5곳)를 먼저
+  제시하고 승인받은 뒤 구현. `POST /documents/{id}/qa-jobs`에 선택적 `team_code` 바디 추가,
+  `_execute_qa_job`이 있으면 팀 규칙을 merge, 없으면 기존 경로 100% 그대로.
+- 검증: 백엔드 `uv run pytest` **158개** 전부 통과(신규: `test_team_rule_adapter.py` 6개,
+  `test_api_qa_jobs.py`에 회귀 테스트 2개 추가, `test_api_teams.py` 새 스키마로 재작성),
+  `ruff check` 클린. 프론트 `typecheck`/`lint`/`test`(vitest **111개**) 전부 통과, `npm run
+  build` 성공. 로컬 백엔드로 curl E2E: 팀 생성 → 새 스키마 규칙 생성(규칙명/고정
+  examples/enabled) → PATCH로 enabled=false 토글 → `team_code` 포함/미포함 QA job 생성 둘 다
+  200 확인.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: Chrome 실제 로드 후 통합된 Rule 섹션(기본+팀) 시각 확인 —
+  은성님 직접 확인 필요. 실제 LLM 응답에 팀 규칙 few-shot 텍스트가 기대한 형태로 도달하는지도
+  API 키 있는 환경에서 실제 QA 실행으로만 최종 확인 가능(이번 세션은 `team_rule_adapter.py`
+  순수 함수 테스트 + 라우팅 안전성 근거로 대체).
+- 넘버링 하모나이징(은성님 두 번째 담당 기능)은 아직 시작 전.
+
+## 2026-08-24 — 팀 규칙 기능 Round 3: 관리 페이지 재분리
+
+Round 2에서 메인 화면 하나로 합쳤던 걸 사용자가 다시 뒤집었다 — "관리(추가/수정/삭제)"와
+"적용 선택(체크박스)"의 역할을 분리해 관리는 별도 페이지로, 메인 Rule 화면은 체크박스만 있는
+화면으로 되돌렸다. 진입점(관리 페이지로 가는 길)이 명세에 없어 `AskUserQuestion`으로 확인 후
+`EnterPlanMode`로 계획을 세우고 진행(백엔드는 이번 라운드에서 전혀 안 건드림 — 순수 프론트엔드
+재구성). 계획: `/Users/song-eunseong/.claude/plans/wondrous-fluttering-castle.md`.
+
+- `TeamRulesScreen.tsx` 재생성 — Round 2에서 지웠던 걸 복원하되, 이번엔 팀 코드도 헤더에
+  표시(지금까지 팀 생성 후 코드를 확인할 방법이 어디에도 없었던 걸 이번에 채움).
+  `TeamRuleAccordion.tsx`에서 체크박스(적용 여부) 관련 로직을 전부 제거 — 이 컴포넌트는 이제
+  순수하게 추가/수정/삭제만 담당.
+- `RuleSection.tsx`(메인 화면)에서 팀 규칙 추가/수정 폼을 전부 제거하고, 체크박스+규칙명+설명
+  한 줄짜리 목록으로 단순화. 체크박스 토글은 `RuleSection`으로 옮겨 즉시 PATCH 저장. 헤더에
+  "👥 팀 규칙 · 팀명" 옆 ⚙ 버튼으로 관리 페이지 진입(사용자에게 직접 확인받은 위치). 팀 규칙이
+  0개여도 헤더/⚙는 유지하고 목록 자리에 안내 문구만 표시 — 완전히 숨기면 첫 규칙을 추가할 방법이
+  없어지는 걸 막기 위한 해석(계획에 명시하고 승인받음). "팀 만들기" 성공 시 관리 페이지로 자동
+  이동 추가 — 생성된 코드를 바로 볼 수 있게(사용자가 명시적으로 요구하진 않았으나, 안 그러면 방금
+  만든 코드를 볼 방법이 없어 채택).
+- 기본 규칙 8개 설명을 전부 한 줄에 들어가도록 문구 자체를 축약(CSS `text-overflow: ellipsis`
+  금지 요구 — 실제 문장을 줄임). 팀 규칙 설명은 사용자가 직접 쓴 임의 길이 텍스트라 문구를
+  대신 줄여줄 수 없어, 여기에만 예외적으로 CSS 한 줄 말줄임(`.team-rule-row-description`)을 적용.
+- 검증: `typecheck`/`lint`/`test`(vitest 111개, 신규 없음 — 로직 이동만이라 리듀서/검증 함수
+  변경 없음)/`build` 전부 통과. 백엔드는 안 건드렸으므로 기존 158개 테스트 상태 그대로 유효.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: Chrome에서 관리 페이지 진입(⚙)과 메인 화면 체크박스가 실제로
+  분리되어 보이는지, 팀 생성 후 자동 이동으로 코드가 잘 보이는지 — 은성님 직접 확인 필요.
+
 ## 2026-08-25 — Fix Suggestions 패널(3a~3d) 디자인 핸드오프 구현
 
 디자인 핸드오프(`design_handoff_fix_suggestions/`)의 3a(목록)~3d(완료 요약) 4개 화면을
@@ -2485,3 +2598,177 @@ ThreadPoolExecutor 재검증 블록)이 review_document() 결과에 대해 독�
   정확히 놓이는지(happy-dom엔 `caretRangeFromPoint`가 없어 자동 테스트로 커버 불가), ‹›로
   위치를 옮길 때 실제로 눈에 보이는 스크롤이 일어나는지 확인 필요 — 보미님이 직접 확인 중.
 - 커밋은 여전히 보미님 확인 후 진행.
+## 2026-08-27 — PR #113 리뷰 후속 fix 2건
+
+PR #113(팀 규칙 관리 기능) 코드 리뷰에서 나온 "설계 판단 필요" 항목 중 2개를 마무리. 나머지
+하나(`tiers.py`의 `TIER_CATEGORIES`에 "TEAM" 추가)는 시도했다가 되돌림 — 아래 참고.
+
+### Done
+
+- **팀 코드 생성 TOCTOU 레이스 제거**: `store.py`에 `save_team_if_new()` 추가 — "코드가
+  비어있는지 확인"과 "저장"을 별개의 락 획득 두 번이 아니라 한 번의 락 안에서 원자적으로
+  처리. `teams.py`의 `_generate_unique_team_code()` + `store.save_team()` 조합을
+  `_create_team_with_unique_code()`(생성-시도-저장을 한 함수로) 하나로 교체.
+- **팀 룰 체크박스 토글의 lost-update 제거**: `update_team_rule`(풀-리플레이스 PATCH)은
+  그대로 두고, `enabled` 필드만 바꾸는 전용 엔드포인트
+  `PATCH /teams/{team_code}/rules/{rule_id}/enabled` 신설. 프론트 `toggleRuleEnabled`가
+  이제 이걸 호출 — 더 이상 클라이언트 상태에서 읽은(어쩌면 이미 오래된) rule_name/
+  description/exception_text/examples를 다시 보내지 않으므로, 토글이 다른 편집자가 방금
+  저장한 필드를 되돌릴 수 없음.
+- 신규 테스트 4개: `save_team_if_new`가 같은 코드 두 번째 저장을 거부하는지, 신규 엔드포인트가
+  다른 필드는 안 건드리는지, 실제로 "다른 편집자의 동시 편집을 안 되돌리는지"(concurrent-edit
+  시나리오 그대로 재현), 잘못된 팀으로는 404인지.
+- 164/164 백엔드 테스트 통과(기존 160 + 신규 4), `ruff check` 통과, 프론트 typecheck/lint/
+  vitest 111개 그대로 통과(프론트는 `client.ts`/`RuleSection.tsx`만 수정, 로직 이동 수준이라
+  신규 테스트 없음).
+
+### Not done — 시도했다가 되돌림
+
+- `tiers.py`의 `TIER_CATEGORIES`에 `"TEAM"`을 추가했더니 `test_tiers.py`의 두 테스트
+  (`test_every_assigned_category_exists_in_the_real_rulebook`,
+  `test_tier_categories_matches_rulebook_section_2`)가 깨짐 — 이 파일은 벤더링 정책상
+  `rulebook_v1.0.md`의 실제 카테고리와 바이트 단위로 일치해야 한다는 걸 검증하는 테스트라,
+  "TEAM"을 여기 넣는 건 이 파일의 존재 이유(벤더링 드리프트 감지)를 정면으로 깨는 것.
+  프로덕션 경로(`bundled_screen_hybrid.review_document`)는 이 함수를 아예 안 써서 지금은
+  위험 없음 — 나중에 `pipeline.review_document` 쪽에 팀 룰을 실제로 merge해서 쓰게 되면, 그
+  호출부에서 TEAM 카테고리 룰을 별도로 챙겨 넣는 방식으로 고쳐야 함(이 파일 자체는 손대지
+  않고).
+
+## 2026-08-28 — 팀 룰 3단계 자동 분류 (문단형/관계형/부재확인형)
+
+기존 룰(GA/LG/LF/LG-01/TC-02)의 위계 배정이 팀원이 매번 고르는 게 아니라 룰북 작성자가 룰
+하나하나마다 미리 정해두는 것처럼, 팀 룰도 작성자가 "이건 관계형이다" 같은 걸 고르게 하는 대신
+저장 시점에 자동 분류하도록 만듦. 유사도/임베딩 매칭이 아니라 LLM 분류 호출을 쓴 이유: "관계형
+이냐"는 룰의 토픽이 아니라 구조(두 위치를 비교해야 하는가)의 문제라, 기존 룰 예시와의 표면적
+유사도로는 잘 안 맞음(예: "환불 정책 두 문서 위치가 일치해야 한다"는 GA의 기존 예시들과 토픽은
+안 겹치지만 구조는 명백히 relational).
+
+### Done
+
+- **planqa-agent(모델 레포)에 먼저 확장 포인트 추가** — `ABSENCE_CHECK_RULE_IDS`가
+  `{"LG-01", "TC-02"}` 딱 2개 rule_id만 인식하는 폐쇄 집합이라, 동적으로 생성되는 팀 룰
+  rule_id는 절대 인식 못 함. `_paragraph_and_document_rules()`/`review_document()`에
+  `extra_absence_check_rule_ids: frozenset[str] = frozenset()` 키워드 인자 추가(기본값이라
+  기존 호출부 전부 영향 없음). PR sunic5-planqa/planqa-agent#44로 올려서 머지 후 재벤더링.
+  관계형은 반대로 기존 `category in {LG,LF,GA}` 판정을 그대로 재사용 가능해서(팀 룰
+  category를 내부적으로 "GA"로 세팅) 벤더링된 파일을 안 건드림 — 모델이 실제로 보는 건
+  `category_label`(팀이 지은 이름)뿐이고 raw category 코드는 프롬프트에 안 나가서 안전.
+- `TeamRule`에 `scope: "paragraph" | "relational" | "absence_check" = "paragraph"` 추가 —
+  팀 관리자가 고르는 필드 아님, 폼에도 선택지 없음.
+- 신규 `team_rule_classifier.classify_scope()` — rule_name/description/exception_text를
+  보고 구조 기준으로 분류하는 LLM 호출 1번(룰 생성/수정 시점에만, QA 실행마다가 아님).
+  분류 실패(모호함/LLM 에러 전부)는 안전하게 "paragraph"로 폴백.
+- `team_rule_adapter.py`: `team_rule_to_ruledef()`가 scope="relational"이면
+  category="GA", 그 외엔 기존과 동일 category="TEAM". `merge_team_rules()`는 이제
+  `(RuleBook, absence_check 인 rule_id 집합)` 튜플을 반환 — absence_check는 카테고리로
+  재사용할 자리가 없어서 rule_id로 직접 라우팅해야 함.
+- `qa_jobs.py`: `merge_team_rules()`의 두 번째 반환값을
+  `review_document(extra_absence_check_rule_ids=...)`로 그대로 전달.
+- `api/teams.py`: `create_team_rule`/`update_team_rule`이 저장 전 분류 호출(GeminiClient,
+  `asyncio.to_thread`로 이벤트 루프 안 막음, 클라이언트 생성 자체가 실패해도 paragraph로
+  폴백). `set_team_rule_enabled`는 재분류 안 함(내용이 안 바뀌니까) — scope 그대로 유지.
+  `TeamRuleResponse`에 `scope` 노출(투명성 목적, 클라이언트가 보낼 순 없음).
+- 프론트: `TeamRuleResponse` 타입에 `scope` 추가.
+- 신규 테스트: `team_rule_classifier` 5개(정상/잘못된 값/비-dict 응답/LLM 에러/프롬프트 내용
+  확인), `team_rule_adapter` 3개(relational→GA, absence_check→TEAM 유지,
+  merge_team_rules가 absence_check rule_id 집합을 정확히 반환), `api/teams` 4개(기본값
+  paragraph, 분류 결과 저장, update 시 재분류, enabled 토글은 재분류 안 함).
+- **실수로 실제 Gemini API를 호출할 뻔한 것을 잡음**: 이 저장소 `.env`에 진짜
+  `GEMINI_API_KEYS`가 있어서, 스텁 없이 그냥 뒀으면 팀 룰 테스트 전체가 매번 실제 네트워크
+  호출을 했을 것(느리고, flaky하고, 실제 쿼터 소모). `test_api_teams.py`에
+  `autouse=True` 픽스처로 `GeminiClient`를 가짜로 교체해서 해결 — 스텁 적용 전/후 같은
+  파일 테스트 실행 시간이 17초대 → 2초대로 확인됨.
+- 백엔드 176/176 테스트 통과(기존 167 + 신규 9), `ruff check` 통과. 프론트
+  typecheck/lint/vitest 111개 통과.
+
+### Next
+
+- planqa-agent#44 머지·재벤더링 완료됨 — 이 기능은 그 위에서 바로 동작.
+- 팀 룰 작성 폼에 분류 결과(scope)를 보여줄지는 아직 미정 — 지금은 API 응답에만 노출.
+
+## 2026-08-28 (계속) — 타문서 정합성(XDC) 리뷰 파이프라인 연동
+
+승현이 독립적으로 XDC 기능을 구현(sunic5-planqa/planqa#115)했는데, 팀 룰 통합 코드를
+실수로 되돌리는 문제가 있어 그 PR 자체는 안 씀 — 대신 룰 카탈로그(XDC-01~04)만 이식하고,
+실제 구현은 planqa-agent의 review-agent 쪽(더 많은 매칭 신호, 벤더링 정책 준수, 139개
+테스트로 검증됨)을 재벤더링해서 연결했다. 상세 배경은 planqa-agent#43/#44/#45 참고.
+
+### Done
+
+- **재벤더링**: `structures/xdc.py`(신규), `structures/bundled_screen_hybrid.py`(참고문서
+  있을 때만 활성화되는 decision_records 추출 + XDC 전용 confirm 트랙),
+  `planqa_schemas/schema.py`(Issue에 reference_document/reference_section/reference_quote/
+  difference_type 4필드), `planqa_schemas/rulebook.py`(룰 ID 정규식 `{2}`→`{2,3}`,
+  XDC 같은 3자 카테고리 지원), `dedupe.py`(`_same_reference` 가드) — planqa-agent
+  services/review-agent에서 그대로 복사 + import 네임스페이스만 재작성.
+- `data/xdc/xdc_rulebook_v1.0.md`(XDC-01~04), `data/xdc/aliases.json` 데이터 파일 추가.
+- `api/qa_jobs.py` 연동:
+  - `CreateQAJobRequest.reference_document_ids: list[str] = []` 추가(`team_code`는 유지).
+  - `_execute_qa_job`이 그 id들로 `store.get_document()`를 조회해 `(id, raw_text)` 쌍으로 변환.
+  - **중요한 설계 결정**: XDC 룰북은 `review_document()`의 팀 룰과 같은 `rulebook` 인자에
+    합치지 않고 별도 `xdc_rulebook=` 키워드 인자로만 넘긴다 — 합치면
+    `_paragraph_and_document_rules()`가 XDC-01~04를 일반 문단형 내부 룰로 오인해서
+    참고문서 없이 현재 문서 혼자 스크리닝/컨펌해버리는 오류가 생김(승현 버전에는 없던 문제,
+    설계 단계에서 미리 확인).
+  - `_to_issue_record`/`_dedupe_conflicting_categories` 전용으로 XDC를 합친 조회용
+    rulebook(`_rulebook_for_lookup`)을 별도로 만들어 사용 — criteria/frame_type/우선순위
+    판정에 필요.
+- **승현 버전에서 발견한 버그 2개를 여기서는 처음부터 피함**:
+  1. XDC 이슈가 dedup에서 조용히 사라지는 문제(`_CATEGORY_PRIORITY`에 XDC 미등록 시
+     TEAM처럼 최하위 취급) → `_CATEGORY_PRIORITY`에 `"XDC": 0`(GA와 동급) 추가로 방지.
+  2. XDC 이슈가 RANGE 프레임으로 안 그려지는 문제(`rulebook.rule(rule_id)`가 None이라
+     `_frame_type`이 항상 OBJECT로 폴백) → `_rulebook_for_lookup`으로 XDC를 조회 가능하게
+     만들고, `_RANGE_CATEGORIES`에 `"XDC"` 추가로 해결.
+  - 추가로, XDC의 두 번째 위치(참고문서 쪽)는 `reference_document/reference_section/
+    reference_quote`라는 별도 필드로 오는데, 프론트까지 새 스키마를 뚫는 대신 관계형
+    (LG/LF/GA)이 이미 쓰는 `related_location`/`related_original_text` 표시 경로를
+    재사용(`[문서ID] 위치` 라벨로 합성) — 프론트 코드 변경 없이 기존 RANGE 프레임
+    렌더링을 그대로 씀.
+- 신규 테스트 5개: `_frame_type` XDC 케이스 2개, dedup 우선순위(XDC가 안 사라지는지),
+  `_to_issue_record`의 reference→related_location 매핑, API 전체 배선(참고문서 텍스트가
+  실제로 `review_document()`까지 도달하는지 + 응답에 관계형 필드가 매핑되는지) e2e 1개.
+- 백엔드 169/169 테스트 통과(기존 164 + 신규 5), `ruff check` 통과.
+
+### Next
+
+- 프론트: 참고문서를 고르는 UI가 아직 없음 — `client.ts`의 `createQAJob`도 아직
+  `reference_document_ids`를 안 받음. 이건 별도 UX 설계가 필요한 신규 기능이라 이번엔
+  백엔드 계약만 만들어두고 UI는 안 건드림.
+- 승현님께 PR #115 대신 이 PR을 쓴다고 설명하고 #115는 닫아달라고 요청 필요.
+
+## 2026-08-29 (계속) — PR #117 코드 리뷰 후속 수정 3건
+
+### Done
+
+- **참고문서 캐시 미전달**: `review_document(reference_cache=...)`를 안 넘겨서 QA job마다
+  같은 참고문서를 매번 재인덱싱하고 있었음 — 모듈 레벨 `_reference_cache` 딕셔너리(프로세스
+  생애 동안 유지, `_rulebook`/`_xdc_rulebook` 캐시와 같은 패턴)를 추가해서 전달.
+- **참고문서 여러 개일 때 dedup에서 하나가 사라지는 문제**: `_dedupe_conflicting_categories`의
+  키가 `(location, original_text)`뿐이라 XDC-01이 참고문서 A/B 둘 다와 충돌해도 하나만
+  남았음 — 키에 `reference_document`를 추가해서 해결(XDC 아닌 이슈는 항상 None이라 기존
+  동작 안 바뀜). 부수적으로 XDC/GA가 `_CATEGORY_PRIORITY`에서 우선순위 0으로 동률이던
+  문제도 이 키 확장으로 자연히 해소(둘은 reference_document 값이 달라 이제 애초에 같은
+  키로 안 묶임).
+- planqa-agent 쪽 버그(XDC confirm 실패 시 정상 이슈까지 날아가는 문제,
+  sunic5-planqa/planqa-agent#46)도 재벤더링해서 반영.
+- 신규 테스트 2개: dedup이 참고문서 다른 XDC 이슈 둘 다 보존하는지, `reference_cache`가
+  실제로 (매 job마다 새로 안 만들고) 같은 객체로 전달되는지.
+- 리뷰에서 나온 나머지 2건(docstring 스타일, `extra_absence_check_rule_ids` 죽은 코드
+  지적)은 각각 기존 코드베이스 관례와 일치/무관한 다른 기능 소관이라 스킵.
+- 백엔드 170/170 테스트 통과, `ruff check` 통과.
+
+## 2026-08-29 (계속) — XDC 첫 라이브 평가 + XDC-03 예외 문구 재벤더링
+
+planqa-agent에서 손으로 만든 골든 케이스 5개(XDC-01~04 각 1개 + 오탐 방지 예외 1개)를
+실제 Gemini+Sonnet으로 처음 라이브 평가 — XDC-03(재고 자동 환불 vs 참고문서 수동 상담
+처리)이 예외 조건 문구가 너무 넓어서 미탐지됨(4개 중 3개 재현율). 예외 조건을 좁혀서
+재검증한 결과 4/4 재현율, 오탐 0건으로 개선(상세: sunic5-planqa/planqa-agent#47).
+
+### Done
+
+- 수정된 `xdc_rulebook_v1.0.md` 재벤더링(파일 하나만 교체, 코드 변경 없음).
+- 백엔드 170/170 테스트 통과(룰 텍스트만 바뀐 데이터 파일이라 회귀 없음), `ruff check` 통과.
+
+### 한계
+
+- n=5짜리 손으로 만든 케이스라 방향성 확인 수준 — 정식 recall/precision 벤치마크는 아님.

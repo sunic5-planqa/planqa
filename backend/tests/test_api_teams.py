@@ -1,12 +1,37 @@
 import re
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
+from sunnic_backend.api import teams
 from sunnic_backend.main import app
 from sunnic_backend.models.team import Team
 from sunnic_backend.storage.store import store
 
 _DEFAULT_EXAMPLES = {"error1": {"error": "", "correction": ""}, "error2": {"error": "", "correction": ""}, "exception": ""}
+
+
+class _StubGeminiClient:
+    """Stands in for the real GeminiClient — no network call, no API key needed. Scope
+    classification tests monkeypatch teams.classify_scope directly instead of scripting this
+    client's JSON output, so this only needs to exist long enough for _classify_scope_sync's
+    GeminiClient(...) construction to succeed."""
+
+    def __init__(self, *, model: str | None = None, temperature: float = 0.0, **_kwargs: object) -> None:
+        pass
+
+    def complete_json(self, *, system: str, prompt: str, cache_prefix: str | None = None) -> dict:
+        return {"scope": "paragraph"}
+
+
+@pytest.fixture(autouse=True)
+def _stub_scope_classifier(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every team-rule create/update classifies scope via a real Gemini call by default — this
+    # repo's .env has a real GEMINI_API_KEYS, so without this stub every test in this file
+    # would silently make live network calls (slow, flaky, and burns real quota) rather than
+    # failing loudly. Autouse (not per-test monkeypatching like test_api_qa_jobs.py's
+    # FakeAnthropicClient) because nearly every test in this file exercises rule create/update.
+    monkeypatch.setattr(teams, "GeminiClient", _StubGeminiClient)
 
 
 async def _create_team(client: AsyncClient, team_name: str = "서비스기획 2팀", description: str = "설명") -> dict:
@@ -241,3 +266,59 @@ async def test_set_team_rule_enabled_404_for_wrong_team() -> None:
         response = await client.patch(f"/teams/{team_b['team_code']}/rules/{created['id']}/enabled", json={"enabled": False})
 
     assert response.status_code == 404
+
+
+async def test_create_team_rule_defaults_scope_to_paragraph() -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        team = await _create_team(client)
+        response = await client.post(f"/teams/{team['team_code']}/rules", json={"rule_name": "이름", "description": "설명"})
+
+    assert response.json()["scope"] == "paragraph"
+
+
+async def test_create_team_rule_stores_classified_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(teams, "classify_scope", lambda *_args, **_kwargs: "relational")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        team = await _create_team(client)
+        response = await client.post(
+            f"/teams/{team['team_code']}/rules", json={"rule_name": "정책 위치 일치", "description": "설명"}
+        )
+
+    assert response.json()["scope"] == "relational"
+
+
+async def test_update_team_rule_reclassifies_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        team = await _create_team(client)
+        created = (
+            await client.post(f"/teams/{team['team_code']}/rules", json={"rule_name": "이름", "description": "원본"})
+        ).json()
+        assert created["scope"] == "paragraph"
+
+        monkeypatch.setattr(teams, "classify_scope", lambda *_args, **_kwargs: "absence_check")
+        response = await client.patch(
+            f"/teams/{team['team_code']}/rules/{created['id']}", json={"rule_name": "이름", "description": "수정됨"}
+        )
+
+    assert response.json()["scope"] == "absence_check"
+
+
+async def test_set_team_rule_enabled_does_not_reclassify_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The toggle endpoint never touches rule_name/description/exception_text, so it must
+    # never re-run classification either — scope should carry over unchanged.
+    monkeypatch.setattr(teams, "classify_scope", lambda *_args, **_kwargs: "relational")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        team = await _create_team(client)
+        created = (
+            await client.post(f"/teams/{team['team_code']}/rules", json={"rule_name": "이름", "description": "설명"})
+        ).json()
+        assert created["scope"] == "relational"
+
+        monkeypatch.setattr(teams, "classify_scope", lambda *_args, **_kwargs: "paragraph")
+        response = await client.patch(f"/teams/{team['team_code']}/rules/{created['id']}/enabled", json={"enabled": False})
+
+    assert response.json()["scope"] == "relational"

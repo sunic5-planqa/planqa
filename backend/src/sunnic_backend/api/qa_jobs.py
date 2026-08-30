@@ -311,6 +311,7 @@ def _run_review_sync(
     reference_documents: list[tuple[str, str]],
     xdc_rulebook: RuleBook | None,
     xdc_aliases: dict[str, str] | None,
+    extra_absence_check_rule_ids: frozenset[str] = frozenset(),
 ) -> ReviewResult:
     # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
     # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
@@ -333,6 +334,7 @@ def _run_review_sync(
         xdc_rulebook=xdc_rulebook,
         xdc_aliases=xdc_aliases,
         reference_cache=_reference_cache,
+        extra_absence_check_rule_ids=extra_absence_check_rule_ids,
     )
 
     lookup_rulebook = _rulebook_for_lookup(rulebook, xdc_rulebook)
@@ -472,9 +474,10 @@ async def _execute_qa_job(
     if job is None:
         return
     rulebook = _load_rulebook()
+    absence_check_rule_ids: frozenset[str] = frozenset()
     if team_code:
         team_rules = await store.list_team_rules_for_team(team_code)
-        rulebook = merge_team_rules(rulebook, [rule for rule in team_rules if rule.enabled])
+        rulebook, absence_check_rule_ids = merge_team_rules(rulebook, [rule for rule in team_rules if rule.enabled])
 
     reference_documents: list[tuple[str, str]] = []
     for reference_document_id in reference_document_ids or []:
@@ -495,6 +498,7 @@ async def _execute_qa_job(
             reference_documents,
             xdc_rulebook,
             _load_xdc_aliases() if reference_documents else None,
+            absence_check_rule_ids,
         )
         heading_numbers = _build_heading_numbers(document_text)
         for issue in result.issues:

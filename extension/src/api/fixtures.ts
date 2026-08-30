@@ -39,7 +39,7 @@ export const FIXTURE_JOB_STATUS: QAJobStatusResponse = {
 }
 
 // backend의 /mock-confluence 목 문서("결제 시스템 개선 기획서")와 문구가 그대로 맞아떨어지도록 맞춘 이슈.
-// input_text/suggestion이 실제 렌더링된 문서 텍스트와 정확히 일치해야 인라인 오버레이(useIssueOverlaySync)가
+// input_text/suggestion이 실제 렌더링된 문서 텍스트와 정확히 일치해야 인라인 오버레이(useSuggestionOverlaySync)가
 // 본문에서 해당 구간을 찾아 하이라이트할 수 있다.
 export const FIXTURE_ISSUES: IssueResponse[] = [
   {

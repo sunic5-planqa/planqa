@@ -100,3 +100,7 @@ export interface ExportDocumentResponse {
 export interface DocumentCountResponse {
   count: number
 }
+
+export interface QaStatusResponse {
+  passed: boolean
+}

@@ -23,6 +23,15 @@ class DocumentCountResponse(BaseModel):
     count: int
 
 
+class QaStatusUpdateRequest(BaseModel):
+    confluence_page_id: str
+    passed: bool
+
+
+class QaStatusResponse(BaseModel):
+    passed: bool
+
+
 @router.post("/documents", response_model=CreateDocumentResponse)
 async def create_document(request: CreateDocumentRequest) -> CreateDocumentResponse:
     parsed_structure = parse_markdown(request.raw_text)
@@ -50,3 +59,25 @@ async def export_document(document_id: str) -> dict[str, str]:
     if document is None:
         raise HTTPException(status_code=404, detail="document not found")
     raise HTTPException(status_code=501, detail="export is not implemented yet")
+
+
+# 익스텐션이 "검토 종료" 시점(잔여 미해결 이슈 0건, suggestionProgress.ts 기준)에 호출 — 이
+# document_id는 POST /documents마다 새로 생기는 세션용 UUID라 재시작/재방문 후에는 못 찾으므로,
+# 조회는 confluence_page_id를 키로 하는 아래 by-page 엔드포인트를 쓴다(store.py의
+# get_latest_qa_status_for_page 참고).
+@router.patch("/documents/{document_id}/qa-status", response_model=QaStatusResponse)
+async def update_qa_status(document_id: str, request: QaStatusUpdateRequest) -> QaStatusResponse:
+    document = await store.get_document(document_id)
+    if document is None:
+        raise HTTPException(status_code=404, detail="document not found")
+    updated = document.model_copy(
+        update={"confluence_page_id": request.confluence_page_id, "qa_passed": request.passed}
+    )
+    await store.save_document(updated)
+    return QaStatusResponse(passed=updated.qa_passed)
+
+
+@router.get("/documents/by-page/{confluence_page_id}/qa-status", response_model=QaStatusResponse)
+async def get_qa_status_by_page(confluence_page_id: str) -> QaStatusResponse:
+    passed = await store.get_latest_qa_status_for_page(confluence_page_id)
+    return QaStatusResponse(passed=bool(passed))

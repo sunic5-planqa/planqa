@@ -6,6 +6,7 @@ import type {
   ExportDocumentResponse,
   IssueResponse,
   QAJobStatusResponse,
+  QaStatusResponse,
   SimilarityCheckResponse,
   UpdateIssueRequest,
   UpdateIssueResponse,
@@ -69,4 +70,16 @@ export const api = {
     }),
 
   getDocumentCount: () => request<DocumentCountResponse>('/documents/count'),
+
+  // confluencePageId를 문서에 붙여 "이 컨플루언스 페이지가 QA 통과했다"를 백엔드에 남긴다 —
+  // documentId는 세션마다 새로 생기는 UUID라 재방문 시 조회 키로 못 쓰므로, 조회는 항상
+  // getQaStatusByPage(pageId)로 한다.
+  updateQaStatus: (documentId: string, confluencePageId: string, passed: boolean) =>
+    request<QaStatusResponse>(`/documents/${documentId}/qa-status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ confluence_page_id: confluencePageId, passed }),
+    }),
+
+  getQaStatusByPage: (confluencePageId: string) =>
+    request<QaStatusResponse>(`/documents/by-page/${confluencePageId}/qa-status`),
 }

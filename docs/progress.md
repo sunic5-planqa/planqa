@@ -2772,3 +2772,40 @@ planqa-agent에서 손으로 만든 골든 케이스 5개(XDC-01~04 각 1개 + �
 ### 한계
 
 - n=5짜리 손으로 만든 케이스라 방향성 확인 수준 — 정식 recall/precision 벤치마크는 아님.
+
+## 2026-08-30 (계속) — documents/teams/team_rules에 Postgres 백엔드 추가 (Render 재배포 생존)
+
+`storage/store.py`가 지금까지 `documents`만 로컬 SQLite 파일로 저장하고 `teams`/`team_rules`는
+순수 메모리(dict)였다는 걸 발견 — Render 무료 플랜은 파일시스템이 휘발성이라, SQLite 파일도
+재배포마다 날아가고 팀 코드/팀 룰은 그보다 더 자주(백엔드 재시작마다) 날아가는 상태였음.
+
+### Done
+
+- `_SqliteBackend`(기존 로직 그대로 옮김) + 신규 `_PostgresBackend`(asyncpg) 두 백엔드를
+  `Store`가 `DATABASE_URL` 유무로 선택 — 설정 안 하면 기존과 100% 동일하게 로컬 SQLite 파일로
+  동작(로컬 개발/테스트는 DB 가입 없이 그대로 zero-config).
+- `teams`/`team_rules`도 SQLite/Postgres 양쪽에 테이블 추가 — `save_team_if_new`의 원자성은
+  이제 앱 레벨 `asyncio.Lock` 대신 DB의 PK 제약(sqlite `IntegrityError` / Postgres
+  `ON CONFLICT DO NOTHING`)이 보장.
+- Postgres 커넥션 풀은 `Store.__init__`이 아니라 첫 실제 호출 시 지연 생성(`_ensure_pool`,
+  `asyncio.Lock`으로 동시 첫 호출 가드) — `Store()`가 이벤트 루프 없는 모듈 임포트 시점에
+  동기적으로 생성되는 기존 구조를 안 건드리기 위함.
+- `config.py`에 `database_url: str = ""` 추가, `.env.example`/`render.yaml`에 `DATABASE_URL`
+  플레이스홀더 추가(`sync: false`, 실제 값은 Render 대시보드에서 직접 입력).
+- **테스트 격리 버그를 먼저 잡음**: `test_api_teams.py`의 `test_save_team_if_new_rejects_a_taken_code`가
+  고정 코드("RACE01")를 쓰는데, teams가 이제 SQLite 파일로 영속되면 pytest를 두 번째 돌릴 때부터
+  그 코드가 이미 존재해서 깨질 뻔함 — `backend/tests/conftest.py` 신규, 세션 시작 시 `store`
+  싱글턴의 `_backend`를 `tmp_path_factory`의 임시 파일로 교체(이름 재바인딩이 아니라 기존
+  객체를 mutate — 이미 `from ... import store`로 참조를 든 다른 모듈들도 그대로 반영됨).
+  연속 두 번 실행해서 재현 확인.
+- 신규 테스트 2개(`Store(dsn=None)`→SQLite, `Store(dsn="postgresql://...")`→Postgres 백엔드
+  선택, 후자는 실제 연결 없이 지연 생성만 확인). 백엔드 184/184 통과, `ruff check` 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: `_PostgresBackend`는 실제 Postgres(Neon)에 물려서 테스트한 적
+  없음 — 로컬 SQLite 경로와 같은 SQL 패턴으로 짰지만, 사용자가 Neon 계정 만들고
+  `DATABASE_URL`을 로컬 `.env`에 넣어서 한 번 직접 검증 필요.
+- Neon 무료 DB 만들고 `DATABASE_URL`을 로컬 `.env` + Render 대시보드 양쪽에 설정.
+- 기존 `backend/data/sunnic.db`에 있던 documents(있다면)는 마이그레이션 안 함 — 로컬 세션
+  데이터라 새 DB로 넘길 가치가 낮다고 판단.

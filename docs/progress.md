@@ -2830,3 +2830,25 @@ planqa-agent에서 손으로 만든 골든 케이스 5개(XDC-01~04 각 1개 + �
 ### Next
 
 - Render 대시보드에서 `DATABASE_URL` 직접 설정 필요(사용자).
+
+## 2026-08-31 (계속) — MI/AE 과탐지 검증 + fix_direction 쉬운 문구 재벤더링
+
+혜서 담당 작업(review-agent 쪽 2개, planqa-agent#49)이 `services/review-agent`에는 반영됐지만
+여긴(벤더링 사본) 아직이라 재벤더링. `_SCREEN_HYBRID_SYSTEM`/`_CONFIRM_HYBRID_SYSTEM`의
+2026-08-30 TEMP 한국어 강제 지시(gpt-5-mini 대응용, PR #119)는 벤더링 정책상 로컬 패치라
+그대로 유지 — 이번 재벤더링과 무관.
+
+### Done
+
+- `_MI_VERIFY_SYSTEM`/`_AE_VERIFY_SYSTEM`/`_verify_mi_finding`/`_verify_ae_finding`/
+  `_FALSE_POSITIVE_VERIFIERS`/`_verify_false_positives`를 XDC 섹션 앞에 추가,
+  `review_document()` 끝 dedupe 직후에 연결. `_CONFIRM_HYBRID_SYSTEM`의 `fix_direction`
+  지시에 "전문 용어 없이 비전문가가 바로 실행할 수 있는 문장으로" 추가.
+- 신규 테스트 9개 포팅(services/review-agent와 동일, ruff `C408` 지적으로 `dict(...)` →
+  리터럴만 차이).
+- 백엔드 193/193 통과(기존 184 + 신규 9), `ruff check` 통과.
+
+### Next
+
+- 실제 서비스에서 MI/AE 노출 개수가 회복되는지는 아직 미측정(planqa-agent 쪽도 동일하게
+  미측정 상태로 남아있음).

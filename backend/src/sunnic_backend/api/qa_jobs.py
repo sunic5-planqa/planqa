@@ -317,11 +317,10 @@ def _run_review_sync(
     # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
     #
     # bundled_screen_hybrid.review_document()이 screen_llm/confirm_llm을 각각 한 번씩 받는
-    # 구조라, GeminiClient가 review_agent의 LLMClient 프로토콜(complete_json)만 만족하면 그대로
-    # 끼워 넣을 수 있다 — instrumentation.isolate_client()도 GeminiClient에 .isolate()가 따로
-    # 없어서 AnthropicClient와 똑같이 copy.copy() + 새 usage 리스트로 안전하게 격리된다(코드 변경
-    # 불필요). 1차 스크리닝(저비용, over-flag 의도) = Gemini Flash-Lite, 2차 정밀검증(고비용,
-    # 정밀) = Sonnet은 그대로.
+    # 구조라, LLMClient 프로토콜(complete_json)만 만족하면 어느 백엔드든 그대로 끼워 넣을 수
+    # 있다 — instrumentation.isolate_client()도 별도 .isolate() 없이 copy.copy() + 새 usage
+    # 리스트로 안전하게 격리된다(코드 변경 불필요). 1차 스크리닝(저비용, over-flag 의도) = Gemini
+    # Flash-Lite, 2차 정밀검증(고비용, 정밀) = Sonnet이 정상 경로다.
     screen_llm = GeminiClient(model=settings.sunnic_gemini_model, api_keys=settings.gemini_api_keys)
     confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
     result = review_document(

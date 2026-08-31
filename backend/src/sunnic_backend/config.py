@@ -12,7 +12,13 @@ class Settings(BaseSettings):
     sunnic_sonnet_model: str = "claude-sonnet-5"
     sunnic_gemini_model: str = "gemini-flash-lite-latest"
     gemini_api_keys: Annotated[list[str], NoDecode] = []
+    openai_api_key: str = ""
+    sunnic_openai_model: str = "gpt-5-mini"
     allowed_origins: Annotated[list[str], NoDecode] = []
+    # Postgres connection string (Neon/Supabase/etc.) — set this so documents/teams/team_rules
+    # survive a redeploy (Render's free plan has an ephemeral filesystem). Unset by default: the
+    # store then falls back to a local SQLite file, zero-config for local dev/tests.
+    database_url: str = ""
 
     @field_validator("gemini_api_keys", mode="before")
     @classmethod

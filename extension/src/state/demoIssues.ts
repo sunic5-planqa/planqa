@@ -1,7 +1,7 @@
 import type { FrameType, IssueResponse, ParsedStructure } from '../api/types'
 
 // QA 엔진이 없는 동안, 지금 열려있는 실제 문서(모의 문서 포함) 안의 실제 문장을 그대로 골라 가짜 이슈를
-// 만든다. input_text가 원문과 정확히 같아야 인라인 오버레이(useIssueOverlaySync)가 어떤 컨플루언스
+// 만든다. input_text가 원문과 정확히 같아야 인라인 오버레이(useSuggestionOverlaySync)가 어떤 컨플루언스
 // 페이지에서도 하이라이트를 찾아낼 수 있다 — 고정 문구를 쓰던 이전 FIXTURE_ISSUES는 그 목적상
 // 특정 mock 문서에서만 동작했다.
 const MIN_SENTENCE_LENGTH = 8

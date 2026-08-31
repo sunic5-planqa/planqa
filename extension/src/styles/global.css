@@ -252,7 +252,7 @@ textarea {
   justify-content: center;
 }
 
-/* Figma의 "Overlay+Shadow" 푸터처럼 하단 고정 버튼이 필요한 화면(MainScreen, IssueListScreen 등)이
+/* Figma의 "Overlay+Shadow" 푸터처럼 하단 고정 버튼이 필요한 화면(MainScreen, SuggestionDetailScreen 등)이
    공용으로 쓰는 스크롤/푸터 분리 패턴. .screen이 .app(min-height:100vh) 안에서 flex:1로 남는 높이를
    차지하고, .screen-scroll(내용)과 .screen-footer(버튼)을 나눠서 내용이 길어져도 버튼은 항상 보이게
    한다. 이 클래스를 안 쓰는 화면은 기존과 동일하게 보임(flex:1이 있어도 내용 흐름 자체는 안 바뀜). */
@@ -424,29 +424,6 @@ textarea {
   gap: 10px;
 }
 
-.issue-fix-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  background: none;
-  border: none;
-  padding: 0;
-  font-size: 0.7rem;
-  font-weight: 600;
-  color: #000;
-  cursor: pointer;
-}
-
-.issue-fix-link-text {
-  text-decoration: underline;
-}
-
-.issue-fix-link-icon {
-  width: 11px;
-  height: 11px;
-  flex-shrink: 0;
-}
-
 /* 문장 전체를 다 그라데이션 처리하면 오히려 핵심(따옴표로 감싼 구체적 대안·인용구)이 안 보여서,
    그 부분만 .gradient-quote로 강조하고 나머지는 일반 텍스트로 둔다(검증이유도 동일). */
 .issue-suggestion-text {
@@ -556,20 +533,6 @@ textarea {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-}
-
-.issue-edit-notice {
-  margin: 0;
-  font-size: 0.75rem;
-  padding: 8px 12px;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--text-body);
-}
-
-.issue-edit-notice-error {
-  background: color-mix(in srgb, var(--danger) 16%, transparent);
-  color: var(--danger);
 }
 
 .issue-actions {
@@ -949,24 +912,611 @@ textarea {
   box-shadow: inset -3px 0 0 0 #c9a9ff;
 }
 
-.diff-original {
-  font-size: 0.72rem;
-  color: #b4b4bc;
-  text-decoration: line-through;
-}
-
-.diff-revised {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
+.diff-text {
   font-size: 0.78rem;
-  font-weight: 600;
   color: var(--text-heading);
+  line-height: 1.5;
 }
 
 .diff-revised-check {
   color: var(--accent);
+  font-weight: 600;
+  margin-right: 2px;
+}
+
+/* 문단 통짜 대비(회색 취소선 원본 + 굵은 수정본) 대신, 달라진 단어만 표시 — 지운 부분은
+   취소선, 추가된 부분은 배경 강조. */
+.diff-removed {
+  color: #b4b4bc;
+  text-decoration: line-through;
+}
+
+.diff-added {
+  background: #f3e8ff;
+  color: var(--text-heading);
+  font-weight: 600;
+  border-radius: 3px;
+  padding: 0 2px;
+}
+
+.diff-unchanged {
+  color: #b4b4bc;
+  font-style: italic;
+}
+
+/* ── Fix Suggestions 패널 (3a~3d) ───────────────────────────────────────────── */
+
+.btn-outline-pill {
+  border: 1px solid #dcd0f2;
+  color: #7b5bc4;
+  background: none;
+  border-radius: 26px;
+  padding: 14px 20px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  flex: none;
+}
+
+.source-badge {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 3px 7px;
+  border-radius: 5px;
+  font-size: 0.6rem;
+  font-weight: 600;
+}
+
+.source-badge-team {
+  background: #f1eaff;
+  color: #7b5bc4;
+}
+
+.source-badge-builtin {
+  background: #f1f0f5;
+  color: #8b8794;
+}
+
+/* 3a — 목록 */
+.suggestion-list-heading-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.suggestion-list-heading {
+  margin: 0;
+  font-size: 0.94rem;
+  font-weight: 700;
+  color: var(--text-heading);
+}
+
+.suggestion-list-count {
+  font-size: 0.72rem;
   font-weight: 400;
+  color: #a09dab;
+}
+
+.suggestion-list-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.suggestion-chip {
+  padding: 4px 10px;
+  border-radius: 20px;
+  font-size: 0.66rem;
+  font-weight: 600;
+}
+
+.suggestion-chip-team {
+  background: #f1eaff;
+  color: #7b5bc4;
+}
+
+.suggestion-chip-builtin {
+  background: #f1f0f5;
+  color: #8b8794;
+}
+
+.suggestion-list-progress-label {
+  margin: -8px 0 0;
+  font-size: 0.66rem;
+  font-weight: 400;
+  color: #a09dab;
+}
+
+.suggestion-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.suggestion-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid #efeaf7;
+  border-radius: 10px;
+  padding: 12px 13px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.suggestion-card-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.suggestion-card-rule-name {
+  font-size: 0.625rem;
+  font-weight: 500;
+  color: #8b8794;
+}
+
+.suggestion-card-skipped {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #a09dab;
+}
+
+.suggestion-card-title {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #2c2a33;
+}
+
+.suggestion-card-desc {
+  margin: 0;
+  font-size: 0.69rem;
+  font-weight: 400;
+  line-height: 1.6;
+  color: #8b8794;
+}
+
+/* 3b/3c — 상세 */
+.suggestion-detail-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.suggestion-detail-back-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #7b5bc4;
+  cursor: pointer;
+}
+
+.suggestion-detail-counter {
+  font-size: 0.69rem;
+  font-weight: 500;
+  color: #a09dab;
+}
+
+.suggestion-detail-completed-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.suggestion-detail-completed-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f2f9f4;
+  border: 1px solid #dcede2;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.suggestion-detail-completed-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #34a853;
+  color: #fff;
+  font-size: 0.6rem;
+  flex-shrink: 0;
+}
+
+.suggestion-detail-completed-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suggestion-detail-undo-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: #8b8794;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.suggestion-detail-current-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #fffcfe;
+  border: 1.5px solid #e3c9f5;
+  border-radius: 12px;
+  padding: 13px 14px;
+  box-shadow: 0 4px 14px rgba(201, 169, 255, 0.14);
+}
+
+.rule-evidence-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #f7f5fc;
+  border: 1px solid #e7e2f3;
+  border-radius: 10px;
+  padding: 13px 14px;
+}
+
+.rule-evidence-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.rule-evidence-rule-name {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #45424e;
+}
+
+.rule-evidence-team-badge {
+  margin-left: auto;
+  font-size: 0.63rem;
+  font-weight: 600;
+  color: #8b8794;
+}
+
+.rule-evidence-block {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.rule-evidence-label {
+  font-size: 0.625rem;
+  font-weight: 500;
+  color: #a09dab;
+}
+
+.rule-evidence-text {
+  margin: 0;
+  font-size: 0.69rem;
+  line-height: 1.65;
+  color: #45424e;
+}
+
+.suggestion-direction-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #f8f5fe;
+  border: 1.5px solid #c9a9ff;
+  border-radius: 8px;
+  padding: 12px 13px;
+}
+
+.suggestion-direction-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.suggestion-direction-text {
+  margin: 0;
+  font-size: 0.72rem;
+  line-height: 1.75;
+  color: #45424e;
+}
+
+.location-navigator {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #fbfafe;
+  border: 1px solid #efeaf7;
+  border-radius: 10px;
+  padding: 11px 12px;
+}
+
+.location-navigator-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.location-navigator-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.location-navigator-btn-prev {
+  background: #fff;
+  border: 1px solid #dcd0f2;
+  color: #7b5bc4;
+}
+
+.location-navigator-btn-next {
+  background: var(--accent-gradient);
+  border: none;
+  color: var(--accent-contrast);
+}
+
+/* prev/next 배경(그라디언트 포함)을 덮어써서 "관련 위치가 없다"가 opacity 하나에만 기대지 않고
+   또렷하게 회색 버튼으로 보이게 한다 — 이슈에 위치가 하나뿐일 때 버튼이 여전히 눌릴 것처럼
+   보인다는 보고(2026-08-30)에 대응. */
+.location-navigator-btn:disabled {
+  background: #ececef !important;
+  border-color: #ececef !important;
+  color: #b4b4bc !important;
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+.location-navigator-center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  text-align: center;
+}
+
+.location-navigator-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-heading);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.location-navigator-counter {
+  font-size: 0.625rem;
+  font-weight: 400;
+  color: #a09dab;
+}
+
+.location-navigator-steps {
+  display: flex;
+  gap: 4px;
+}
+
+.location-navigator-step {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: #e7dff6;
+}
+
+.location-navigator-step-active {
+  background: var(--accent-gradient);
+}
+
+.suggestion-detail-remaining-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.suggestion-detail-remaining-card {
+  background: #fff;
+  border: 1px solid #efeaf7;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #6e6b79;
+  text-align: left;
+  cursor: pointer;
+}
+
+.suggestion-detail-footer {
+  display: flex;
+  gap: 8px;
+}
+
+.suggestion-detail-footer .btn-cta {
+  flex: 1;
+}
+
+.skip-reason-prompt {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: #fbfafe;
+  border: 1px solid #efeaf7;
+  border-radius: 10px;
+  padding: 12px 13px;
+}
+
+/* 3d — 완료 요약 */
+.summary-mascot-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+  padding: 8px 0;
+}
+
+.mascot-summary {
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  background: var(--accent-gradient);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 4px;
+}
+
+.mascot-summary-body {
+  width: 30px;
+  height: 24px;
+  border-radius: 9px;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+
+.mascot-summary-eye {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #5b3fbf;
+}
+
+.summary-mascot-title {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-heading);
+}
+
+.summary-stats-row {
+  display: flex;
+  gap: 8px;
+}
+
+.summary-stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  border-radius: 10px;
+  padding: 12px 8px;
+}
+
+.summary-stat-done {
+  background: #f2f9f4;
+}
+
+.summary-stat-skipped {
+  background: #fbfafe;
+}
+
+.summary-stat-number {
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+.summary-stat-done .summary-stat-number {
+  color: #34a853;
+}
+
+.summary-stat-skipped .summary-stat-number {
+  color: #7b5bc4;
+}
+
+.summary-stat-label {
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: #6e6b79;
+}
+
+.compliance-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.compliance-heading {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-heading);
+}
+
+.compliance-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f7f5fc;
+  border-radius: 8px;
+  padding: 9px 12px;
+}
+
+.compliance-row-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #45424e;
+}
+
+.compliance-row-count {
+  font-size: 0.69rem;
+  font-weight: 600;
+  color: #34a853;
+}
+
+.summary-skipped-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #fbfafe;
+  border: 1px solid #efeaf7;
+  border-radius: 10px;
+  padding: 12px 14px;
+  font: inherit;
+  cursor: pointer;
+  color: var(--text-heading);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.summary-skipped-link {
+  color: #7b5bc4;
+  font-weight: 700;
+}
+
+.suggestion-summary-footer {
+  display: flex;
+  gap: 8px;
+}
+
+.suggestion-summary-footer .btn-cta {
+  flex: 1;
 }
 
 /* ---- Rule section (MainScreen) + 팀 규칙 관리 ---- */

@@ -3,6 +3,7 @@ import { HistoryExportScreen } from '../components/screens/HistoryExportScreen'
 import { IssueListScreen } from '../components/screens/IssueListScreen'
 import { LoadingScreen } from '../components/screens/LoadingScreen'
 import { MainScreen } from '../components/screens/MainScreen'
+import { NumberingCheckScreen } from '../components/screens/NumberingCheckScreen'
 import { ProgressScreen } from '../components/screens/ProgressScreen'
 import { TeamRulesScreen } from '../components/screens/TeamRulesScreen'
 import { useIssueOverlaySync } from '../hooks/useIssueOverlaySync'
@@ -19,6 +20,7 @@ export function App() {
       {screen === 'loading' && <LoadingScreen />}
       {screen === 'progress' && <ProgressScreen />}
       {screen === 'issues' && <IssueListScreen />}
+      {screen === 'numbering-check' && <NumberingCheckScreen />}
       {screen === 'history' && <HistoryExportScreen />}
       {screen === 'team-rules' && <TeamRulesScreen />}
     </main>

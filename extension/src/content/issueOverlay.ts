@@ -3,6 +3,8 @@ import type {
   ApplyIssueEditResponse,
   ClearIssueOverlayRequest,
   ClearIssueOverlayResponse,
+  GetActiveDuplicatePageRequest,
+  GetActiveDuplicatePageResponse,
   IssueOverlayFocusMessage,
   OverlayIssue,
   ScrollToIssueRequest,
@@ -555,6 +557,12 @@ export function __resetDuplicateSessionForTests(): void {
   duplicateSession = null
 }
 
+// 사이드패널이 "지금 리뷰 중 수정이 실제로 쌓이고 있는 페이지"를 알아야 할 때(예: 넘버링 재검증 전
+// 최신 본문을 다시 읽어올 때) 쓴다 — 아직 한 건도 적용 안 했으면 복제본이 없으므로 null.
+export function getActiveDuplicatePageId(): string | null {
+  return duplicateSession?.pageId ?? null
+}
+
 // timeZone: 'Asia/Seoul'을 명시한 toLocaleString도 실제 서비스 환경에서 여전히 몇 시간씩
 // 어긋난다는 보고가 있었다(Intl 구현/브라우저 설정에 따라 달라질 수 있는 여지가 남아있는 듯) —
 // 그래서 Intl에 아예 기대지 않는 방식으로 바꾼다. Date.getTime()의 epoch ms는 시간대와 무관한
@@ -652,8 +660,18 @@ export function scrollToIssue(issueId: string): boolean {
   return true
 }
 
-type OverlayRequest = ShowIssueOverlayRequest | ClearIssueOverlayRequest | ApplyIssueEditRequest | ScrollToIssueRequest
-type OverlayResponse = ShowIssueOverlayResponse | ClearIssueOverlayResponse | ApplyIssueEditResponse | ScrollToIssueResponse
+type OverlayRequest =
+  | ShowIssueOverlayRequest
+  | ClearIssueOverlayRequest
+  | ApplyIssueEditRequest
+  | ScrollToIssueRequest
+  | GetActiveDuplicatePageRequest
+type OverlayResponse =
+  | ShowIssueOverlayResponse
+  | ClearIssueOverlayResponse
+  | ApplyIssueEditResponse
+  | ScrollToIssueResponse
+  | GetActiveDuplicatePageResponse
 
 chrome.runtime.onMessage.addListener(
   (message: OverlayRequest, _sender, sendResponse: (response: OverlayResponse) => void) => {
@@ -672,6 +690,10 @@ chrome.runtime.onMessage.addListener(
     }
     if (message.type === 'APPLY_ISSUE_EDIT') {
       void applyIssueEdit(message.issueId, message.oldText, message.newText).then(sendResponse)
+      return true
+    }
+    if (message.type === 'GET_ACTIVE_DUPLICATE_PAGE') {
+      sendResponse({ ok: true, pageId: getActiveDuplicatePageId() })
       return true
     }
     return undefined

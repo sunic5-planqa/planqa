@@ -1,13 +1,14 @@
 import type {
   IssueAction,
   IssueResponse,
+  NumberingIssueResponse,
   ParsedStructure,
   QAJobStatusResponse,
   RulebookCategoryResponse,
   TeamRuleResponse,
 } from '../api/types'
 
-export type Screen = 'main' | 'loading' | 'progress' | 'issues' | 'history' | 'team-rules'
+export type Screen = 'main' | 'loading' | 'progress' | 'issues' | 'history' | 'team-rules' | 'numbering-check'
 
 export type ConfluenceStatus = 'idle' | 'detecting' | 'detected' | 'not_confluence' | 'error'
 
@@ -52,6 +53,7 @@ export interface AppState {
   jobId: string | null
   jobStatus: QAJobStatusResponse | null
   issues: IssueResponse[]
+  numberingIssues: NumberingIssueResponse[]
   currentIssueIndex: number
   issueEdits: Record<string, IssueEdit>
   editingIssueId: string | null
@@ -85,6 +87,7 @@ export const initialAppState: AppState = {
   jobId: null,
   jobStatus: null,
   issues: [],
+  numberingIssues: [],
   currentIssueIndex: 0,
   issueEdits: {},
   editingIssueId: null,

@@ -1,5 +1,6 @@
 import { ApiError, NotImplementedError } from './errors'
 import type {
+  AppliedNumberingFix,
   CreateDocumentResponse,
   CreateQAJobRequest,
   CreateQAJobResponse,
@@ -7,6 +8,7 @@ import type {
   DocumentCountResponse,
   ExportDocumentResponse,
   IssueResponse,
+  NumberingIssueResponse,
   QAJobStatusResponse,
   RulebookCategoryResponse,
   SimilarityCheckResponse,
@@ -43,12 +45,27 @@ export const api = {
 
   createQAJob: (documentId: string, teamCode?: string | null) => {
     const body: CreateQAJobRequest = { team_code: teamCode ?? null }
-    return request<CreateQAJobResponse>(`/documents/${documentId}/qa-jobs`, { method: 'POST', body: JSON.stringify(body) })
+    return request<CreateQAJobResponse>(`/documents/${documentId}/qa-jobs`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
   },
 
   getQAJobStatus: (jobId: string) => request<QAJobStatusResponse>(`/qa-jobs/${jobId}/status`),
 
   listQAJobIssues: (jobId: string) => request<IssueResponse[]>(`/qa-jobs/${jobId}/issues`),
+
+  getNumberingIssues: (jobId: string, rawText: string) =>
+    request<NumberingIssueResponse[]>(`/qa-jobs/${jobId}/numbering-issues`, {
+      method: 'POST',
+      body: JSON.stringify({ raw_text: rawText }),
+    }),
+
+  applyNumberingFixes: (jobId: string, applied: AppliedNumberingFix[]) =>
+    request<NumberingIssueResponse[]>(`/qa-jobs/${jobId}/numbering-issues/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ applied }),
+    }),
 
   updateIssue: (issueId: string, body: UpdateIssueRequest) =>
     request<UpdateIssueResponse>(`/issues/${issueId}`, {

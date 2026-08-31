@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { IssueResponse, TeamRuleResponse } from '../api/types'
+import type { IssueResponse, NumberingIssueResponse, TeamRuleResponse } from '../api/types'
 import { appReducer } from './appReducer'
 import { initialAppState } from './types'
 
@@ -31,7 +31,6 @@ describe('appReducer', () => {
     expect(state.issueEdits).toEqual({})
     expect(state.screen).toBe('issues')
   })
-
 
   // 관계형(LG/LF/GA) 이슈는 두 위치를 독립적으로 편집·저장할 수 있어야 한다 — 한쪽을 저장할 때
   // 다른 쪽에 이미 저장해둔 걸 지워버리면 안 된다.
@@ -79,6 +78,25 @@ describe('appReducer', () => {
       editedText: '첫 번째 위치 수정본',
       relatedEditedText: '두 번째 위치 수정본',
     })
+  })
+
+  it('NUMBERING_ISSUES_LOADED stores the issues and switches to the numbering-check screen', () => {
+    const issues: NumberingIssueResponse[] = [
+      {
+        id: 'n1',
+        status: 'auto',
+        sub_type: 'missing',
+        location: '3. 해결 방안',
+        problem: '번호 누락',
+        before_text: '4. 해결 방안',
+        after_text: '3. 해결 방안',
+      },
+    ]
+
+    const state = appReducer({ ...initialAppState, screen: 'issues' }, { type: 'NUMBERING_ISSUES_LOADED', issues })
+
+    expect(state.numberingIssues).toEqual(issues)
+    expect(state.screen).toBe('numbering-check')
   })
 
   it('CONFLUENCE_DETECTED sets title, markdown, and status', () => {

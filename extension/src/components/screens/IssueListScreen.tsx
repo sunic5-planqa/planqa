@@ -1,7 +1,14 @@
 import { useState } from 'react'
 import { api } from '../../api/client'
 import { NotImplementedError } from '../../api/errors'
-import type { ApplyIssueEditRequest, ApplyIssueEditResponse } from '../../content/messages'
+import type {
+  ApplyIssueEditRequest,
+  ApplyIssueEditResponse,
+  FetchPageMarkdownRequest,
+  FetchPageMarkdownResponse,
+  GetActiveDuplicatePageRequest,
+  GetActiveDuplicatePageResponse,
+} from '../../content/messages'
 import { OverviewPanel } from '../issues/OverviewPanel'
 import { isIssueLikelyResolved } from '../../state/editValidation'
 import { useAppDispatch, useAppState } from '../../state/hooks'
@@ -12,11 +19,60 @@ import { formatLocationLabel } from '../../utils/locationLabel'
 const RESOLVED_ACTIONS = new Set(['apply', 'edit'])
 
 export function IssueListScreen() {
-  const { issues, currentIssueIndex, issueEdits, editingIssueId } = useAppState()
+  const { issues, currentIssueIndex, issueEdits, editingIssueId, jobId, confluenceMarkdown } = useAppState()
   const dispatch = useAppDispatch()
 
   const resolvedCount = issues.filter((i) => RESOLVED_ACTIONS.has(issueEdits[i.id]?.action ?? '')).length
   const remainingCount = issues.length - resolvedCount
+
+  const [finishingQA, setFinishingQA] = useState(false)
+
+  // 넘버링 검증은 AI QA와 별개 영역이라 여기서 새로 조회한다. AI QA 리뷰 중 적용한 수정은 원본이
+  // 아니라 별도 "복제본" 페이지에 쌓이므로(원본은 절대 안 건드림), 복제본이 있으면 그 최신 내용을
+  // 가져와 검증하고, 아직 복제본이 없으면(= 아무 수정도 적용 안 했으면) 원본과 동일한 기존
+  // confluenceMarkdown을 그대로 쓴다. 오류가 없거나 조회 자체가 실패하면(유사도체크와 동일한
+  // "안전장치일 뿐 필수 게이트 아님" 철학) 지금까지처럼 곧장 검토 종료 화면으로 보내고, 오류가
+  // 있을 때만 넘버링 확인 화면으로 분기한다.
+  const finishQA = async () => {
+    if (!jobId) {
+      dispatch({ type: 'NAVIGATE', screen: 'history' })
+      return
+    }
+    setFinishingQA(true)
+    try {
+      let freshText = confluenceMarkdown
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+      if (tab.id) {
+        const dupResponse = await chrome.tabs.sendMessage<GetActiveDuplicatePageRequest, GetActiveDuplicatePageResponse>(
+          tab.id,
+          { type: 'GET_ACTIVE_DUPLICATE_PAGE' },
+        )
+        if (dupResponse.ok && dupResponse.pageId) {
+          const pageResponse = await chrome.tabs.sendMessage<FetchPageMarkdownRequest, FetchPageMarkdownResponse>(
+            tab.id,
+            { type: 'FETCH_PAGE_MARKDOWN', pageId: dupResponse.pageId },
+          )
+          if (pageResponse.ok) freshText = pageResponse.markdown
+        }
+      }
+
+      if (!freshText) {
+        dispatch({ type: 'NAVIGATE', screen: 'history' })
+        return
+      }
+
+      const numberingIssues = await api.getNumberingIssues(jobId, freshText)
+      if (numberingIssues.length === 0) {
+        dispatch({ type: 'NAVIGATE', screen: 'history' })
+      } else {
+        dispatch({ type: 'NUMBERING_ISSUES_LOADED', issues: numberingIssues })
+      }
+    } catch {
+      dispatch({ type: 'NAVIGATE', screen: 'history' })
+    } finally {
+      setFinishingQA(false)
+    }
+  }
 
   const issue = issues[currentIssueIndex]
   // insert_range(MI=정보 누락)는 "원문을 AI 제안으로 교체"할 대상 자체가 없다 — input_text가
@@ -44,7 +100,9 @@ export function IssueListScreen() {
     return (
       <div className="screen issue-list-screen">
         <p>발견된 이슈가 없습니다.</p>
-        <Button onClick={() => dispatch({ type: 'NAVIGATE', screen: 'history' })}>다음</Button>
+        <Button onClick={() => void finishQA()} disabled={finishingQA}>
+          다음
+        </Button>
       </div>
     )
   }
@@ -60,9 +118,8 @@ export function IssueListScreen() {
   const isEditingPrimary = isEditing && editingTarget === 'primary'
   const isEditingRelated = isEditing && editingTarget === 'related'
   const draftText = draft?.issueId === issue.id && draft.target === 'primary' ? draft.text : suggestion
-  const relatedDraftText =
-    draft?.issueId === issue.id && draft.target === 'related' ? draft.text : relatedSuggestion
-  const activeOldText = editingTarget === 'related' ? issue.related_original_text ?? '' : issue.input_text
+  const relatedDraftText = draft?.issueId === issue.id && draft.target === 'related' ? draft.text : relatedSuggestion
+  const activeOldText = editingTarget === 'related' ? (issue.related_original_text ?? '') : issue.input_text
   const activeDraftText = editingTarget === 'related' ? relatedDraftText : draftText
   const issueLikelyResolved = isEditing ? isIssueLikelyResolved(activeOldText, activeDraftText) : true
 
@@ -245,8 +302,8 @@ export function IssueListScreen() {
             )}
             {isInsertRangeIssue && (
               <p className="issue-suggestion-hint">
-                문서에 없는 내용을 추가하라는 안내라, 자동으로 반영할 수 없어요. 문서에서 표시된
-                위치를 직접 확인하고 반영해주세요.
+                문서에 없는 내용을 추가하라는 안내라, 자동으로 반영할 수 없어요. 문서에서 표시된 위치를 직접 확인하고
+                반영해주세요.
               </p>
             )}
           </div>
@@ -329,7 +386,11 @@ export function IssueListScreen() {
               {'< 이전'}
             </button>
             {currentIssueIndex < issues.length - 1 && (
-              <button type="button" className="issue-nav-next" onClick={() => dispatch({ type: 'NAVIGATE_ISSUE', direction: 'next' })}>
+              <button
+                type="button"
+                className="issue-nav-next"
+                onClick={() => dispatch({ type: 'NAVIGATE_ISSUE', direction: 'next' })}
+              >
                 {'다음 >'}
               </button>
             )}
@@ -342,13 +403,15 @@ export function IssueListScreen() {
           </p>
         )}
         {isEditing && similarityWarning && (
-          <p className="issue-edit-notice">{similarityWarning} 의도한 수정이 맞으면 "수정 저장"을 한 번 더 눌러주세요.</p>
+          <p className="issue-edit-notice">
+            {similarityWarning} 의도한 수정이 맞으면 "수정 저장"을 한 번 더 눌러주세요.
+          </p>
         )}
         {isEditing && saveError && <p className="issue-edit-notice issue-edit-notice-error">{saveError}</p>}
       </div>
 
       <div className="screen-footer">
-        <Button className="btn-cta" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'history' })}>
+        <Button className="btn-cta" onClick={() => void finishQA()} disabled={finishingQA}>
           QA 완료
         </Button>
       </div>

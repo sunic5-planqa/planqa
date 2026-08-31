@@ -86,3 +86,12 @@ export interface ScrollToIssueRequest {
 export interface ScrollToIssueResponse {
   ok: boolean
 }
+
+// 사이드패널 → content script: QA 리뷰 중 실제 수정이 저장되고 있는 "복제본" 페이지의 id를 물어본다.
+// 아직 한 건도 적용한 적이 없으면(복제본이 아직 안 만들어졌으면) pageId는 null — 그럴 땐 원본과
+// 지금 백엔드가 들고 있는 텍스트가 아직 같으므로 재조회할 필요가 없다는 신호로 쓴다.
+export interface GetActiveDuplicatePageRequest {
+  type: 'GET_ACTIVE_DUPLICATE_PAGE'
+}
+
+export type GetActiveDuplicatePageResponse = { ok: true; pageId: string | null }

@@ -5,6 +5,7 @@ import {
   applyIssueOverlay,
   clearIssueOverlay,
   formatKstTimestamp,
+  getActiveDuplicatePageId,
   scrollToIssue,
 } from './issueOverlay'
 import type { OverlayIssue } from './messages'
@@ -536,6 +537,21 @@ describe('applyIssueEdit', () => {
     expect(putBody.body.storage.value).toBe(
       `<li><p><strong>${newText}</strong><br /> 홈&rarr;장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>`,
     )
+  })
+})
+
+describe('getActiveDuplicatePageId', () => {
+  it('returns null before any edit has been applied (no duplicate created yet)', () => {
+    expect(getActiveDuplicatePageId()).toBeNull()
+  })
+
+  it('returns the duplicate page id once an edit has been applied', async () => {
+    stubConfluenceFetch()
+    applyIssueOverlay([ISSUE])
+
+    await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+
+    expect(getActiveDuplicatePageId()).toBe(DUPLICATE_PAGE_ID)
   })
 })
 

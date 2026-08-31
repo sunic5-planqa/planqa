@@ -1,6 +1,7 @@
 import type {
   IssueAction,
   IssueResponse,
+  NumberingIssueResponse,
   ParsedStructure,
   QAJobStatusResponse,
   RulebookCategoryResponse,
@@ -14,13 +15,20 @@ export type Action =
   | { type: 'JOB_STARTED'; jobId: string }
   | { type: 'JOB_STATUS_UPDATED'; status: QAJobStatusResponse }
   | { type: 'ISSUES_LOADED'; issues: IssueResponse[] }
+  | { type: 'NUMBERING_ISSUES_LOADED'; issues: NumberingIssueResponse[] }
   | { type: 'QA_ENGINE_UNAVAILABLE' }
   | { type: 'NAVIGATE'; screen: Screen }
   | { type: 'NAVIGATE_ISSUE'; direction: 'prev' | 'next' }
   | { type: 'SELECT_ISSUE_BY_ID'; issueId: string }
   | { type: 'START_EDIT_ISSUE'; issueId: string }
   | { type: 'STOP_EDIT_ISSUE' }
-  | { type: 'STAGE_ISSUE_EDIT'; issueId: string; action: IssueAction; target?: 'primary' | 'related'; editedText?: string }
+  | {
+      type: 'STAGE_ISSUE_EDIT'
+      issueId: string
+      action: IssueAction
+      target?: 'primary' | 'related'
+      editedText?: string
+    }
   | { type: 'SET_ERROR'; error: string | null }
   | { type: 'CONFLUENCE_DETECT_START' }
   | { type: 'CONFLUENCE_DETECTED'; title: string; markdown: string }
@@ -51,7 +59,19 @@ export function appReducer(state: AppState, action: Action): AppState {
       return { ...state, jobStatus: action.status }
 
     case 'ISSUES_LOADED':
-      return { ...state, issues: action.issues, currentIssueIndex: 0, editingIssueId: null, issueEdits: {}, screen: 'issues' }
+      return {
+        ...state,
+        issues: action.issues,
+        currentIssueIndex: 0,
+        editingIssueId: null,
+        issueEdits: {},
+        screen: 'issues',
+      }
+
+    // 넘버링 오류가 하나도 없을 때는 이 액션을 아예 dispatch하지 않고 곧장 NAVIGATE 'history'로
+    // 보낸다(호출부 책임) — 이 케이스는 오류가 있을 때(최초 진입/적용 후 재검증 둘 다)만 쓰인다.
+    case 'NUMBERING_ISSUES_LOADED':
+      return { ...state, numberingIssues: action.issues, screen: 'numbering-check' }
 
     case 'QA_ENGINE_UNAVAILABLE':
       return { ...state, qaEngineUnavailable: true }

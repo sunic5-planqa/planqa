@@ -2803,9 +2803,30 @@ planqa-agent에서 손으로 만든 골든 케이스 5개(XDC-01~04 각 1개 + �
 
 ### Next
 
-- **Claude가 검증 불가능한 것**: `_PostgresBackend`는 실제 Postgres(Neon)에 물려서 테스트한 적
-  없음 — 로컬 SQLite 경로와 같은 SQL 패턴으로 짰지만, 사용자가 Neon 계정 만들고
-  `DATABASE_URL`을 로컬 `.env`에 넣어서 한 번 직접 검증 필요.
-- Neon 무료 DB 만들고 `DATABASE_URL`을 로컬 `.env` + Render 대시보드 양쪽에 설정.
 - 기존 `backend/data/sunnic.db`에 있던 documents(있다면)는 마이그레이션 안 함 — 로컬 세션
   데이터라 새 DB로 넘길 가치가 낮다고 판단.
+
+## 2026-08-31 — Neon 연결 + `_PostgresBackend` 라이브 검증
+
+`neondatabase/agent-skills`(neon, neon-postgres)를 설치하고 Neon CLI로 사용자 계정(org 가영,
+프로젝트 `flat-thunder-85545282`)에 연결 — 지난 세션에서 미검증으로 남겨뒀던
+`_PostgresBackend`를 실제 Neon Postgres에 물려서 확인했다.
+
+### Done
+
+- Node 20(시스템 기본)이 `skills` CLI 요구 버전(≥22.20)보다 낮아서 `brew install node@22`로
+  별도 설치(keg-only라 기본 `node`는 안 건드림) 후 그 PATH로 skills/neon CLI 실행.
+- `neon auth`로 브라우저 OAuth 인증(사용자가 직접 로그인) → `neon connection-string --pooled`로
+  `flat-thunder-85545282` 프로젝트의 pooled 연결 문자열 확보 — 웹앱 정상 트래픽용이라 pooled
+  선택(`neon-postgres` 스킬의 pooled vs direct 가이드대로, 마이그레이션/직접 세션이 필요한
+  작업이 아님).
+- 로컬 `backend/.env`에 `DATABASE_URL` 추가(Render 대시보드는 사용자가 직접 설정 필요 —
+  API/CLI로 Render 쪽 접근 권한 없음).
+- **라이브 검증**: `Store(dsn=settings.database_url)`로 실제 `_PostgresBackend` 생성 →
+  `save_team_if_new`/`get_team`/중복 방지까지 실제 Neon에 테이블 생성부터 전부 확인 후 테스트
+  행 정리. `pytest`는 `conftest.py`의 임시 SQLite 격리 덕분에 `.env`에 진짜
+  `DATABASE_URL`이 있어도 실제 Neon을 안 건드리고 184/184 그대로 통과 확인.
+
+### Next
+
+- Render 대시보드에서 `DATABASE_URL` 직접 설정 필요(사용자).

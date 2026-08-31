@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     sunnic_openai_model: str = "gpt-5-mini"
     allowed_origins: Annotated[list[str], NoDecode] = []
+    # Postgres connection string (Neon/Supabase/etc.) — set this so documents/teams/team_rules
+    # survive a redeploy (Render's free plan has an ephemeral filesystem). Unset by default: the
+    # store then falls back to a local SQLite file, zero-config for local dev/tests.
+    database_url: str = ""
 
     @field_validator("gemini_api_keys", mode="before")
     @classmethod

@@ -631,6 +631,38 @@ function overwriteMarkText(issueId: string, newText: string): void {
   marksByIssueId.set(issueId, [first])
 }
 
+// backend qa_engine/numbering_validation.py의 _NUMBER_RE, extension/src/utils/locationLabel.ts의
+// LEADING_NUMBER_RE와 동일한 조건 — 헤딩 텍스트 맨 앞의 "번호" 세그먼트만 골라낸다.
+const LEADING_NUMBER_RE = /^\s*\d+(?:[-.]\d+)*[.\s]+/
+
+// 넘버링 이슈는 SHOW_ISSUE_OVERLAY로 하이라이트(mark)된 적이 없어서(애초에 AI 이슈가 아니라 이
+// 대상 자체가 아님) overwriteMarkText가 아무 것도 못 찾는다 — 저장은 복제본에 성공해도 지금 보고
+// 있는 원본 화면엔 아무 변화가 없어 "반영이 안 됐다"는 오인 보고로 이어졌다(실사용 확인됨). oldText/
+// newText는 헤딩 텍스트 전체지만 실제로 다른 부분은 맨 앞 번호뿐이므로(백엔드 _replace_number와
+// 동일 전제), 헤딩을 통째로 갈아치우지 않고 그 헤딩의 첫 텍스트 노드에서 번호 접두어만 치환한다 —
+// 강조/링크 등 인라인 마크업이 번호 뒤에 있어도(예: "4. 해결 <strong>방안</strong>") 안전하다.
+// 조건이 안 맞으면(번호를 못 뽑았거나, 헤딩을 못 찾았거나, 첫 텍스트 노드가 그 번호로 시작하지
+// 않으면) 조용히 포기한다 — 실제 저장(복제본)엔 영향 없는 순수 로컬 표시라 실패해도 안전하다.
+function overwriteHeadingTextInDom(oldText: string, newText: string): void {
+  const oldNumber = LEADING_NUMBER_RE.exec(oldText)?.[0]
+  const newNumber = LEADING_NUMBER_RE.exec(newText)?.[0]
+  if (!oldNumber || !newNumber) return
+
+  const target = normalizeHeadingText(oldText)
+  const heading = Array.from(document.querySelectorAll<HTMLElement>('h2, h3, h4, h5, h6')).find(
+    (h) => !isInsideOverlayNode(h) && normalizeHeadingText(h.textContent ?? '') === target,
+  )
+  if (!heading) return
+
+  const walker = document.createTreeWalker(heading, NodeFilter.SHOW_TEXT)
+  const first = walker.nextNode() as Text | null
+  if (!first) return
+
+  const prefixMatch = new RegExp(`^${buildLooseTextRegex(oldNumber).source}`).exec(first.data)
+  if (!prefixMatch) return
+  first.data = newNumber + first.data.slice(prefixMatch[0].length)
+}
+
 export async function applyIssueEdit(issueId: string, oldText: string, newText: string): Promise<ApplyIssueEditResponse> {
   const originalPageId = extractPageId(location.href)
   if (!originalPageId) return { ok: false, error: '컨플루언스 문서 URL이 아니라 복제본을 만들 수 없습니다.' }
@@ -642,6 +674,7 @@ export async function applyIssueEdit(issueId: string, oldText: string, newText: 
   if (!result.ok) return result
 
   overwriteMarkText(issueId, newText)
+  overwriteHeadingTextInDom(oldText, newText)
   for (const mark of marksByIssueId.get(issueId) ?? []) mark.classList.add(RESOLVED_CLASS)
   closeTooltip()
   return { ok: true }
@@ -693,7 +726,7 @@ chrome.runtime.onMessage.addListener(
       return true
     }
     if (message.type === 'GET_ACTIVE_DUPLICATE_PAGE') {
-      sendResponse({ ok: true, pageId: getActiveDuplicatePageId() })
+      sendResponse({ ok: true, pageId: getActiveDuplicatePageId(), originalPageId: extractPageId(location.href) })
       return true
     }
     return undefined

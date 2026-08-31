@@ -538,6 +538,43 @@ describe('applyIssueEdit', () => {
       `<li><p><strong>${newText}</strong><br /> 홈&rarr;장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>`,
     )
   })
+
+  it('overwrites the heading text directly in the live DOM when the edit targets a heading (numbering fixes have no highlight mark)', async () => {
+    // 넘버링 이슈는 applyIssueOverlay로 하이라이트된 적이 없어(overwriteMarkText가 못 찾음),
+    // 저장이 복제본에 성공해도 지금 보고 있는 화면엔 아무 변화가 없어 "반영 안 됐다"는 오인으로
+    // 이어졌다(실사용 확인) — 헤딩 텍스트를 직접 찾아 로컬로 덮어써야 한다.
+    document.body.innerHTML = '<main><h2>4. 해결 방안</h2><p>본문</p></main>'
+    const fetchMock = stubConfluenceFetch({ duplicateBody: '<h2>4. 해결 방안</h2><p>본문</p>' })
+
+    const result = await applyIssueEdit('numbering-issue-1', '4. 해결 방안', '3. 해결 방안')
+
+    expect(result).toEqual({ ok: true })
+    expect(document.querySelector('h2')?.textContent).toBe('3. 해결 방안')
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    expect(putBody.body.storage.value).toBe('<h2>3. 해결 방안</h2><p>본문</p>')
+  })
+
+  it('preserves inline markup inside the heading when only the number segment differs', async () => {
+    document.body.innerHTML = '<main><h2>4. 해결 <strong>방안</strong></h2></main>'
+    stubConfluenceFetch({ duplicateBody: '<h2>4. 해결 <strong>방안</strong></h2>' })
+
+    const result = await applyIssueEdit('numbering-issue-2', '4. 해결 방안', '3. 해결 방안')
+
+    expect(result).toEqual({ ok: true })
+    expect(document.querySelector('h2')?.textContent).toBe('3. 해결 방안')
+    expect(document.querySelector('h2 strong')).not.toBeNull()
+  })
+
+  it('does not throw and leaves the DOM untouched when no heading matches oldText', async () => {
+    document.body.innerHTML = '<main><h2>다른 제목</h2></main>'
+    stubConfluenceFetch({ duplicateBody: '<p>4. 해결 방안</p>' })
+
+    const result = await applyIssueEdit('numbering-issue-3', '4. 해결 방안', '3. 해결 방안')
+
+    expect(result).toEqual({ ok: true })
+    expect(document.querySelector('h2')?.textContent).toBe('다른 제목')
+  })
 })
 
 describe('getActiveDuplicatePageId', () => {

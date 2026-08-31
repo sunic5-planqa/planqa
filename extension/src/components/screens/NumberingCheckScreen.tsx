@@ -34,52 +34,52 @@ export function NumberingCheckScreen() {
     })
   }
 
-  const skipAndFinish = () => {
-    dispatch({ type: 'NAVIGATE', screen: 'history' })
-  }
-
   const applySelected = async () => {
     if (!jobId) return
+
+    // 체크된(그리고 실제로 적용 가능한) 항목이 하나도 없으면 "수정하지 않고 종료"와 동일 —
+    // 문서가 안 바뀌니 재검증 없이 곧장 검토를 마친다.
+    const toApply = numberingIssues.filter((item) => checkedIds.has(item.id) && item.after_text !== null)
+    if (toApply.length === 0) {
+      dispatch({ type: 'NAVIGATE', screen: 'history' })
+      return
+    }
+
     setApplying(true)
     setTopError(null)
 
-    const toApply = numberingIssues.filter((item) => checkedIds.has(item.id) && item.after_text !== null)
     const newRowErrors: Record<string, string> = {}
     const appliedFixes: AppliedNumberingFix[] = []
 
-    if (toApply.length > 0) {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-      if (!tab.id) {
-        setTopError('컨플루언스 탭을 찾을 수 없습니다.')
-        setApplying(false)
-        return
-      }
-      for (const item of toApply) {
-        try {
-          const response = await chrome.tabs.sendMessage<ApplyIssueEditRequest, ApplyIssueEditResponse>(tab.id, {
-            type: 'APPLY_ISSUE_EDIT',
-            issueId: item.id,
-            oldText: item.before_text,
-            newText: item.after_text as string,
-          })
-          if (response.ok) {
-            appliedFixes.push({ before_text: item.before_text, after_text: item.after_text as string })
-          } else {
-            newRowErrors[item.id] = response.error
-          }
-        } catch (err) {
-          newRowErrors[item.id] = err instanceof Error ? err.message : String(err)
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (!tab.id) {
+      setTopError('컨플루언스 탭을 찾을 수 없습니다.')
+      setApplying(false)
+      return
+    }
+    for (const item of toApply) {
+      try {
+        const response = await chrome.tabs.sendMessage<ApplyIssueEditRequest, ApplyIssueEditResponse>(tab.id, {
+          type: 'APPLY_ISSUE_EDIT',
+          issueId: item.id,
+          oldText: item.before_text,
+          newText: item.after_text as string,
+        })
+        if (response.ok) {
+          appliedFixes.push({ before_text: item.before_text, after_text: item.after_text as string })
+        } else {
+          newRowErrors[item.id] = response.error
         }
+      } catch (err) {
+        newRowErrors[item.id] = err instanceof Error ? err.message : String(err)
       }
     }
 
-    // 아무것도 실제로 반영되지 않았으면(선택 자체가 없었거나 전부 실패) 재검증할 이유가 없다 —
+    // 반영 시도가 전부 실패했으면(선택은 했지만 아무것도 안 먹혔으면) 재검증할 이유가 없다 —
     // 문서가 안 바뀌었으니 지금 보이는 목록이 곧 최신 상태다.
     if (appliedFixes.length === 0) {
       setRowErrors(newRowErrors)
-      if (Object.keys(newRowErrors).length > 0) {
-        setTopError(`${Object.keys(newRowErrors).length}건 수정에 실패했어요. 다시 시도하거나 그대로 종료할 수 있어요.`)
-      }
+      setTopError(`${Object.keys(newRowErrors).length}건 수정에 실패했어요. 다시 시도하거나 체크를 해제하고 종료할 수 있어요.`)
       setApplying(false)
       return
     }
@@ -93,7 +93,7 @@ export function NumberingCheckScreen() {
       }
       setRowErrors(newRowErrors)
       if (hasFailures) {
-        setTopError(`${Object.keys(newRowErrors).length}건 수정에 실패했어요. 다시 시도하거나 그대로 종료할 수 있어요.`)
+        setTopError(`${Object.keys(newRowErrors).length}건 수정에 실패했어요. 다시 시도하거나 체크를 해제하고 종료할 수 있어요.`)
       }
       // 남은 오류를 다시 보여준다 — 검토 종료로는 아직 넘어가지 않는다.
       dispatch({ type: 'NUMBERING_ISSUES_LOADED', issues: remaining })
@@ -151,20 +151,11 @@ export function NumberingCheckScreen() {
             </li>
           ))}
         </ul>
-
-        <p className="numbering-check-legend">
-          🟢 자동 수정 가능 — 번호 누락/중복/순서 오류
-          <br />
-          🟡 확인 필요 — 계층 구조가 애매한 경우
-        </p>
       </div>
 
       <div className="screen-footer numbering-check-footer">
-        <button type="button" className="btn-link" onClick={skipAndFinish} disabled={applying}>
-          수정하지 않고 검토 종료하기
-        </button>
         <Button className="btn-cta" onClick={() => void applySelected()} disabled={applying}>
-          선택한 항목 수정하고 검토 종료하기
+          선택 항목 수정 후 검토 종료
         </Button>
       </div>
     </div>

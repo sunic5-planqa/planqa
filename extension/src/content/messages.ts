@@ -17,6 +17,10 @@ export type ListSiblingPagesResponse =
 export interface FetchPageMarkdownRequest {
   type: 'FETCH_PAGE_MARKDOWN'
   pageId: string
+  // 넘버링 검증 재조회 전용 — true면 컨플루언스 h1~h6 레벨을 그대로 보존해서 추출한다(기본값은
+  // AI QA 리뷰용 추출과 동일하게 h1을 h2와 같은 레벨로 뭉갠다). confluenceParser.ts의
+  // HtmlToChapterMarkdownOptions.preserveHeadingLevels 참고.
+  preserveHeadingLevels?: boolean
 }
 
 export type FetchPageMarkdownResponse =
@@ -88,10 +92,11 @@ export interface ScrollToIssueResponse {
 }
 
 // 사이드패널 → content script: QA 리뷰 중 실제 수정이 저장되고 있는 "복제본" 페이지의 id를 물어본다.
-// 아직 한 건도 적용한 적이 없으면(복제본이 아직 안 만들어졌으면) pageId는 null — 그럴 땐 원본과
-// 지금 백엔드가 들고 있는 텍스트가 아직 같으므로 재조회할 필요가 없다는 신호로 쓴다.
+// 아직 한 건도 적용한 적이 없으면(복제본이 아직 안 만들어졌으면) pageId는 null. originalPageId는
+// 지금 탭이 보고 있는 원본 페이지 id — 넘버링 재검증이 (복제본이 없을 때) 어느 페이지의 최신
+// 마크다운을 다시 가져와야 하는지 알아야 해서 같이 내려준다(둘 다 컨플루언스 페이지가 아니면 null).
 export interface GetActiveDuplicatePageRequest {
   type: 'GET_ACTIVE_DUPLICATE_PAGE'
 }
 
-export type GetActiveDuplicatePageResponse = { ok: true; pageId: string | null }
+export type GetActiveDuplicatePageResponse = { ok: true; pageId: string | null; originalPageId: string | null }

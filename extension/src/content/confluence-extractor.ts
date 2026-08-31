@@ -49,14 +49,17 @@ export function parseSiblingPages(
   return data.results.filter((page) => page.id !== excludePageId).map((page) => ({ id: page.id, title: page.title }))
 }
 
-async function fetchPageMarkdown(pageId: string): Promise<{ title: string; markdown: string } | null> {
+async function fetchPageMarkdown(
+  pageId: string,
+  options?: { preserveHeadingLevels?: boolean },
+): Promise<{ title: string; markdown: string } | null> {
   const res = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=body.storage`, {
     credentials: 'include',
   })
   if (!res.ok) return null
 
   const data = (await res.json()) as ConfluenceContentResponse
-  return { title: data.title, markdown: htmlToChapterMarkdown(data.title, data.body.storage.value) }
+  return { title: data.title, markdown: htmlToChapterMarkdown(data.title, data.body.storage.value, options) }
 }
 
 async function extractCurrentPage(): Promise<ExtractConfluenceContentResponse> {
@@ -100,9 +103,9 @@ async function listSiblingPages(): Promise<ListSiblingPagesResponse> {
   }
 }
 
-async function handleFetchPageMarkdown(pageId: string): Promise<FetchPageMarkdownResponse> {
+async function handleFetchPageMarkdown(pageId: string, preserveHeadingLevels?: boolean): Promise<FetchPageMarkdownResponse> {
   try {
-    const page = await fetchPageMarkdown(pageId)
+    const page = await fetchPageMarkdown(pageId, { preserveHeadingLevels })
     if (!page) return { ok: false, error: 'FETCH_FAILED' }
     return { ok: true, markdown: page.markdown, title: page.title }
   } catch (err) {
@@ -124,7 +127,7 @@ chrome.runtime.onMessage.addListener(
       return true
     }
     if (message.type === 'FETCH_PAGE_MARKDOWN') {
-      void handleFetchPageMarkdown(message.pageId).then(sendResponse)
+      void handleFetchPageMarkdown(message.pageId, message.preserveHeadingLevels).then(sendResponse)
       return true
     }
     return undefined

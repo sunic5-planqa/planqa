@@ -1439,13 +1439,6 @@ textarea {
   font-weight: 700;
 }
 
-.numbering-check-legend {
-  margin: 4px 0 0;
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  line-height: 1.6;
-}
-
 .numbering-check-footer {
   display: flex;
   flex-direction: column;

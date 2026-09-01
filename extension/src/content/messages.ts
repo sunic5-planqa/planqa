@@ -3,7 +3,7 @@ export interface ExtractConfluenceContentRequest {
 }
 
 export type ExtractConfluenceContentResponse =
-  | { ok: true; markdown: string; title: string }
+  | { ok: true; markdown: string; title: string; pageId: string }
   | { ok: false; error: 'NOT_A_CONFLUENCE_PAGE' | 'FETCH_FAILED'; detail?: string }
 
 export interface ListSiblingPagesRequest {
@@ -27,67 +27,36 @@ export type FetchPageMarkdownResponse =
   | { ok: true; markdown: string; title: string }
   | { ok: false; error: 'FETCH_FAILED'; detail?: string }
 
-// 문서 본문 위에 직접 하이라이트/AI 제안 툴팁을 얹는 인라인 수정 오버레이용 메시지.
-// OverlayIssue는 IssueResponse의 부분집합 — content script는 백엔드 타입을 몰라도 되게 별도로 둔다.
-export interface OverlayIssue {
-  id: string
-  input_text: string
-  criteria: string
-  reason: string
-  suggestion: string
-  // "정보 누락(MI)"처럼 애초에 원문에 없는 걸 지적하는 이슈는 input_text로 문서 안에서 찾을 대상 자체가
-  // 없다 — 그럴 때 이 이슈가 속한 위계(예: "6. 프로덕트 기능 > 6-1. 메인 배너")의 제목으로라도 찾아가
-  // 하이라이트할 수 있도록 폴백 근거로 쓴다.
+// 문단 하나(현재/연관/완료 위치)를 가리키는 데 필요한 최소 정보 — content script는 이 텍스트를
+// buildLooseTextRegex로 찾아 그 텍스트를 담은 블록 엘리먼트(p/li/td/heading 등)를 앵커로 삼는다.
+export interface SuggestionLocation {
+  text: string
+  // "정보 누락(MI)"처럼 애초에 원문에 없는 걸 지적하는 위치는 text로 찾을 대상 자체가 없다 — 그럴
+  // 땐 이 위치가 속한 위계(예: "6. 프로덕트 기능 > 6-1. 메인 배너")의 제목으로라도 찾아가 폴백한다.
   location: string
 }
 
-export interface ShowIssueOverlayRequest {
-  type: 'SHOW_ISSUE_OVERLAY'
-  issues: OverlayIssue[]
+// current 위치만 문서에서 직접 편집 가능하다(related/done은 읽기 전용) — 저장 전 검증(원래 문제
+// 문구가 남아있는지 + AI 유사도 체크)에 필요한 필드까지 함께 싣는다. suggestion이 null이면
+// (관계형 이슈의 두 번째 위치를 편집 중) AI 유사도 체크를 건너뛴다 — 비교 기준이 될 "AI 제안"
+// 자체가 없기 때문(패널의 기존 편집 로직과 동일한 규칙).
+export interface EditableSuggestionLocation extends SuggestionLocation {
+  criteria: string
+  reason: string
+  suggestion: string | null
 }
 
-export interface ShowIssueOverlayResponse {
-  ok: true
-  matched: number
-  total: number
+// 사이드패널 → content script: 지금 작업 중인 제안 하나를 통째로 알려준다. 문서에는 이 제안과
+// 관련된 위치만 틴트+마커로 표시하고, 나머지 문단은 전부 흐리게(dim) 처리한다 — 이전의 "모든 이슈를
+// 항상 다 하이라이트" 방식은 새 디자인(3b/3c)에서 폐기됐다.
+export interface SetActiveSuggestionRequest {
+  type: 'SET_ACTIVE_SUGGESTION'
+  current: EditableSuggestionLocation
+  related: SuggestionLocation | null
+  doneLocations: SuggestionLocation[]
 }
 
-export interface ClearIssueOverlayRequest {
-  type: 'CLEAR_ISSUE_OVERLAY'
-}
-
-export interface ClearIssueOverlayResponse {
-  ok: true
-}
-
-// content script → 사이드패널: 문서 위 하이라이트(또는 그 AI 제안 말풍선)를 클릭했을 때, 실제 편집은
-// 오른쪽 패널에서 하도록 그 이슈로 포커스를 옮기라고 알리는 푸시. 요청/응답이 아니라
-// chrome.runtime.sendMessage로 발사(fire-and-forget)한다.
-export interface IssueOverlayFocusMessage {
-  type: 'ISSUE_OVERLAY_FOCUS'
-  issueId: string
-}
-
-// 사이드패널 → content script: 오른쪽 패널에서 "수정 저장"을 눌렀을 때 실제 컨플루언스 반영을 요청한다.
-// 컨텐츠 스크립트가 페이지와 동일 출처라 세션 쿠키로 컨플루언스 REST API를 호출할 수 있어서, 실제
-// fetch는 여기서 수행하고 결과만 응답으로 돌려준다.
-export interface ApplyIssueEditRequest {
-  type: 'APPLY_ISSUE_EDIT'
-  issueId: string
-  oldText: string
-  newText: string
-}
-
-export type ApplyIssueEditResponse = { ok: true } | { ok: false; error: string }
-
-// 사이드패널 → content script: 오른쪽 패널에서 보고 있는 이슈가 바뀔 때마다(이전/다음, Overview 카드
-// 클릭 등) 문서 본문의 해당 하이라이트가 보이는 위치로 자동 스크롤해달라는 요청.
-export interface ScrollToIssueRequest {
-  type: 'SCROLL_TO_ISSUE'
-  issueId: string
-}
-
-export interface ScrollToIssueResponse {
+export interface SetActiveSuggestionResponse {
   ok: boolean
 }
 
@@ -100,3 +69,56 @@ export interface GetActiveDuplicatePageRequest {
 }
 
 export type GetActiveDuplicatePageResponse = { ok: true; pageId: string | null; originalPageId: string | null }
+
+// 사이드패널 → content script: 넘버링 확인 화면(NumberingCheckScreen)에서 체크한 항목들을 하나씩
+// 적용해달라는 요청 — 일반 AI 제안 편집(handleSaveClick)과 달리 패널이 직접 트리거해야 한다(그
+// 이슈들은 문서에서 클릭해 들어갈 수 있는 하이라이트가 애초에 없으므로).
+export interface ApplyIssueEditRequest {
+  type: 'APPLY_ISSUE_EDIT'
+  issueId: string
+  oldText: string
+  newText: string
+}
+
+export type ApplyIssueEditResponse = { ok: true } | { ok: false; error: string }
+
+export interface ClearActiveSuggestionRequest {
+  type: 'CLEAR_ACTIVE_SUGGESTION'
+}
+
+export interface ClearActiveSuggestionResponse {
+  ok: true
+}
+
+// 사이드패널 → content script: 지속적인 틴트/마커 없이 그냥 그 위치로 스크롤만 해달라는 요청 —
+// 3d 완료 이후의 "기록" 화면(HistoryExportScreen)처럼 활성 제안 개념이 없는 화면에서 쓴다.
+export interface ScrollToLocationRequest {
+  type: 'SCROLL_TO_LOCATION'
+  location: SuggestionLocation
+}
+
+export interface ScrollToLocationResponse {
+  ok: boolean
+}
+
+// 사이드패널 → content script: 3d(완료 요약)에서 문서 제목 옆에 "✓ QA 통과" 배지를 붙이거나 뗀다.
+export interface ShowQaPassedBadgeRequest {
+  type: 'SHOW_QA_PASSED_BADGE'
+}
+
+export interface ClearQaPassedBadgeRequest {
+  type: 'CLEAR_QA_PASSED_BADGE'
+}
+
+export interface QaPassedBadgeResponse {
+  ok: boolean
+}
+
+// content script → 사이드패널: 문서에서 직접 편집(current 문단의 인라인 저장)이 성공했음을
+// 알리는 푸시. 요청/응답이 아니라 chrome.runtime.sendMessage로 발사(fire-and-forget)한다 —
+// content script는 issueId를 모르므로(SuggestionLocation은 텍스트/위치만 담음), 패널이 이미
+// 알고 있는 activeIssueId/activeLocationIndex로 STAGE_ISSUE_EDIT + 다음 제안 이동을 처리한다.
+export interface SuggestionEditSavedMessage {
+  type: 'SUGGESTION_EDIT_SAVED'
+  newText: string
+}

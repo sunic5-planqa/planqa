@@ -8,14 +8,7 @@ def _by_before(issues, before_text):
 
 
 def test_missing_number_cascades_to_order_error() -> None:
-    doc = "\n".join(
-        [
-            "## 1. 개요",
-            "## 2. 문제 정의",
-            "## 4. 해결 방안",
-            "## 5. 기대 효과",
-        ]
-    )
+    doc = "## 1. 개요\n## 2. 문제 정의\n## 4. 해결 방안\n## 5. 기대 효과"
     issues = validate_numbering(doc)
     assert len(issues) == 2
 
@@ -31,14 +24,7 @@ def test_missing_number_cascades_to_order_error() -> None:
 
 
 def test_duplicate_number_cascades_to_missing() -> None:
-    doc = "\n".join(
-        [
-            "## 1. 개요",
-            "## 2. 문제 정의",
-            "## 2. 해결 방안",
-            "## 3. 기대 효과",
-        ]
-    )
+    doc = "## 1. 개요\n## 2. 문제 정의\n## 2. 해결 방안\n## 3. 기대 효과"
     issues = validate_numbering(doc)
     assert len(issues) == 2
 
@@ -54,13 +40,7 @@ def test_duplicate_number_cascades_to_missing() -> None:
 
 
 def test_pure_order_swap() -> None:
-    doc = "\n".join(
-        [
-            "## 1. 개요",
-            "## 3. 문제 정의",
-            "## 2. 해결 방안",
-        ]
-    )
+    doc = "## 1. 개요\n## 3. 문제 정의\n## 2. 해결 방안"
     issues = validate_numbering(doc)
     assert len(issues) == 2
 
@@ -74,16 +54,7 @@ def test_pure_order_swap() -> None:
 
 
 def test_ambiguous_hierarchy_is_flagged_and_excluded_from_siblings() -> None:
-    doc = "\n".join(
-        [
-            "## 1. 배경",
-            "## 2. 문제 정의",
-            "### 2.1 현황",
-            "### 2.2 문제점",
-            "## 3. 해결 방안",
-            "### 2.3 기대 효과",
-        ]
-    )
+    doc = "## 1. 배경\n## 2. 문제 정의\n### 2.1 현황\n### 2.2 문제점\n## 3. 해결 방안\n### 2.3 기대 효과"
     issues = validate_numbering(doc)
     assert len(issues) == 1
 
@@ -96,41 +67,19 @@ def test_ambiguous_hierarchy_is_flagged_and_excluded_from_siblings() -> None:
 
 
 def test_well_numbered_document_has_no_issues() -> None:
-    doc = "\n".join(
-        [
-            "## 1. 개요",
-            "## 2. 문제 정의",
-            "### 2.1 세부",
-            "## 3. 해결 방안",
-        ]
-    )
+    doc = "## 1. 개요\n## 2. 문제 정의\n### 2.1 세부\n## 3. 해결 방안"
     assert validate_numbering(doc) == []
 
 
 def test_auto_fix_only_replaces_the_number_and_preserves_punctuation() -> None:
-    doc = "\n".join(
-        [
-            "## 1. 개요: 목적과 배경",
-            "## 2. 문제 정의",
-            "## 4. 해결 방안(안건 A)",
-            "## 5. 기대 효과",
-        ]
-    )
+    doc = "## 1. 개요: 목적과 배경\n## 2. 문제 정의\n## 4. 해결 방안(안건 A)\n## 5. 기대 효과"
     issues = validate_numbering(doc)
     fixed = _by_before(issues, "4. 해결 방안(안건 A)")
     assert fixed.after_text == "3. 해결 방안(안건 A)"
 
 
 def test_unnumbered_headings_are_ignored_and_do_not_shift_numbered_siblings() -> None:
-    doc = "\n".join(
-        [
-            "## 부록",
-            "## 1. 개요",
-            "## 2. 문제 정의",
-            "## 참고문헌",
-            "## 3. 해결 방안",
-        ]
-    )
+    doc = "## 부록\n## 1. 개요\n## 2. 문제 정의\n## 참고문헌\n## 3. 해결 방안"
     assert validate_numbering(doc) == []
 
 
@@ -138,18 +87,7 @@ def test_numbered_h1_sections_with_numbered_h2_subsections_have_no_false_positiv
     # 실사용 중 확인된 버그: h1이 "01. 혜택 알림 운영 개요"처럼 번호가 매겨진 대주제로 쓰이는
     # 문서에서, h1을 헤딩으로 인식하지 못하면 그 밑의 h2들이 전부 구조적 부모 없이 하나의 형제
     # 그룹으로 뒤섞여 서로 다른 대주제 밑의 정상적인 소주제("1-1"과 "2-1")까지 오탐이 났다.
-    doc = "\n".join(
-        [
-            "# 01. 혜택 알림 운영 개요",
-            "## 1-1. 목적",
-            "## 1-2. 적용 범위",
-            "## 1-3. 운영 목표",
-            "## 1-4. 용어 정의",
-            "# 02. 혜택 대상 관리",
-            "## 2-1. 발송 대상 선정",
-            "## 2-2. 대상 제외 기준",
-        ]
-    )
+    doc = "# 01. 혜택 알림 운영 개요\n## 1-1. 목적\n## 1-2. 적용 범위\n## 1-3. 운영 목표\n## 1-4. 용어 정의\n# 02. 혜택 대상 관리\n## 2-1. 발송 대상 선정\n## 2-2. 대상 제외 기준"
     assert validate_numbering(doc) == []
 
 
@@ -158,16 +96,7 @@ def test_subsection_moved_to_a_different_h1_but_kept_its_old_number_is_ambiguous
     # "번호 자체가 틀렸다"가 아니라 "사용자가 구조를 옮기면서 번호 체계가 달라진 것"이라 AI가 임의로
     # "2-2"/"2-3"으로 자동 수정하면 안 된다. 계층 구조(부모=02)와 번호 prefix(1)가 다르므로 모호로
     # 검출하고 자동 수정 후보(형제 그룹)에서는 제외해야 한다. 제자리에 남은 "1-1"과 "2-1"은 정상.
-    doc = "\n".join(
-        [
-            "# 01. 혜택 알림 운영 개요",
-            "## 1-1. 목적",
-            "# 02. 혜택 대상 관리",
-            "## 2-1. 발송 대상 선정",
-            "## 1-2. 적용 범위",
-            "## 1-3. 운영 목표",
-        ]
-    )
+    doc = "# 01. 혜택 알림 운영 개요\n## 1-1. 목적\n# 02. 혜택 대상 관리\n## 2-1. 발송 대상 선정\n## 1-2. 적용 범위\n## 1-3. 운영 목표"
     issues = validate_numbering(doc)
     assert len(issues) == 2
 
@@ -187,14 +116,7 @@ def test_auto_fix_within_numbered_h1_section_keeps_the_local_dash_separator_and_
     # expected 번호를 부모의 원문 그대로("01")로 이어붙이면 "01.3"처럼 이 문서의 실제 표기
     # 스타일(대시, 0 패딩 없음)과 안 맞는 제안이 나간다 — 틀리지 않았다고 이미 확인된 형제 자신의
     # dot-prefix/구분자 스타일을 재사용해야 한다.
-    doc = "\n".join(
-        [
-            "# 01. 혜택 알림 운영 개요",
-            "## 1-1. 목적",
-            "## 1-2. 적용 범위",
-            "## 1-4. 용어 정의",
-        ]
-    )
+    doc = "# 01. 혜택 알림 운영 개요\n## 1-1. 목적\n## 1-2. 적용 범위\n## 1-4. 용어 정의"
     issues = validate_numbering(doc)
     assert len(issues) == 1
 
@@ -208,14 +130,7 @@ def test_first_subsection_under_h1_1_is_expected_to_start_at_1_not_2() -> None:
     # 실사용 중 "off-by-one" 의심 보고: 소주제 형제 그룹의 첫 expected 값이 2부터 시작하는 게
     # 아닌지 확인하는 회귀 테스트 — enumerate(siblings)가 index=0부터 돌고 expected_value=index+1을
     # 쓰므로 첫 형제는 항상 expected_value=1이어야 정상이다.
-    doc = "\n".join(
-        [
-            "# 1. 대주제",
-            "## 1-1. 첫 번째",
-            "## 1-2. 두 번째",
-            "## 1-3. 세 번째",
-        ]
-    )
+    doc = "# 1. 대주제\n## 1-1. 첫 번째\n## 1-2. 두 번째\n## 1-3. 세 번째"
     assert validate_numbering(doc) == []
 
 
@@ -226,29 +141,14 @@ def test_first_subsection_under_h1_2_is_expected_to_start_at_1_not_2() -> None:
     # 1부터 시작해야 한다는, 이건 소주제 버그와 무관한 별개의 기존 규칙) 검사에 걸리므로, 실제
     # 문서처럼 "1. ..." 대주제를 하나 앞에 둬서 최상위 그룹은 [1, 2]로 정상이 되게 하고 "2번
     # 대주제의 소주제"만 검사 대상으로 좁힌다.
-    doc = "\n".join(
-        [
-            "# 1. 이전 대주제",
-            "# 2. 대주제",
-            "## 2-1. 첫 번째",
-            "## 2-2. 두 번째",
-            "## 2-3. 세 번째",
-        ]
-    )
+    doc = "# 1. 이전 대주제\n# 2. 대주제\n## 2-1. 첫 번째\n## 2-2. 두 번째\n## 2-3. 세 번째"
     assert validate_numbering(doc) == []
 
 
 def test_subsections_shifted_by_one_are_all_flagged_with_expected_starting_at_1() -> None:
     # 소주제가 "1-2, 1-3, 1-4"로 시작하고(정상이라면 "1-1"부터 시작해야 함) 있는 경우 — 3개 전부
     # 오류로 검출되어야 하고, 각각의 expected는 1-1, 1-2, 1-3이어야 한다(2-1, 2-2, 2-3이 아님).
-    doc = "\n".join(
-        [
-            "# 1. 대주제",
-            "## 1-2. 첫 번째",
-            "## 1-3. 두 번째",
-            "## 1-4. 세 번째",
-        ]
-    )
+    doc = "# 1. 대주제\n## 1-2. 첫 번째\n## 1-3. 두 번째\n## 1-4. 세 번째"
     issues = validate_numbering(doc)
     assert len(issues) == 3
 
@@ -269,49 +169,7 @@ def test_subsections_shifted_by_one_are_all_flagged_with_expected_starting_at_1(
 # Baseline regression — 실제 서비스 문서 전체 구조. 이 테스트가 실패하면 그 자체로 회귀다.
 # ---------------------------------------------------------------------------
 def test_real_world_baseline_document_with_three_h1_sections_has_no_issues() -> None:
-    doc = "\n".join(
-        [
-            "# 1. 혜택 알림 운영 개요",
-            "",
-            "## 1-1. 목적",
-            "",
-            "## 1-2. 적용 범위",
-            "",
-            "## 1-3. 운영 목표",
-            "",
-            "## 1-4. 용어 정의",
-            "",
-            "## 1-5. 운영 지표",
-            "",
-            "## 1-6. 데이터 관리",
-            "",
-            "",
-            "# 2. 혜택 대상 관리",
-            "",
-            "## 2-1. 발송 대상 선정",
-            "",
-            "## 2-2. 대상 제외 기준",
-            "",
-            "## 2-3. 혜택 유형 관리",
-            "",
-            "## 2-4. 우선순위 정책",
-            "",
-            "## 2-5. 운영 로그",
-            "",
-            "",
-            "# 3. 혜택 알림 운영 기준",
-            "",
-            "## 3-1. 발송 유형",
-            "",
-            "## 3-2. 발송 채널",
-            "",
-            "## 3-3. 발송 실패 처리",
-            "",
-            "## 3-4. 운영 모니터링",
-            "",
-            "## 3-5. KPI",
-        ]
-    )
+    doc = "# 1. 혜택 알림 운영 개요\n\n## 1-1. 목적\n\n## 1-2. 적용 범위\n\n## 1-3. 운영 목표\n\n## 1-4. 용어 정의\n\n## 1-5. 운영 지표\n\n## 1-6. 데이터 관리\n\n\n# 2. 혜택 대상 관리\n\n## 2-1. 발송 대상 선정\n\n## 2-2. 대상 제외 기준\n\n## 2-3. 혜택 유형 관리\n\n## 2-4. 우선순위 정책\n\n## 2-5. 운영 로그\n\n\n# 3. 혜택 알림 운영 기준\n\n## 3-1. 발송 유형\n\n## 3-2. 발송 채널\n\n## 3-3. 발송 실패 처리\n\n## 3-4. 운영 모니터링\n\n## 3-5. KPI"
     assert validate_numbering(doc) == []
 
 
@@ -319,7 +177,7 @@ def test_real_world_baseline_document_with_three_h1_sections_has_no_issues() -> 
 # 대주제(H1) 자신의 sibling group 판정 — 소주제와 별개의 numbering domain.
 # ---------------------------------------------------------------------------
 def test_h1_section_missing() -> None:
-    doc = "\n".join(["# 1. 개요", "# 3. 문제 정의"])
+    doc = "# 1. 개요\n# 3. 문제 정의"
     issues = validate_numbering(doc)
     assert len(issues) == 1
     assert issues[0].sub_type == "missing"
@@ -328,7 +186,7 @@ def test_h1_section_missing() -> None:
 
 
 def test_h1_section_duplicate() -> None:
-    doc = "\n".join(["# 1. 개요", "# 2. 문제 정의", "# 2. 해결 방안"])
+    doc = "# 1. 개요\n# 2. 문제 정의\n# 2. 해결 방안"
     issues = validate_numbering(doc)
     assert len(issues) == 1
     assert issues[0].sub_type == "duplicate"
@@ -337,7 +195,7 @@ def test_h1_section_duplicate() -> None:
 
 
 def test_h1_section_order() -> None:
-    doc = "\n".join(["# 1. 개요", "# 3. 해결 방안", "# 2. 문제 정의"])
+    doc = "# 1. 개요\n# 3. 해결 방안\n# 2. 문제 정의"
     issues = validate_numbering(doc)
     assert len(issues) == 2
 
@@ -354,7 +212,7 @@ def test_h1_section_order() -> None:
 # 소주제(H2, "1-1" 형식) sibling group 판정 — 위 H2("1.") 형식과 별개로 대시 표기도 동일하게 동작.
 # ---------------------------------------------------------------------------
 def test_dash_style_subsection_missing() -> None:
-    doc = "\n".join(["# 1. 개요", "## 1-1. 목적", "## 1-3. 목표"])
+    doc = "# 1. 개요\n## 1-1. 목적\n## 1-3. 목표"
     issues = validate_numbering(doc)
     assert len(issues) == 1
     assert issues[0].sub_type == "missing"
@@ -363,7 +221,7 @@ def test_dash_style_subsection_missing() -> None:
 
 
 def test_dash_style_subsection_duplicate() -> None:
-    doc = "\n".join(["# 1. 개요", "## 1-1. 목적", "## 1-2. 범위", "## 1-2. 목표"])
+    doc = "# 1. 개요\n## 1-1. 목적\n## 1-2. 범위\n## 1-2. 목표"
     issues = validate_numbering(doc)
     assert len(issues) == 1
     assert issues[0].sub_type == "duplicate"
@@ -372,7 +230,7 @@ def test_dash_style_subsection_duplicate() -> None:
 
 
 def test_dash_style_subsection_order() -> None:
-    doc = "\n".join(["# 1. 개요", "## 1-1. 목적", "## 1-3. 목표", "## 1-2. 범위"])
+    doc = "# 1. 개요\n## 1-1. 목적\n## 1-3. 목표\n## 1-2. 범위"
     issues = validate_numbering(doc)
     assert len(issues) == 2
 
@@ -388,7 +246,7 @@ def test_dash_style_subsection_order() -> None:
 def test_dash_style_subsection_ambiguous_structural_move_is_not_auto_fixed() -> None:
     # 구조상(heading level)으로는 "2. 문제 정의" 밑에 있지만 번호는 "1"을 가리키는 소주제 — AI가
     # "2-2"로 추측해서 자동수정하면 안 되고, 사람이 확인해야 하는 ambiguous로 표시해야 한다.
-    doc = "\n".join(["# 1. 개요", "## 1-1. 목적", "# 2. 문제 정의", "## 2-1. 현황", "## 1-2. 범위"])
+    doc = "# 1. 개요\n## 1-1. 목적\n# 2. 문제 정의\n## 2-1. 현황\n## 1-2. 범위"
     issues = validate_numbering(doc)
     assert len(issues) == 1
 

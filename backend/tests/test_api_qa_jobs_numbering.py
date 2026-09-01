@@ -7,15 +7,7 @@ from sunnic_backend.main import app
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
 from sunnic_backend.storage.store import store
 
-_DOCUMENT_TEXT = "\n".join(
-    [
-        "# 기획서",
-        "## 1. 개요",
-        "## 2. 문제 정의",
-        "## 4. 해결 방안",
-        "## 5. 기대 효과",
-    ]
-)
+_DOCUMENT_TEXT = "# 기획서\n## 1. 개요\n## 2. 문제 정의\n## 4. 해결 방안\n## 5. 기대 효과"
 
 
 async def _create_document_and_job(client: AsyncClient) -> str:
@@ -101,7 +93,7 @@ async def test_apply_fixes_updates_document_and_reverifies() -> None:
 async def test_numbering_issues_uses_fresh_text_not_stale_document_text() -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        clean_text = "\n".join(["# 기획서", "## 1. 개요", "## 2. 문제 정의"])
+        clean_text = "# 기획서\n## 1. 개요\n## 2. 문제 정의"
         response = await client.post("/documents", json={"raw_text": clean_text})
         document_id = response.json()["document_id"]
         job = QAJob(
@@ -115,7 +107,7 @@ async def test_numbering_issues_uses_fresh_text_not_stale_document_text() -> Non
         await store.save_qa_job(job)
 
         # 리뷰 중 실제 페이지가 이렇게 바뀌었다고 가정(never synced back, since PATCH /issues 미구현)
-        fresh_text = "\n".join(["# 기획서", "## 1. 개요", "## 3. 문제 정의"])
+        fresh_text = "# 기획서\n## 1. 개요\n## 3. 문제 정의"
 
         result = await client.post(f"/qa-jobs/{job.id}/numbering-issues", json={"raw_text": fresh_text})
         assert result.status_code == 200

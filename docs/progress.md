@@ -2473,6 +2473,167 @@ Round 2에서 메인 화면 하나로 합쳤던 걸 사용자가 다시 뒤집�
 - **Claude가 검증 불가능한 것**: Chrome에서 관리 페이지 진입(⚙)과 메인 화면 체크박스가 실제로
   분리되어 보이는지, 팀 생성 후 자동 이동으로 코드가 잘 보이는지 — 은성님 직접 확인 필요.
 
+## 2026-08-25 — Fix Suggestions 패널(3a~3d) 디자인 핸드오프 구현
+
+디자인 핸드오프(`design_handoff_fix_suggestions/`)의 3a(목록)~3d(완료 요약) 4개 화면을
+사이드패널에 새로 구현하고, 기존 `IssueListScreen` 하나짜리 화면을 대체했다. 범위는
+`extension/`만 — 백엔드는 건드리지 않았다. 디자인이 전제하는 "팀 규칙/기본 규칙" 구분,
+규칙명/설명/예외상황 필드가 실제 `IssueResponse`에 없어서(백엔드에 그 개념 자체가 없음,
+확인 완료) `state/ruleSourceDefaults.ts`에서 `criteria`→규칙명, `reason`→규칙 설명으로
+추론하고 소스는 항상 `'builtin'`으로 채운다(타입은 `'team'|'builtin'` 그대로 둬서 나중에
+백엔드가 팀 규칙을 내려주면 바로 반영되게만 함) — 예외 상황은 데이터가 없어 행 자체를
+렌더링하지 않는다.
+
+- **상태**: `AppState.currentIssueIndex`(인덱스 기반) 제거 → `activeIssueId`(null=목록,
+  값 있으면 상세) + `activeLocationIndex`(0|1, 관계형 이슈의 두 위치 순회)로 교체.
+  `NAVIGATE_ISSUE` 제거, `CLEAR_ACTIVE_ISSUE`/`CYCLE_ACTIVE_LOCATION`/`UNSTAGE_ISSUE_EDIT`
+  (완료 카드 "되돌리기") 신규. `IssueEdit`에 `skipReason` 추가. 신규 순수 함수 모듈
+  `state/suggestionProgress.ts`(진행률/다음 미해결 이슈 계산)와 `state/ruleSourceDefaults.ts`.
+- **화면**: `SuggestionListScreen`(3a), `SuggestionDetailScreen`(3b+3c를 하나로 합침 — 완료
+  스택/남은 목록이 진행 상황에 따라 비었다가 채워질 뿐 같은 화면이라고 판단), `SuggestionSummaryScreen`
+  (3d, "팀 규칙 충족 현황"은 실제 데이터가 없어 criteria별 집계로 대체)을 새로 만들고
+  `IssueListScreen`/`OverviewPanel`은 삭제. 하위 컴포넌트(`components/suggestions/`):
+  `SuggestionCard`/`RuleEvidenceCard`/`SuggestionDirectionCard`(기존 인라인 편집·저장 로직을
+  거의 그대로 이식)/`LocationNavigator`/`SourceBadge`/`SkipReasonPrompt`(건너뛰기 사유 UI —
+  기존에 이런 UI 자체가 없어서 신규).
+- **판단 지점(사람 확인 필요)**: 문서 원문 편집은 계속 사이드패널에서 처리하기로 함(호스트
+  페이지에 취소/저장 버튼을 직접 심지 않음 — 스코프를 가장 크게 줄이는 결정). "수정 방향성
+  제안" 본문이 실제로는 `issue.suggestion`(교체 문구)이라 디자인 예시 문구보다 딱딱하게
+  보일 것. 3a 카드는 팀/기본 규칙으로 그룹핑하지 않고 위치 순서 그대로 나열(실제 `.dc.html`
+  레퍼런스가 README 설명과 달리 뒤섞인 순서였음). "다시 검사"는 `main` 화면 이동 정도로만
+  처리(원클릭 재스캔은 범위 밖).
+- **content script(`issueOverlay.ts`)**: "모든 이슈를 항상 다 하이라이트 + 클릭하면 툴팁"
+  방식을 폐기하고, 지금 작업 중인 제안의 위치만 문단 단위로 틴트+마커, 나머지는 흐리게
+  (`opacity:.4`) 표시하는 방식으로 전면 교체(`setActiveSuggestion`/`clearActiveSuggestion`).
+  텍스트 매칭 로직(`buildLooseTextRegex`, `collectTextSpans`)은 재사용. 저장 로직
+  (`applyIssueEdit`)은 그대로 유지. `HistoryExportScreen`은 지속 마크 없이 스크롤만 하는
+  `scrollToLocation`을 새로 씀(재작성 안 하고 최소 변경). `useIssueOverlaySync` →
+  `useSuggestionOverlaySync`로 재작성(클릭 기반 포커스 리스너 제거 — 상호작용은 전부 패널에서
+  시작).
+- `eslint.config.js`: `@typescript-eslint/no-unused-vars`에 `_` 접두사 예외 패턴 추가(향후
+  확장용으로 남겨둔 매개변수, 예: `getRuleSource(_issue)`, 기존 `_sender` 관례와 통일).
+- 검증: 확장 `tsc -b`(빌드), `eslint .`(클린), `vitest run`(95개 전부 통과 — 관련 테스트
+  대폭 교체: `issueOverlay.test.ts`를 새 하이라이트 모델에 맞게 다시 쓰고, `appReducer.test.ts`
+  갱신, 신규 `suggestionProgress.test.ts` 추가).
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 크롬에 언팩 로드해서 3a→3b/3c→3d 전체 흐름을 눈으로
+  확인 필요(문단 틴트/dim, 위치 내비게이터 순회, 완료 스택 되돌리기, 건너뛰기 사유 입력,
+  3d에서 QA 통과 배지/기록 화면 링크). 자동 테스트는 DOM 조작 로직 단위로만 커버함.
+- 커밋은 보미님이 로컬에서 직접 확인한 뒤 진행하기로 함 — 아직 커밋 안 함.
+
+## 2026-08-25 (이어서) — 문서에서 직접 편집으로 전환
+
+위 3a~3d를 실제로 써본 보미님 피드백으로, "수정은 패널 텍스트 영역에서"(판단 지점 #1)를
+뒤집었다 — 이제 **왼쪽 Confluence 문서의 current(실선 틴트) 문단을 직접 클릭해서 바로
+고치고**, 옆에 뜨는 취소/저장 버튼으로 저장한다. 저장되면 패널이 자동으로 다음 제안으로
+넘어간다. 패널의 기존 텍스트 영역 편집(`SuggestionDirectionCard`)은 지우지 않고 폴백으로
+남겼다 — 문서에서 앵커를 못 찾거나(`insert_range`처럼 편집할 원문 자체가 없는 경우 포함)
+컨플루언스 탭이 없을 때만 쓴다.
+
+- **`content/issueOverlay.ts`**: `setActiveSuggestion`이 current 문단을
+  `contentEditable=true`로 켜고 원문을 `dataset.sunnicOriginalText`에 저장. 옆에는 실제 DOM
+  형제가 아니라(표/리스트 구조가 깨질 수 있어서) 예전 AI 제안 툴팁처럼
+  `position:fixed`+`getBoundingClientRect` 기반 플로팅 박스(`.sunnic-edit-actions`)로 취소/저장
+  버튼을 띄운다(스크롤 애니메이션 중 위치 추적도 예전 툴팁 로직을 재사용). 저장 전 검증도
+  패널에 있던 걸 그대로 옮겼다: ① 원래 문제 문구가 아직 남아있는지(로컬, `isIssueLikelyResolved`)
+  ② AI 유사도 체크(`api.checkEditSimilarity`, content script도 우리 백엔드는 문제없이 fetch
+  가능 — Confluence 인증이 필요한 건 저장 자체뿐). 관련 위치(related) 편집은 비교 기준이 될
+  "AI 제안"이 없어 ②를 건너뛴다. 저장 성공 시 패널에 `SUGGESTION_EDIT_SAVED`(fire-and-forget,
+  issueId는 안 실음 — content script는 여전히 issueId를 모름)를 보낸다. 장식용으로 넣었던
+  깜빡이는 커서 바는 제거(진짜 caret이 생기니 불필요).
+- **`content/messages.ts`**: `EditableSuggestionLocation`(criteria/reason/suggestion 포함,
+  suggestion이 null이면 유사도 체크 생략) 신규, `SetActiveSuggestionRequest.current`가 이 타입을
+  씀. `SuggestionEditSavedMessage` 신규.
+- **`hooks/useSuggestionOverlaySync.ts`**: current/related/doneLocations 계산 시 이미 저장된
+  위치는 `issueEdits[...]?.editedText`(원본이 아니라 저장된 텍스트) 기준으로 앵커를 다시 찾도록
+  수정 — 안 그러면 저장 직후 재순회 시 문서 텍스트가 이미 바뀌어 있어 매칭이 깨진다.
+- **`components/screens/SuggestionDetailScreen.tsx`**: `chrome.runtime.onMessage`로
+  `SUGGESTION_EDIT_SAVED`를 받아 `STAGE_ISSUE_EDIT`+`api.updateIssue`+다음 제안 이동을 처리하는
+  리스너 추가(패널 안에서 저장하는 기존 경로와 같은 일을 하는 두 번째 트리거).
+- **`components/suggestions/SuggestionDirectionCard.tsx`**: 기본 표시를 읽기 전용으로 바꾸고
+  "왼쪽 문서에서 직접 고치세요" 안내 추가, "오류 수정하기" 링크는 "여기서 직접 수정"(폴백)으로
+  라벨만 변경 — 로직은 그대로.
+- 테스트: `issueOverlay.test.ts`에 contentEditable 토글/취소 복원/저장(REST+메시지)/유사도 체크
+  생략(related) 케이스 추가, 기존 "커서 바" 테스트는 제거. 전체 101개 통과.
+- 검증: `tsc -b`/`eslint .`/`vitest run` 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 문서에서 문단 클릭 → 타이핑 → 저장 → 자동으로 다음
+  제안 넘어가는지, 취소 시 원문 복원되는지, related로 전환 시 편집 가능한 문단이 바뀌는지
+  눈으로 확인 필요 — 보미님이 직접 확인 중.
+- 완료 카드 "되돌리기"는 패널 기록만 지운다 — Confluence 복제본에 저장된 텍스트 자체는
+  되돌리지 않는다(기존부터 있던 갭, 이번에 새로 생긴 문제 아님).
+- 커밋은 여전히 보미님 확인 후 진행.
+
+## 2026-08-25 (이어서 2) — 클릭으로 편집 진입 + scrollIntoView 제거
+
+실제 컨플루언스 페이지에서 테스트하다 두 가지가 스펙과 다르다는 피드백: ① current 문단이 되는
+순간 자동으로 편집 가능해지는 게 아니라 **클릭해야** 편집 모드로 들어가야 하고, 그 클릭 지점에
+캐럿이 정확히 놓여야 한다. ② `scrollIntoView`를 쓰고 있었는데, 디자인 핸드오프가 애초에
+"컨테이너 스크롤 오프셋 계산 사용, scrollIntoView 금지"라고 명시했었다 — 실제 컨플루언스처럼
+중첩 스크롤 컨테이너가 있는 페이지에서 엉뚱한 조상을 스크롤하거나 아예 안 움직이는 것처럼
+보일 수 있어서, "‹›가 반응 없어 보이는" 증상의 유력한 원인이었다.
+
+- **`content/issueOverlay.ts`**: current 문단은 이제 틴트만 되고 `contentEditable`은 꺼진
+  채로 있다가, **클릭해야** `enterEditMode`가 켜진다 — 클릭 좌표(`clientX/clientY`)로
+  `document.caretRangeFromPoint`(크롬 전용 API)를 구해 Selection에 반영해서 캐럿을 정확히
+  놓는다(contentEditable을 클릭 "이후"에 켜서 브라우저가 자동으로 캐럿을 안 놔주기 때문에
+  수동으로 해야 함). "취소"는 텍스트 원복 + `contentEditable=false` + 박스 닫기까지 완전히
+  편집 모드를 해제한다(저장 성공 시도 동일) — 다시 고치려면 또 클릭해야 한다.
+- 신규 `findScrollableAncestor`/`scrollElementToCenter`: `scrollIntoView` 대신 실제 스크롤
+  가능한 조상(`overflow-y: auto/scroll` + `scrollHeight > clientHeight`)을 직접 찾아 그
+  컨테이너의(또는 없으면 `window`의) 스크롤 위치를 계산해서 옮긴다. `setActiveSuggestion`과
+  `scrollToLocation` 두 곳 다 교체.
+- 테스트: 클릭 전엔 read-only, 클릭 후에만 편집 가능/박스 노출로 전부 갱신, 취소/저장 후
+  `contentEditable`이 다시 꺼지는지 확인 추가, 스크롤 스파이를 `scrollIntoView`→`window.scrollTo`
+  로 교체. 101개 전부 통과.
+- 검증: `tsc -b`/`eslint .`/`vitest run` 전부 통과.
+
+### Next
+
+- **Claude가 검증 불가능한 것**: 실제 컨플루언스 페이지에서 문단 클릭 시 클릭 지점에 캐럿이
+  정확히 놓이는지(happy-dom엔 `caretRangeFromPoint`가 없어 자동 테스트로 커버 불가), ‹›로
+  위치를 옮길 때 실제로 눈에 보이는 스크롤이 일어나는지 확인 필요 — 보미님이 직접 확인 중.
+- 커밋은 여전히 보미님 확인 후 진행.
+## 2026-08-27 — PR #113 리뷰 후속 fix 2건
+
+PR #113(팀 규칙 관리 기능) 코드 리뷰에서 나온 "설계 판단 필요" 항목 중 2개를 마무리. 나머지
+하나(`tiers.py`의 `TIER_CATEGORIES`에 "TEAM" 추가)는 시도했다가 되돌림 — 아래 참고.
+
+### Done
+
+- **팀 코드 생성 TOCTOU 레이스 제거**: `store.py`에 `save_team_if_new()` 추가 — "코드가
+  비어있는지 확인"과 "저장"을 별개의 락 획득 두 번이 아니라 한 번의 락 안에서 원자적으로
+  처리. `teams.py`의 `_generate_unique_team_code()` + `store.save_team()` 조합을
+  `_create_team_with_unique_code()`(생성-시도-저장을 한 함수로) 하나로 교체.
+- **팀 룰 체크박스 토글의 lost-update 제거**: `update_team_rule`(풀-리플레이스 PATCH)은
+  그대로 두고, `enabled` 필드만 바꾸는 전용 엔드포인트
+  `PATCH /teams/{team_code}/rules/{rule_id}/enabled` 신설. 프론트 `toggleRuleEnabled`가
+  이제 이걸 호출 — 더 이상 클라이언트 상태에서 읽은(어쩌면 이미 오래된) rule_name/
+  description/exception_text/examples를 다시 보내지 않으므로, 토글이 다른 편집자가 방금
+  저장한 필드를 되돌릴 수 없음.
+- 신규 테스트 4개: `save_team_if_new`가 같은 코드 두 번째 저장을 거부하는지, 신규 엔드포인트가
+  다른 필드는 안 건드리는지, 실제로 "다른 편집자의 동시 편집을 안 되돌리는지"(concurrent-edit
+  시나리오 그대로 재현), 잘못된 팀으로는 404인지.
+- 164/164 백엔드 테스트 통과(기존 160 + 신규 4), `ruff check` 통과, 프론트 typecheck/lint/
+  vitest 111개 그대로 통과(프론트는 `client.ts`/`RuleSection.tsx`만 수정, 로직 이동 수준이라
+  신규 테스트 없음).
+
+### Not done — 시도했다가 되돌림
+
+- `tiers.py`의 `TIER_CATEGORIES`에 `"TEAM"`을 추가했더니 `test_tiers.py`의 두 테스트
+  (`test_every_assigned_category_exists_in_the_real_rulebook`,
+  `test_tier_categories_matches_rulebook_section_2`)가 깨짐 — 이 파일은 벤더링 정책상
+  `rulebook_v1.0.md`의 실제 카테고리와 바이트 단위로 일치해야 한다는 걸 검증하는 테스트라,
+  "TEAM"을 여기 넣는 건 이 파일의 존재 이유(벤더링 드리프트 감지)를 정면으로 깨는 것.
+  프로덕션 경로(`bundled_screen_hybrid.review_document`)는 이 함수를 아예 안 써서 지금은
+  위험 없음 — 나중에 `pipeline.review_document` 쪽에 팀 룰을 실제로 merge해서 쓰게 되면, 그
+  호출부에서 TEAM 카테고리 룰을 별도로 챙겨 넣는 방식으로 고쳐야 함(이 파일 자체는 손대지
+  않고).
+
 ## 2026-08-28 — 넘버링 Validation 단계 추가 (QA 완료 → 검토 종료 사이)
 
 은성님 두 번째 담당 기능. `QA 완료` 클릭 후 곧장 검토 종료 화면으로 가던 플로우 사이에, 문서
@@ -2523,6 +2684,224 @@ Round 2에서 메인 화면 하나로 합쳤던 걸 사용자가 다시 뒤집�
   설치했으니 `cd backend && uv sync && uv run uvicorn sunnic_backend.main:app --reload`로 켠
   뒤 확인).
 
+## 2026-08-28 — 팀 룰 3단계 자동 분류 (문단형/관계형/부재확인형)
+
+기존 룰(GA/LG/LF/LG-01/TC-02)의 위계 배정이 팀원이 매번 고르는 게 아니라 룰북 작성자가 룰
+하나하나마다 미리 정해두는 것처럼, 팀 룰도 작성자가 "이건 관계형이다" 같은 걸 고르게 하는 대신
+저장 시점에 자동 분류하도록 만듦. 유사도/임베딩 매칭이 아니라 LLM 분류 호출을 쓴 이유: "관계형
+이냐"는 룰의 토픽이 아니라 구조(두 위치를 비교해야 하는가)의 문제라, 기존 룰 예시와의 표면적
+유사도로는 잘 안 맞음(예: "환불 정책 두 문서 위치가 일치해야 한다"는 GA의 기존 예시들과 토픽은
+안 겹치지만 구조는 명백히 relational).
+
+### Done
+
+- **planqa-agent(모델 레포)에 먼저 확장 포인트 추가** — `ABSENCE_CHECK_RULE_IDS`가
+  `{"LG-01", "TC-02"}` 딱 2개 rule_id만 인식하는 폐쇄 집합이라, 동적으로 생성되는 팀 룰
+  rule_id는 절대 인식 못 함. `_paragraph_and_document_rules()`/`review_document()`에
+  `extra_absence_check_rule_ids: frozenset[str] = frozenset()` 키워드 인자 추가(기본값이라
+  기존 호출부 전부 영향 없음). PR sunic5-planqa/planqa-agent#44로 올려서 머지 후 재벤더링.
+  관계형은 반대로 기존 `category in {LG,LF,GA}` 판정을 그대로 재사용 가능해서(팀 룰
+  category를 내부적으로 "GA"로 세팅) 벤더링된 파일을 안 건드림 — 모델이 실제로 보는 건
+  `category_label`(팀이 지은 이름)뿐이고 raw category 코드는 프롬프트에 안 나가서 안전.
+- `TeamRule`에 `scope: "paragraph" | "relational" | "absence_check" = "paragraph"` 추가 —
+  팀 관리자가 고르는 필드 아님, 폼에도 선택지 없음.
+- 신규 `team_rule_classifier.classify_scope()` — rule_name/description/exception_text를
+  보고 구조 기준으로 분류하는 LLM 호출 1번(룰 생성/수정 시점에만, QA 실행마다가 아님).
+  분류 실패(모호함/LLM 에러 전부)는 안전하게 "paragraph"로 폴백.
+- `team_rule_adapter.py`: `team_rule_to_ruledef()`가 scope="relational"이면
+  category="GA", 그 외엔 기존과 동일 category="TEAM". `merge_team_rules()`는 이제
+  `(RuleBook, absence_check 인 rule_id 집합)` 튜플을 반환 — absence_check는 카테고리로
+  재사용할 자리가 없어서 rule_id로 직접 라우팅해야 함.
+- `qa_jobs.py`: `merge_team_rules()`의 두 번째 반환값을
+  `review_document(extra_absence_check_rule_ids=...)`로 그대로 전달.
+- `api/teams.py`: `create_team_rule`/`update_team_rule`이 저장 전 분류 호출(GeminiClient,
+  `asyncio.to_thread`로 이벤트 루프 안 막음, 클라이언트 생성 자체가 실패해도 paragraph로
+  폴백). `set_team_rule_enabled`는 재분류 안 함(내용이 안 바뀌니까) — scope 그대로 유지.
+  `TeamRuleResponse`에 `scope` 노출(투명성 목적, 클라이언트가 보낼 순 없음).
+- 프론트: `TeamRuleResponse` 타입에 `scope` 추가.
+- 신규 테스트: `team_rule_classifier` 5개(정상/잘못된 값/비-dict 응답/LLM 에러/프롬프트 내용
+  확인), `team_rule_adapter` 3개(relational→GA, absence_check→TEAM 유지,
+  merge_team_rules가 absence_check rule_id 집합을 정확히 반환), `api/teams` 4개(기본값
+  paragraph, 분류 결과 저장, update 시 재분류, enabled 토글은 재분류 안 함).
+- **실수로 실제 Gemini API를 호출할 뻔한 것을 잡음**: 이 저장소 `.env`에 진짜
+  `GEMINI_API_KEYS`가 있어서, 스텁 없이 그냥 뒀으면 팀 룰 테스트 전체가 매번 실제 네트워크
+  호출을 했을 것(느리고, flaky하고, 실제 쿼터 소모). `test_api_teams.py`에
+  `autouse=True` 픽스처로 `GeminiClient`를 가짜로 교체해서 해결 — 스텁 적용 전/후 같은
+  파일 테스트 실행 시간이 17초대 → 2초대로 확인됨.
+- 백엔드 176/176 테스트 통과(기존 167 + 신규 9), `ruff check` 통과. 프론트
+  typecheck/lint/vitest 111개 통과.
+
+### Next
+
+- planqa-agent#44 머지·재벤더링 완료됨 — 이 기능은 그 위에서 바로 동작.
+- 팀 룰 작성 폼에 분류 결과(scope)를 보여줄지는 아직 미정 — 지금은 API 응답에만 노출.
+
+## 2026-08-28 (계속) — 타문서 정합성(XDC) 리뷰 파이프라인 연동
+
+승현이 독립적으로 XDC 기능을 구현(sunic5-planqa/planqa#115)했는데, 팀 룰 통합 코드를
+실수로 되돌리는 문제가 있어 그 PR 자체는 안 씀 — 대신 룰 카탈로그(XDC-01~04)만 이식하고,
+실제 구현은 planqa-agent의 review-agent 쪽(더 많은 매칭 신호, 벤더링 정책 준수, 139개
+테스트로 검증됨)을 재벤더링해서 연결했다. 상세 배경은 planqa-agent#43/#44/#45 참고.
+
+### Done
+
+- **재벤더링**: `structures/xdc.py`(신규), `structures/bundled_screen_hybrid.py`(참고문서
+  있을 때만 활성화되는 decision_records 추출 + XDC 전용 confirm 트랙),
+  `planqa_schemas/schema.py`(Issue에 reference_document/reference_section/reference_quote/
+  difference_type 4필드), `planqa_schemas/rulebook.py`(룰 ID 정규식 `{2}`→`{2,3}`,
+  XDC 같은 3자 카테고리 지원), `dedupe.py`(`_same_reference` 가드) — planqa-agent
+  services/review-agent에서 그대로 복사 + import 네임스페이스만 재작성.
+- `data/xdc/xdc_rulebook_v1.0.md`(XDC-01~04), `data/xdc/aliases.json` 데이터 파일 추가.
+- `api/qa_jobs.py` 연동:
+  - `CreateQAJobRequest.reference_document_ids: list[str] = []` 추가(`team_code`는 유지).
+  - `_execute_qa_job`이 그 id들로 `store.get_document()`를 조회해 `(id, raw_text)` 쌍으로 변환.
+  - **중요한 설계 결정**: XDC 룰북은 `review_document()`의 팀 룰과 같은 `rulebook` 인자에
+    합치지 않고 별도 `xdc_rulebook=` 키워드 인자로만 넘긴다 — 합치면
+    `_paragraph_and_document_rules()`가 XDC-01~04를 일반 문단형 내부 룰로 오인해서
+    참고문서 없이 현재 문서 혼자 스크리닝/컨펌해버리는 오류가 생김(승현 버전에는 없던 문제,
+    설계 단계에서 미리 확인).
+  - `_to_issue_record`/`_dedupe_conflicting_categories` 전용으로 XDC를 합친 조회용
+    rulebook(`_rulebook_for_lookup`)을 별도로 만들어 사용 — criteria/frame_type/우선순위
+    판정에 필요.
+- **승현 버전에서 발견한 버그 2개를 여기서는 처음부터 피함**:
+  1. XDC 이슈가 dedup에서 조용히 사라지는 문제(`_CATEGORY_PRIORITY`에 XDC 미등록 시
+     TEAM처럼 최하위 취급) → `_CATEGORY_PRIORITY`에 `"XDC": 0`(GA와 동급) 추가로 방지.
+  2. XDC 이슈가 RANGE 프레임으로 안 그려지는 문제(`rulebook.rule(rule_id)`가 None이라
+     `_frame_type`이 항상 OBJECT로 폴백) → `_rulebook_for_lookup`으로 XDC를 조회 가능하게
+     만들고, `_RANGE_CATEGORIES`에 `"XDC"` 추가로 해결.
+  - 추가로, XDC의 두 번째 위치(참고문서 쪽)는 `reference_document/reference_section/
+    reference_quote`라는 별도 필드로 오는데, 프론트까지 새 스키마를 뚫는 대신 관계형
+    (LG/LF/GA)이 이미 쓰는 `related_location`/`related_original_text` 표시 경로를
+    재사용(`[문서ID] 위치` 라벨로 합성) — 프론트 코드 변경 없이 기존 RANGE 프레임
+    렌더링을 그대로 씀.
+- 신규 테스트 5개: `_frame_type` XDC 케이스 2개, dedup 우선순위(XDC가 안 사라지는지),
+  `_to_issue_record`의 reference→related_location 매핑, API 전체 배선(참고문서 텍스트가
+  실제로 `review_document()`까지 도달하는지 + 응답에 관계형 필드가 매핑되는지) e2e 1개.
+- 백엔드 169/169 테스트 통과(기존 164 + 신규 5), `ruff check` 통과.
+
+### Next
+
+- 프론트: 참고문서를 고르는 UI가 아직 없음 — `client.ts`의 `createQAJob`도 아직
+  `reference_document_ids`를 안 받음. 이건 별도 UX 설계가 필요한 신규 기능이라 이번엔
+  백엔드 계약만 만들어두고 UI는 안 건드림.
+- 승현님께 PR #115 대신 이 PR을 쓴다고 설명하고 #115는 닫아달라고 요청 필요.
+
+## 2026-08-29 (계속) — PR #117 코드 리뷰 후속 수정 3건
+
+### Done
+
+- **참고문서 캐시 미전달**: `review_document(reference_cache=...)`를 안 넘겨서 QA job마다
+  같은 참고문서를 매번 재인덱싱하고 있었음 — 모듈 레벨 `_reference_cache` 딕셔너리(프로세스
+  생애 동안 유지, `_rulebook`/`_xdc_rulebook` 캐시와 같은 패턴)를 추가해서 전달.
+- **참고문서 여러 개일 때 dedup에서 하나가 사라지는 문제**: `_dedupe_conflicting_categories`의
+  키가 `(location, original_text)`뿐이라 XDC-01이 참고문서 A/B 둘 다와 충돌해도 하나만
+  남았음 — 키에 `reference_document`를 추가해서 해결(XDC 아닌 이슈는 항상 None이라 기존
+  동작 안 바뀜). 부수적으로 XDC/GA가 `_CATEGORY_PRIORITY`에서 우선순위 0으로 동률이던
+  문제도 이 키 확장으로 자연히 해소(둘은 reference_document 값이 달라 이제 애초에 같은
+  키로 안 묶임).
+- planqa-agent 쪽 버그(XDC confirm 실패 시 정상 이슈까지 날아가는 문제,
+  sunic5-planqa/planqa-agent#46)도 재벤더링해서 반영.
+- 신규 테스트 2개: dedup이 참고문서 다른 XDC 이슈 둘 다 보존하는지, `reference_cache`가
+  실제로 (매 job마다 새로 안 만들고) 같은 객체로 전달되는지.
+- 리뷰에서 나온 나머지 2건(docstring 스타일, `extra_absence_check_rule_ids` 죽은 코드
+  지적)은 각각 기존 코드베이스 관례와 일치/무관한 다른 기능 소관이라 스킵.
+- 백엔드 170/170 테스트 통과, `ruff check` 통과.
+
+## 2026-08-29 (계속) — XDC 첫 라이브 평가 + XDC-03 예외 문구 재벤더링
+
+planqa-agent에서 손으로 만든 골든 케이스 5개(XDC-01~04 각 1개 + 오탐 방지 예외 1개)를
+실제 Gemini+Sonnet으로 처음 라이브 평가 — XDC-03(재고 자동 환불 vs 참고문서 수동 상담
+처리)이 예외 조건 문구가 너무 넓어서 미탐지됨(4개 중 3개 재현율). 예외 조건을 좁혀서
+재검증한 결과 4/4 재현율, 오탐 0건으로 개선(상세: sunic5-planqa/planqa-agent#47).
+
+### Done
+
+- 수정된 `xdc_rulebook_v1.0.md` 재벤더링(파일 하나만 교체, 코드 변경 없음).
+- 백엔드 170/170 테스트 통과(룰 텍스트만 바뀐 데이터 파일이라 회귀 없음), `ruff check` 통과.
+
+### 한계
+
+- n=5짜리 손으로 만든 케이스라 방향성 확인 수준 — 정식 recall/precision 벤치마크는 아님.
+
+## 2026-08-30 (계속) — documents/teams/team_rules에 Postgres 백엔드 추가 (Render 재배포 생존)
+
+`storage/store.py`가 지금까지 `documents`만 로컬 SQLite 파일로 저장하고 `teams`/`team_rules`는
+순수 메모리(dict)였다는 걸 발견 — Render 무료 플랜은 파일시스템이 휘발성이라, SQLite 파일도
+재배포마다 날아가고 팀 코드/팀 룰은 그보다 더 자주(백엔드 재시작마다) 날아가는 상태였음.
+
+### Done
+
+- `_SqliteBackend`(기존 로직 그대로 옮김) + 신규 `_PostgresBackend`(asyncpg) 두 백엔드를
+  `Store`가 `DATABASE_URL` 유무로 선택 — 설정 안 하면 기존과 100% 동일하게 로컬 SQLite 파일로
+  동작(로컬 개발/테스트는 DB 가입 없이 그대로 zero-config).
+- `teams`/`team_rules`도 SQLite/Postgres 양쪽에 테이블 추가 — `save_team_if_new`의 원자성은
+  이제 앱 레벨 `asyncio.Lock` 대신 DB의 PK 제약(sqlite `IntegrityError` / Postgres
+  `ON CONFLICT DO NOTHING`)이 보장.
+- Postgres 커넥션 풀은 `Store.__init__`이 아니라 첫 실제 호출 시 지연 생성(`_ensure_pool`,
+  `asyncio.Lock`으로 동시 첫 호출 가드) — `Store()`가 이벤트 루프 없는 모듈 임포트 시점에
+  동기적으로 생성되는 기존 구조를 안 건드리기 위함.
+- `config.py`에 `database_url: str = ""` 추가, `.env.example`/`render.yaml`에 `DATABASE_URL`
+  플레이스홀더 추가(`sync: false`, 실제 값은 Render 대시보드에서 직접 입력).
+- **테스트 격리 버그를 먼저 잡음**: `test_api_teams.py`의 `test_save_team_if_new_rejects_a_taken_code`가
+  고정 코드("RACE01")를 쓰는데, teams가 이제 SQLite 파일로 영속되면 pytest를 두 번째 돌릴 때부터
+  그 코드가 이미 존재해서 깨질 뻔함 — `backend/tests/conftest.py` 신규, 세션 시작 시 `store`
+  싱글턴의 `_backend`를 `tmp_path_factory`의 임시 파일로 교체(이름 재바인딩이 아니라 기존
+  객체를 mutate — 이미 `from ... import store`로 참조를 든 다른 모듈들도 그대로 반영됨).
+  연속 두 번 실행해서 재현 확인.
+- 신규 테스트 2개(`Store(dsn=None)`→SQLite, `Store(dsn="postgresql://...")`→Postgres 백엔드
+  선택, 후자는 실제 연결 없이 지연 생성만 확인). 백엔드 184/184 통과, `ruff check` 통과.
+
+### Next
+
+- 기존 `backend/data/sunnic.db`에 있던 documents(있다면)는 마이그레이션 안 함 — 로컬 세션
+  데이터라 새 DB로 넘길 가치가 낮다고 판단.
+
+## 2026-08-31 — Neon 연결 + `_PostgresBackend` 라이브 검증
+
+`neondatabase/agent-skills`(neon, neon-postgres)를 설치하고 Neon CLI로 사용자 계정(org 가영,
+프로젝트 `flat-thunder-85545282`)에 연결 — 지난 세션에서 미검증으로 남겨뒀던
+`_PostgresBackend`를 실제 Neon Postgres에 물려서 확인했다.
+
+### Done
+
+- Node 20(시스템 기본)이 `skills` CLI 요구 버전(≥22.20)보다 낮아서 `brew install node@22`로
+  별도 설치(keg-only라 기본 `node`는 안 건드림) 후 그 PATH로 skills/neon CLI 실행.
+- `neon auth`로 브라우저 OAuth 인증(사용자가 직접 로그인) → `neon connection-string --pooled`로
+  `flat-thunder-85545282` 프로젝트의 pooled 연결 문자열 확보 — 웹앱 정상 트래픽용이라 pooled
+  선택(`neon-postgres` 스킬의 pooled vs direct 가이드대로, 마이그레이션/직접 세션이 필요한
+  작업이 아님).
+- 로컬 `backend/.env`에 `DATABASE_URL` 추가(Render 대시보드는 사용자가 직접 설정 필요 —
+  API/CLI로 Render 쪽 접근 권한 없음).
+- **라이브 검증**: `Store(dsn=settings.database_url)`로 실제 `_PostgresBackend` 생성 →
+  `save_team_if_new`/`get_team`/중복 방지까지 실제 Neon에 테이블 생성부터 전부 확인 후 테스트
+  행 정리. `pytest`는 `conftest.py`의 임시 SQLite 격리 덕분에 `.env`에 진짜
+  `DATABASE_URL`이 있어도 실제 Neon을 안 건드리고 184/184 그대로 통과 확인.
+
+### Next
+
+- Render 대시보드에서 `DATABASE_URL` 직접 설정 필요(사용자).
+
+## 2026-08-31 (계속) — MI/AE 과탐지 검증 + fix_direction 쉬운 문구 재벤더링
+
+혜서 담당 작업(review-agent 쪽 2개, planqa-agent#49)이 `services/review-agent`에는 반영됐지만
+여긴(벤더링 사본) 아직이라 재벤더링. `_SCREEN_HYBRID_SYSTEM`/`_CONFIRM_HYBRID_SYSTEM`의
+2026-08-30 TEMP 한국어 강제 지시(gpt-5-mini 대응용, PR #119)는 벤더링 정책상 로컬 패치라
+그대로 유지 — 이번 재벤더링과 무관.
+
+### Done
+
+- `_MI_VERIFY_SYSTEM`/`_AE_VERIFY_SYSTEM`/`_verify_mi_finding`/`_verify_ae_finding`/
+  `_FALSE_POSITIVE_VERIFIERS`/`_verify_false_positives`를 XDC 섹션 앞에 추가,
+  `review_document()` 끝 dedupe 직후에 연결. `_CONFIRM_HYBRID_SYSTEM`의 `fix_direction`
+  지시에 "전문 용어 없이 비전문가가 바로 실행할 수 있는 문장으로" 추가.
+- 신규 테스트 9개 포팅(services/review-agent와 동일, ruff `C408` 지적으로 `dict(...)` →
+  리터럴만 차이).
+- 백엔드 193/193 통과(기존 184 + 신규 9), `ruff check` 통과.
+
+### Next
+
+- 실제 서비스에서 MI/AE 노출 개수가 회복되는지는 아직 미측정(planqa-agent 쪽도 동일하게
+  미측정 상태로 남아있음).
 ## 2026-08-31 — 넘버링 Validation 커밋 (재검증 후 확정)
 
 은성님이 "메인에서 pull 받았는데 넘버링 기능이 있는지" 물어봐서 확인했더니, 위 2026-08-28 작업이

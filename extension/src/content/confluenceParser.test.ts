@@ -20,6 +20,27 @@ describe('htmlToChapterMarkdown', () => {
     expect(result).toBe('# 제목\n\n## 큰제목\n\n내용1\n\n### 작은제목\n\n내용2')
   })
 
+  it('preserveHeadingLevels: keeps a body h1 at level 1 instead of flattening it to h2', () => {
+    // 실사용 중 확인된 버그: 넘버링 검증은 "구조는 heading level로만 판단한다"는 원칙인데, 대주제를
+    // Heading 1로, 소주제를 Heading 2로 쓴 실제 문서에서 기본 동작(h1을 h2로 클램프)을 그대로 쓰면
+    // 대주제/소주제가 전부 같은 레벨(##)로 뭉개져 하나의 형제 그룹으로 섞여버린다 — 넘버링 재조회
+    // 전용으로 h1~h6 원래 레벨을 보존하는 옵션이 필요하다.
+    const html = '<h1>1. 대주제</h1><h2>1-1. 소주제</h2><h1>2. 대주제</h1><h2>2-1. 소주제</h2>'
+
+    const result = htmlToChapterMarkdown('제목', html, { preserveHeadingLevels: true })
+
+    expect(result).toBe('# 제목\n\n# 1. 대주제\n\n## 1-1. 소주제\n\n# 2. 대주제\n\n## 2-1. 소주제')
+  })
+
+  it('preserveHeadingLevels omitted or false keeps the existing AI-QA clamped behavior unchanged', () => {
+    const html = '<h1>1. 대주제</h1><h2>1-1. 소주제</h2>'
+
+    expect(htmlToChapterMarkdown('제목', html)).toBe('# 제목\n\n## 1. 대주제\n\n## 1-1. 소주제')
+    expect(htmlToChapterMarkdown('제목', html, { preserveHeadingLevels: false })).toBe(
+      '# 제목\n\n## 1. 대주제\n\n## 1-1. 소주제',
+    )
+  })
+
   it('caps heading depth at h6 (######) even for deeper markup', () => {
     const html = '<h2>제목</h2><h6>더깊은제목</h6><p>내용</p>'
 

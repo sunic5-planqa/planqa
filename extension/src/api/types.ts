@@ -157,3 +157,21 @@ export interface TeamRuleInput {
   examples: TeamRuleExamples
   enabled: boolean
 }
+
+export type NumberingIssueStatus = 'auto' | 'confirm'
+export type NumberingIssueSubType = 'missing' | 'duplicate' | 'order' | 'ambiguous'
+
+export interface NumberingIssueResponse {
+  id: string
+  status: NumberingIssueStatus
+  sub_type: NumberingIssueSubType
+  location: string
+  problem: string
+  before_text: string
+  after_text: string | null
+}
+
+export interface AppliedNumberingFix {
+  before_text: string
+  after_text: string
+}

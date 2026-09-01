@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -22,6 +23,7 @@ from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
     RuleDef,
 )
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Issue, Level
+from sunnic_backend.qa_engine.review_agent.structures import xdc
 from sunnic_backend.qa_engine.review_agent.structures.fewshot_bank import (
     EXCEPTION_EXAMPLES,
     VIOLATION_EXAMPLES,
@@ -81,7 +83,7 @@ _CATEGORY_BOUNDARY_NOTES = (
     "referent exists, and reserve MI for things the document doesn't address at all."
 )
 
-_SCREEN_HYBRID_SYSTEM = (
+_SCREEN_HYBRID_BODY = (
     "You are the cheap, wide first pass of a two-stage document QA pipeline (screen now, "
     "a stronger model verifies later) — favor recall over precision, flag anything even "
     "mildly suspicious. Each rule below is given as its own defined text plus a few labeled "
@@ -95,8 +97,46 @@ _SCREEN_HYBRID_SYSTEM = (
     "separately, every stated constraint/capability/schedule sentence across the whole "
     "input, then check each pairing for a genuine conflict before flagging one.\n"
     f"{_CATEGORY_BOUNDARY_NOTES}\n"
+    # TEMP (2026-08-30): review_agent is vendored as-is from sunic5-planqa/planqa-agent — this
+    # line is a local patch, not an upstream change. File an issue upstream and drop this once
+    # re-vendored. Needed because the previous Gemini/Sonnet backends happened to answer in
+    # Korean just from the Korean rule text/few-shot examples in the prompt body, with no
+    # explicit instruction — a model swap (gpt-5-mini) broke that implicit assumption. Kept as
+    # a harmless explicit safety net even while screen/confirm are back on Gemini/Sonnet.
+    "Write \"reason\" in Korean, regardless of what language this instruction is written in.\n"
+)
+
+_SCREEN_HYBRID_SYSTEM = (
+    f"{_SCREEN_HYBRID_BODY}"
     'Respond with JSON only: {"candidates": [{"chunk_index": <int>, "rule_id": "<id>", '
     '"quoted_text": "<exact span from the chunk>", "reason": "<one short line>"}, ...]}'
+)
+
+# XDC(타문서 정합성) 후보 매처(structures/xdc.py) 전용 — 참고문서가 있을 때만 같은 스크리닝 콜에
+# decision_records도 함께 요청한다(타문서와의_정합성_룰북 §1-1: "Gemini는 두 가지 결과를 동시에
+# 반환한다" — 새 콜을 만들지 않고 기존 콜의 출력 스키마만 넓힌다). 참고문서가 없으면 이 상수는
+# 아예 쓰이지 않아 스크리닝 프롬프트/비용이 오늘과 100% 동일하다.
+_DECISION_RECORD_INSTRUCTION = (
+    "Separately from the rule-violation candidates above, also extract a structured "
+    "decision_records list — for each chunk that states a concrete policy DECISION (a "
+    "number, range, condition, deadline, or processing outcome someone could look up and "
+    "compare against another document), describe what it decides. This is fact extraction, "
+    "not judgment: do not decide whether anything is right or wrong here. Skip chunks with "
+    "no such decision.\n"
+)
+
+_SCREEN_HYBRID_SYSTEM_XDC = (
+    f"{_SCREEN_HYBRID_BODY}"
+    f"{_DECISION_RECORD_INSTRUCTION}"
+    'Respond with JSON only: {"candidates": [{"chunk_index": <int>, "rule_id": "<id>", '
+    '"quoted_text": "<exact span from the chunk>", "reason": "<one short line>"}, ...], '
+    '"decision_records": [{"chunk_index": <int>, "quote": "<exact span the decision comes '
+    'from>", "policy_subject": "<broad subject, e.g. 반품/배송/쿠폰>", "attribute": "<the '
+    'attribute being decided, e.g. 신청 기한/수수료율>", "action": "<string or null>", "scope": '
+    '"<who/what this applies to, or null>", "condition_exception": "<carve-out condition, or '
+    'null>", "value": "<string or null>", "unit": "<string or null>", "time_basis": "<what '
+    'the value is measured from, or null>", "canonical_terms": ["<normalized keyword>", '
+    '...]}, ...]}'
 )
 
 _CONFIRM_HYBRID_SYSTEM = (
@@ -109,7 +149,9 @@ _CONFIRM_HYBRID_SYSTEM = (
     "violate: quote the exact evidence sentence from the document (original_text), state "
     "what's wrong (description), explain why it breaks the rule (rationale), and write a "
     "concrete revised version of the text that would fix it (fix_direction) — phrase it as "
-    "a suggestion, not a command. Also apply the rule's own exception condition if given; "
+    "a suggestion, not a command, and in plain language a non-expert reader could act on "
+    "immediately without looking anything up — no jargon or terms of art the rule text "
+    "itself doesn't already use. Also apply the rule's own exception condition if given; "
     "set excused=true (with excuse_reason) when it applies. For the LG/LF/GA categories "
     "specifically, a violation is by definition a relationship error between two locations "
     "in the document — also name the OTHER location involved (related_location), using the "
@@ -137,6 +179,12 @@ _CONFIRM_HYBRID_SYSTEM = (
     "rule_id by the screening pass, which can mis-tag exactly these two confusions — if the "
     "candidate doesn't actually fit the rule you were given for that reason, set "
     "violated=false rather than confirming a violation of the wrong rule.\n"
+    # TEMP (2026-08-30): see the matching note in _SCREEN_HYBRID_SYSTEM above — same
+    # vendoring caveat applies here.
+    "Write \"description\", \"rationale\", \"fix_direction\", and \"excuse_reason\" in "
+    "Korean, regardless of what language this instruction is written in. Leave "
+    "\"original_text\"/\"related_original_text\" as verbatim quotes from the document "
+    "(don't translate quoted text).\n"
     'Respond with JSON only: {"verdicts": [{"index": <int>, "violated": <bool>, '
     '"original_text": "<quote>", "description": "<what\'s wrong>", "rationale": '
     '"<why it violates the rule>", "fix_direction": "<suggested revision>", "excused": '
@@ -166,13 +214,24 @@ class _Candidate:
     reason: str
 
 
-def _screen_pass(chunks: list[Chunk], rules: list[RuleDef], global_context: str, llm: LLMClient) -> list[_Candidate]:
+def _screen_pass(
+    chunks: list[Chunk],
+    rules: list[RuleDef],
+    global_context: str,
+    llm: LLMClient,
+    *,
+    doc_id: str = "",
+    extract_decisions: bool = False,
+) -> tuple[list[_Candidate], list[xdc.DecisionRecord]]:
     rule_block = "\n".join(_hybrid_block(rule) for rule in rules)
     chunk_block = "\n\n".join(f"[{i}] ({chunk.location})\n{chunk.text}" for i, chunk in enumerate(chunks))
     context_block = f"Document context:\n{global_context}\n\n" if global_context else ""
     prompt = f"{context_block}Rules to check (text + examples):\n{rule_block}\n\nChunks:\n{chunk_block}\n\nReturn the candidates JSON."
 
-    response = llm.complete_json(system=_SCREEN_HYBRID_SYSTEM, prompt=prompt)
+    # extract_decisions=False (참고문서가 없는 오늘의 기본 경로)일 땐 프롬프트/응답 스키마가
+    # XDC 도입 이전과 완전히 동일 — 추가 비용이 없다.
+    system = _SCREEN_HYBRID_SYSTEM_XDC if extract_decisions else _SCREEN_HYBRID_SYSTEM
+    response = llm.complete_json(system=system, prompt=prompt)
     raw = response.get("candidates", []) if isinstance(response, dict) else []
     valid_rule_ids = {rule.rule_id for rule in rules}
 
@@ -191,7 +250,12 @@ def _screen_pass(chunks: list[Chunk], rules: list[RuleDef], global_context: str,
                 reason=str(item.get("reason", "")).strip(),
             )
         )
-    return candidates
+
+    decision_records: list[xdc.DecisionRecord] = []
+    if extract_decisions:
+        raw_decisions = response.get("decision_records", []) if isinstance(response, dict) else []
+        decision_records = xdc.parse_decision_records(raw_decisions, doc_id, chunks)
+    return candidates, decision_records
 
 
 def _confirm_pass(
@@ -260,11 +324,231 @@ def _confirm_pass(
     return issues
 
 
-def _paragraph_and_document_rules(rulebook: RuleBook) -> tuple[list[RuleDef], list[RuleDef]]:
+# MI(정보 누락)/AE(모호한 표현) 둘 다 Paragraph 단위로만 검토돼서(GA/LG/LF와 달리 문서 전체
+# 시야가 없음), confirm이 "이 chunk엔 없다/모호하다"를 "문서 전체에 없다/모호하다"로 착각하는
+# 오탐이 실사용 중 확인됨(planqa-agent PR #28/#55, 백엔드는 review_agent 벤더링 정책상 소스를
+# 직접 못 고쳐서 qa_jobs.py에 우회로 추가했지만, 여긴 소스를 직접 소유하므로 정식으로 구현).
+# MI/AE만 검증하는 이유: 이 둘만 "문서 전체를 봐야 판단 가능한 예외조건"을 갖고 있고(AE-01/
+# AE-04의 "다른 곳에 정의/참조되면 예외"), 모든 카테고리에 걸면 비용/시간이 크게 늘어난다.
+_MI_VERIFY_SYSTEM = (
+    "You are double-checking a document-review agent's claim that specific information is "
+    "missing from a document — this exact failure mode (claiming X is missing when X is "
+    "actually stated elsewhere in the document, because the agent's own review only saw one "
+    "narrow chunk of it) has been observed live in production. You will be given the FULL "
+    "document text and the agent's claim. Re-read the ENTIRE document carefully, not just "
+    "whatever section the agent focused on, before deciding. This check has been over-"
+    "correcting in practice, throwing out real findings — only answer actually_missing=false "
+    "when you can point to the specific sentence elsewhere in the document that clearly states "
+    "the missing information; if you're not confident, or the closest match is only loosely "
+    "related, keep actually_missing=true.\n"
+    'Respond with JSON only: {"actually_missing": <bool>, "reason": "<one short sentence>"}'
+)
+
+_AE_VERIFY_SYSTEM = (
+    "You are double-checking a document-review agent's claim that a specific phrase is "
+    "ambiguous/vague (모호한 표현) — this category is vulnerable to the same narrow-context "
+    "failure mode as missing-information claims: a number, referent, or actor that looks "
+    "unspecified in isolation may actually be defined or referenced elsewhere in the same "
+    "document (e.g. a quantity defined in another section and referenced here per AE-01's own "
+    "exception condition, a pronoun whose antecedent is clear from surrounding context, an "
+    "actor implied by a system-wide policy stated elsewhere per AE-04's exception). You will "
+    "be given the FULL document text and the agent's claim. Re-read the ENTIRE document "
+    "carefully, not just whatever section the agent focused on, before deciding whether the "
+    "flagged text is genuinely ambiguous in context. This check has been over-correcting in "
+    "practice, throwing out real findings — only answer actually_ambiguous=false when you can "
+    "point to the specific sentence elsewhere in the document that clearly resolves the "
+    "ambiguity; if you're not confident, or the closest match is only loosely related, keep "
+    "actually_ambiguous=true.\n"
+    'Respond with JSON only: {"actually_ambiguous": <bool>, "reason": "<one short sentence>"}'
+)
+
+
+def _verify_mi_finding(document_text: str, issue: Issue, llm: LLMClient) -> bool:
+    prompt = (
+        f"Full document:\n{document_text}\n\n"
+        f"Agent's claim — location: {issue.location!r}\n"
+        f"  what's allegedly missing: {issue.description!r}\n"
+        f"  rationale: {issue.rationale!r}\n"
+        f"  quoted context: {issue.original_text!r}\n\n"
+        "Return the JSON."
+    )
+    try:
+        response = llm.complete_json(system=_MI_VERIFY_SYSTEM, prompt=prompt)
+    except Exception:  # noqa: BLE001 - a verification failure must not block/hide the original finding
+        return True
+    if not isinstance(response, dict):
+        return True
+    return bool(response.get("actually_missing", True))
+
+
+def _verify_ae_finding(document_text: str, issue: Issue, llm: LLMClient) -> bool:
+    prompt = (
+        f"Full document:\n{document_text}\n\n"
+        f"Agent's claim — location: {issue.location!r}\n"
+        f"  flagged text: {issue.original_text!r}\n"
+        f"  what's allegedly ambiguous: {issue.description!r}\n"
+        f"  rationale: {issue.rationale!r}\n\n"
+        "Return the JSON."
+    )
+    try:
+        response = llm.complete_json(system=_AE_VERIFY_SYSTEM, prompt=prompt)
+    except Exception:  # noqa: BLE001 - a verification failure must not block/hide the original finding
+        return True
+    if not isinstance(response, dict):
+        return True
+    return bool(response.get("actually_ambiguous", True))
+
+
+_FALSE_POSITIVE_VERIFIERS: dict[str, Callable[[str, Issue, LLMClient], bool]] = {
+    "MI": _verify_mi_finding,
+    "AE": _verify_ae_finding,
+}
+
+
+def _verify_false_positives(
+    issues: tuple[Issue, ...], document_text: str, rulebook: RuleBook, llm: LLMClient, events: list[CallEvent]
+) -> tuple[Issue, ...]:
+    verified: list[Issue] = []
+    for issue in issues:
+        verify = _FALSE_POSITIVE_VERIFIERS.get(rulebook.category_of(issue.rule_id) or "")
+        if verify is None:
+            verified.append(issue)
+            continue
+        kept = record_call(
+            llm,
+            stage="verify_fp",
+            tier=None,
+            rule_ids=(issue.rule_id,),
+            events=events,
+            call=lambda issue=issue, verify=verify: verify(document_text, issue, llm),
+        )
+        if kept:
+            verified.append(issue)
+    return tuple(verified)
+
+
+# ---- 타문서 정합성(XDC) — 참고문서가 있을 때만 활성화되는 별도 confirm 트랙 ----
+# 기존 _confirm_pass/_CONFIRM_HYBRID_SYSTEM은 건드리지 않는다 — 내부 카테고리 후보와 XDC 후보는
+# 서로 다른 룰북(rulebook vs xdc_rulebook)과 다른 판정 기준(같은 문서 내 위반 vs 참고문서와의
+# 불일치)을 쓰므로, 한 프롬프트에 섞으면 참고문서가 없을 때도 confirm 동작이 바뀔 위험이 있다.
+_CONFIRM_XDC_SYSTEM = (
+    "You are the precise, expensive second pass of a two-stage document QA pipeline, this "
+    "time checking a CURRENT document's decision against a REFERENCE document's decision on "
+    "what might be the same policy. Each rule below is given as its own defined text — decide "
+    "which rule (if any) applies to each pair. For each numbered pair (current decision + one "
+    "candidate reference decision), first decide whether they're actually about the SAME "
+    "underlying policy (same subject/attribute in substance, not just similar wording) — if "
+    "they're about different policies, this is not a violation of anything, set "
+    "violated=false and rule_id=null. If they are the same policy, decide whether the "
+    "reference document's specifics genuinely conflict with the current document's (a "
+    "different value, scope, condition, or outcome for the same decision) — restating the "
+    "same fact in different words, or at a different level of detail, is NOT a conflict. "
+    "Apply the matching rule's own exception condition if given; set excused=true (with "
+    "excuse_reason) when a documented policy-change approval justifies the difference. When "
+    "confirming a conflict, classify difference_type as one of \"value\", \"scope\", "
+    "\"condition\", \"outcome\" (whichever axis the two documents actually disagree on).\n"
+    'Respond with JSON only: {"verdicts": [{"index": <int>, "violated": <bool>, "rule_id": '
+    '"<id or null>", "description": "<what conflicts>", "rationale": "<why it conflicts>", '
+    '"fix_direction": "<suggested revision>", "excused": <bool>, "excuse_reason": "<string or '
+    'null>", "difference_type": "<value|scope|condition|outcome, or null>"}, ...]}'
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _XdcCandidatePair:
+    current: xdc.DecisionRecord
+    reference: xdc.DecisionRecord
+
+
+@dataclass(frozen=True, slots=True)
+class _XdcContext:
+    """review_document()의 reference_documents/xdc_rulebook 인자로부터 한 번만 만들어져 모든
+    문단 패스에 그대로 전달된다 — 참고문서 인덱싱(비용이 큰 Gemini 콜)은 검토당 한 번만 일어나야
+    하므로, review_document 레벨에서 만들어 _run_pass로 내려보내는 구조."""
+
+    xdc_rulebook: RuleBook
+    reference_indices: list[xdc.ReferenceIndex]
+    aliases: dict[str, str]
+
+
+def _xdc_pair_block(pair_index: int, pair: _XdcCandidatePair) -> str:
+    current, reference = pair.current, pair.reference
+    current_value = f", value: {current.value!r} {current.unit or ''}".rstrip() if current.value else ""
+    reference_value = f", value: {reference.value!r} {reference.unit or ''}".rstrip() if reference.value else ""
+    return (
+        f"[{pair_index}]\n"
+        f"  current decision — location: {current.location!r}, quote: {current.quote!r}, "
+        f"subject/attribute: {current.policy_subject}/{current.attribute}{current_value}\n"
+        f"  reference decision — document: {reference.doc_id!r}, location: {reference.location!r}, "
+        f"quote: {reference.quote!r}{reference_value}"
+    )
+
+
+def _confirm_xdc_pass(
+    pairs: list[_XdcCandidatePair], xdc_rulebook: RuleBook, doc_id: str, level: Level, llm: LLMClient
+) -> list[Issue]:
+    if not pairs:
+        return []
+    rule_block = "\n".join(_hybrid_block(rule) for rule in xdc_rulebook.rules.values())
+    pair_block = "\n".join(_xdc_pair_block(i, pair) for i, pair in enumerate(pairs))
+    prompt = f"Rules to check:\n{rule_block}\n\nPairs:\n{pair_block}\n\nReturn the verdicts JSON."
+
+    response = llm.complete_json(system=_CONFIRM_XDC_SYSTEM, prompt=prompt)
+    raw_verdicts = response.get("verdicts", []) if isinstance(response, dict) else []
+    by_index = {item["index"]: item for item in raw_verdicts if isinstance(item, dict) and "index" in item}
+
+    issues: list[Issue] = []
+    for i, pair in enumerate(pairs):
+        values = by_index.get(i)
+        if values is None or not values.get("violated") or values.get("excused"):
+            continue
+        rule_id = values.get("rule_id")
+        if rule_id not in xdc_rulebook.rules:
+            continue
+        issues.append(
+            Issue(
+                doc_id=doc_id,
+                level=level.value,
+                rule_id=rule_id,
+                location=pair.current.location,
+                description=str(values.get("description") or "").strip(),
+                source="review_agent",
+                original_text=pair.current.quote,
+                rationale=str(values.get("rationale") or "").strip() or None,
+                fix_direction=str(values.get("fix_direction") or "").strip() or None,
+                reference_document=pair.reference.doc_id,
+                reference_section=pair.reference.location,
+                reference_quote=pair.reference.quote,
+                difference_type=str(values.get("difference_type") or "").strip() or None,
+            )
+        )
+    return issues
+
+
+def _run_xdc_confirm(
+    decision_records: list[xdc.DecisionRecord], xdc_context: _XdcContext, doc_id: str, level: Level, llm: LLMClient
+) -> list[Issue]:
+    pairs = [
+        _XdcCandidatePair(current=record, reference=reference)
+        for record in decision_records
+        for reference in xdc.match_candidates(record, xdc_context.reference_indices, xdc_context.aliases)
+    ]
+    return _confirm_xdc_pass(pairs, xdc_context.xdc_rulebook, doc_id, level, llm)
+
+
+def _paragraph_and_document_rules(
+    rulebook: RuleBook, extra_absence_check_rule_ids: frozenset[str] = frozenset()
+) -> tuple[list[RuleDef], list[RuleDef]]:
+    # extra_absence_check_rule_ids lets a caller route rules ABSENCE_CHECK_RULE_IDS can't
+    # name — that constant is a closed set of two literal §1-authored rule_ids (LG-01,
+    # TC-02), so it can never recognize a rule_id it wasn't written with in mind (e.g. a
+    # dynamically-generated one from a caller merging in rules of its own at request time).
+    # Default empty so every existing caller (nothing passes this yet) is unaffected.
+    absence_check_ids = ABSENCE_CHECK_RULE_IDS | extra_absence_check_rule_ids
     paragraph_rules: list[RuleDef] = []
     document_rules: list[RuleDef] = []
     for rule in rulebook.rules.values():
-        if rule.category in _RELATIONAL_CATEGORIES or rule.rule_id in ABSENCE_CHECK_RULE_IDS:
+        if rule.category in _RELATIONAL_CATEGORIES or rule.rule_id in absence_check_ids:
             document_rules.append(rule)
         else:
             paragraph_rules.append(rule)
@@ -284,6 +568,7 @@ def _run_pass(
     rulebook: RuleBook,
     screen_llm: LLMClient,
     confirm_llm: LLMClient,
+    xdc_context: _XdcContext | None = None,
 ) -> tuple[list[Issue], list[CallEvent], str | None]:
     # The passed-in screen_llm/confirm_llm are the shared originals — isolate_client() below
     # gives this pass its own private copies (record_call's usage-diffing races if two
@@ -295,6 +580,10 @@ def _run_pass(
     # screen_llm.usage/confirm_llm.usage on the *original* objects directly) still sees
     # every call.
     events: list[CallEvent] = []
+    # XDC는 "현재 문서의 문단마다" 비교하는 설계(타문서와의_정합성_룰북 §1-1)라 Paragraph 패스
+    # 에서만 켠다 — Document 패스(LG/LF/GA + absence-check, 문서 전체를 한 청크로 봄)는 그대로
+    # 오늘과 동일하게 동작한다.
+    xdc_active = xdc_context is not None and level is Level.PARAGRAPH
     # Isolation itself happens inside the try (not before it) — if isolate_client() ever
     # raises, this pass must still degrade into a tier_error like every other failure mode
     # here, not crash review_document() entirely.
@@ -303,36 +592,57 @@ def _run_pass(
     try:
         isolated_screen = isolate_client(screen_llm, key=level)
         isolated_confirm = isolate_client(confirm_llm, key=level)
-        candidates = record_call(
+        candidates, decision_records = record_call(
             isolated_screen,
             stage="screen",
             tier=level,
             rule_ids=tuple(rule.rule_id for rule in rules),
             events=events,
-            call=lambda: _screen_pass(chunks, rules, global_context, isolated_screen),
-        )
-        if not candidates:
-            return [], events, None
-        rules_by_id = {rule.rule_id: rule for rule in rules}
-        candidate_rule_ids = tuple(sorted({candidate.rule_id for candidate in candidates}))
-        issues = record_call(
-            isolated_confirm,
-            stage="confirm",
-            tier=level,
-            rule_ids=candidate_rule_ids,
-            events=events,
-            call=lambda: _confirm_pass(
-                candidates,
-                chunks,
-                rules_by_id,
-                doc_id,
-                level,
-                global_context,
-                document_text,
-                rulebook,
-                isolated_confirm,
+            call=lambda: _screen_pass(
+                chunks, rules, global_context, isolated_screen, doc_id=doc_id, extract_decisions=xdc_active
             ),
         )
+        issues: list[Issue] = []
+        if candidates:
+            rules_by_id = {rule.rule_id: rule for rule in rules}
+            candidate_rule_ids = tuple(sorted({candidate.rule_id for candidate in candidates}))
+            issues = record_call(
+                isolated_confirm,
+                stage="confirm",
+                tier=level,
+                rule_ids=candidate_rule_ids,
+                events=events,
+                call=lambda: _confirm_pass(
+                    candidates,
+                    chunks,
+                    rules_by_id,
+                    doc_id,
+                    level,
+                    global_context,
+                    document_text,
+                    rulebook,
+                    isolated_confirm,
+                ),
+            )
+        if xdc_active and decision_records:
+            # Own try/except, not folded into the outer one below — the outer except exists
+            # for genuine whole-pass failures (screen/confirm themselves broke), but an XDC-
+            # specific failure (a network hiccup, a malformed verdict) shouldn't discard the
+            # non-XDC issues _confirm_pass already successfully confirmed above. Without this,
+            # attaching reference documents made an otherwise-successful pass strictly worse
+            # than before XDC existed.
+            try:
+                xdc_issues = record_call(
+                    isolated_confirm,
+                    stage="xdc_confirm",
+                    tier=level,
+                    rule_ids=tuple(xdc_context.xdc_rulebook.rules),
+                    events=events,
+                    call=lambda: _run_xdc_confirm(decision_records, xdc_context, doc_id, level, isolated_confirm),
+                )
+                issues = issues + xdc_issues
+            except Exception as error:  # noqa: BLE001 - see comment above
+                return issues, events, f"{level.value} 패스 XDC 검토 실패: {error}"
         return issues, events, None
     except Exception as error:  # noqa: BLE001 - one pass's failure shouldn't sink the whole review
         return [], events, f"{level.value} 패스 검토 실패: {error}"
@@ -349,9 +659,53 @@ def review_document(
     rulebook: RuleBook,
     screen_llm: LLMClient,
     confirm_llm: LLMClient,
+    *,
+    # XDC(타문서 정합성) — 전부 키워드 전용 + 기본값이라, 참고문서를 안 넘기면(기존 호출부는
+    # 전부 이 경우) 오늘과 100% 동일하게 동작한다. (doc_id, text) 쌍만 받는 이유는 백엔드가
+    # 이미 store.get_document(id).raw_text로 순수 텍스트를 읽어 넘기는 현재 패턴(qa_jobs.py)을
+    # 그대로 반복하기 위함 — version 필드가 없는 현재 스키마에 맞춰 reference_cache 키는
+    # (doc_id, 텍스트 해시)로 계산한다.
+    reference_documents: Sequence[tuple[str, str]] = (),
+    xdc_rulebook: RuleBook | None = None,
+    xdc_aliases: dict[str, str] | None = None,
+    reference_cache: dict[str, xdc.ReferenceIndex] | None = None,
+    extra_absence_check_rule_ids: frozenset[str] = frozenset(),
 ) -> ReviewResult:
     tier_errors: list[str] = []
     events: list[CallEvent] = []
+
+    xdc_context: _XdcContext | None = None
+    if reference_documents and xdc_rulebook is not None:
+        cache = reference_cache if reference_cache is not None else {}
+        reference_indices: list[xdc.ReferenceIndex] = []
+        for reference_doc_id, reference_text in reference_documents:
+            cache_key = f"{reference_doc_id}:{xdc.content_hash(reference_text)}"
+            index = cache.get(cache_key)
+            if index is None:
+                try:
+                    reference_tree = parse_document(reference_doc_id, reference_text)
+                    reference_chunks = list(reference_tree.chunks_for(Level.PARAGRAPH))
+                    # 아직 concurrent 패스가 시작되기 전(이 루프는 순차 실행)이라 confirm_llm을
+                    # isolate 없이 바로 써도 안전 — global_context 추출과 같은 이유.
+                    index = record_call(
+                        confirm_llm,
+                        stage="xdc_reference_index",
+                        tier=Level.PARAGRAPH,
+                        rule_ids=(),
+                        events=events,
+                        call=lambda: xdc.build_reference_index(reference_doc_id, reference_chunks, confirm_llm),
+                    )
+                    cache[cache_key] = index
+                except Exception as error:  # noqa: BLE001 - one bad reference doc shouldn't sink the review
+                    tier_errors.append(f"참고문서 {reference_doc_id} 인덱싱 실패: {error}")
+                    continue
+            reference_indices.append(index)
+        if reference_indices:
+            xdc_context = _XdcContext(
+                xdc_rulebook=xdc_rulebook,
+                reference_indices=reference_indices,
+                aliases=xdc_aliases or {},
+            )
 
     try:
         global_context = record_call(
@@ -367,13 +721,16 @@ def review_document(
         tier_errors.append(f"Global Context 추출 실패: {error}")
 
     tree = parse_document(doc_id, document_text)
-    paragraph_rules, document_rules = _paragraph_and_document_rules(rulebook)
+    paragraph_rules, document_rules = _paragraph_and_document_rules(rulebook, extra_absence_check_rule_ids)
     all_issues: list[Issue] = []
 
     passes = (
         (Level.PARAGRAPH, paragraph_rules, list(tree.chunks_for(Level.PARAGRAPH))),
         (Level.DOCUMENT, document_rules, list(tree.chunks_for(Level.DOCUMENT))),
     )
+    # (XDC 참고) rulebook_v1.0.md는 항상 non-relational 문단 룰(TC/AE/MI 등)을 갖고 있어
+    # paragraph_rules가 비는 일이 없다 — 하지만 이 필터 때문에 원리적으로는 paragraph_rules가
+    # 비면 Paragraph 패스 자체가 안 돌아 xdc_context가 있어도 XDC 결정문 추출이 일어나지 않는다.
     active_passes = [(level, rules, chunks) for level, rules, chunks in passes if chunks and rules]
 
     # Paragraph and Document passes only depend on the already-computed global_context, not
@@ -385,7 +742,7 @@ def review_document(
     if len(active_passes) == 1:
         level, rules, chunks = active_passes[0]
         issues, pass_events, error = _run_pass(
-            level, rules, chunks, doc_id, global_context, document_text, rulebook, screen_llm, confirm_llm
+            level, rules, chunks, doc_id, global_context, document_text, rulebook, screen_llm, confirm_llm, xdc_context
         )
         all_issues.extend(issues)
         events.extend(pass_events)
@@ -405,6 +762,7 @@ def review_document(
                     rulebook,
                     screen_llm,
                     confirm_llm,
+                    xdc_context,
                 )
                 for level, rules, chunks in active_passes
             }
@@ -415,10 +773,17 @@ def review_document(
                 if error:
                     tier_errors.append(error)
 
+    deduped_issues = tuple(dedupe_issues(all_issues))
+    try:
+        verified_issues = _verify_false_positives(deduped_issues, document_text, rulebook, confirm_llm, events)
+    except Exception as error:  # noqa: BLE001 - a verification-stage failure must not drop every finding
+        verified_issues = deduped_issues
+        tier_errors.append(f"MI/AE 오탐 재검증 실패: {error}")
+
     return ReviewResult(
         doc_id=doc_id,
         global_context=global_context,
-        issues=tuple(dedupe_issues(all_issues)),
+        issues=verified_issues,
         tier_errors=tuple(tier_errors),
         call_events=tuple(events),
     )

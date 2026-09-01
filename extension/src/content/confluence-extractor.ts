@@ -70,7 +70,7 @@ async function extractCurrentPage(): Promise<ExtractConfluenceContentResponse> {
   try {
     const page = await fetchPageMarkdown(pageId)
     if (!page) return { ok: false, error: 'FETCH_FAILED' }
-    return { ok: true, markdown: page.markdown, title: page.title }
+    return { ok: true, markdown: page.markdown, title: page.title, pageId }
   } catch (err) {
     return { ok: false, error: 'FETCH_FAILED', detail: String(err) }
   } finally {

@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 from sunnic_backend.api import qa_jobs
 from sunnic_backend.main import app
 from sunnic_backend.qa_engine.review_agent.llm.base import CallStats
+from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import RuleBook
 
 _TEST_DOCUMENT = (
     "# 결제 시스템 개선 기획서\n\n"
@@ -28,12 +29,13 @@ _CHUNK_ZERO_RE = re.compile(r"\[0\] \([^)]*\)\n(.+?)(?:\n\n|\Z)", re.DOTALL)
 
 
 class FakeAnthropicClient:
-    """Stands in for review_agent's real AnthropicClient OR GeminiClient — no network call,
-    just enough of a contract (constructor kwargs + complete_json) to drive the real
-    bundled_screen_hybrid/qa_jobs wiring end to end without a live API key. Accepts arbitrary
-    keyword args (**_kwargs) so the same double works whether it's standing in for
-    AnthropicClient(model=, api_key=, ...) or GeminiClient(model=, api_keys=, ...) — qa_jobs
-    now uses Gemini for screen_llm and Anthropic for confirm_llm, and both need a double."""
+    """Stands in for review_agent's real AnthropicClient/GeminiClient/OpenAIClient — no
+    network call, just enough of a contract (constructor kwargs + complete_json) to drive the
+    real bundled_screen_hybrid/qa_jobs wiring end to end without a live API key. Accepts
+    arbitrary keyword args (**_kwargs) so the same double works regardless of which client
+    class qa_jobs._run_review_sync currently constructs (AnthropicClient(model=, api_key=),
+    GeminiClient(model=, api_keys=), or OpenAIClient(model=, api_key=) — see qa_jobs.py's own
+    TEMP comment for whichever wiring is active right now)."""
 
     def __init__(self, *, model: str | None = None, temperature: float = 0.0, **_kwargs: object) -> None:
         self.model = model
@@ -176,8 +178,9 @@ async def test_qa_job_marks_failed_when_llm_client_cannot_be_built(monkeypatch) 
         def __init__(self, *args: object, **kwargs: object) -> None:
             raise RuntimeError("no Anthropic API key configured")
 
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", BrokenAnthropicClient)
-    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+    # TEMP: see the matching note above — _run_review_sync currently builds screen_llm/
+    # confirm_llm from GeminiClient, so that's the constructor that needs to raise here.
+    monkeypatch.setattr(qa_jobs, "GeminiClient", BrokenAnthropicClient)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -210,6 +213,8 @@ async def test_qa_job_marks_failed_when_llm_client_cannot_be_built(monkeypatch) 
         ("LG", "3-1", qa_jobs.FrameType.RANGE),
         ("LF", "2. 배경 및 문제 정의", qa_jobs.FrameType.RANGE),
         ("GA", "5-2", qa_jobs.FrameType.RANGE),
+        ("XDC", None, qa_jobs.FrameType.OBJECT),
+        ("XDC", "[DOC-005] §2-1", qa_jobs.FrameType.RANGE),
     ],
 )
 def test_frame_type_mapping(category: str, related_location: str | None, expected: qa_jobs.FrameType) -> None:
@@ -279,6 +284,12 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
         rulebook: Any,
         screen_llm: Any,
         confirm_llm: Any,
+        *,
+        reference_documents: list[tuple[str, str]] | None = None,
+        xdc_rulebook: Any = None,
+        xdc_aliases: Any = None,
+        reference_cache: Any = None,
+        extra_absence_check_rule_ids: frozenset[str] = frozenset(),
     ) -> qa_jobs.ReviewResult:
         nonlocal call_count
         call_count += 1
@@ -295,7 +306,10 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
         return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(issue,))
 
     monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    # TEMP: _run_review_sync currently constructs GeminiClient for both screen_llm/confirm_llm
+    # (see its own TEMP comment) — patch that name instead until ANTHROPIC_API_KEY is ready and
+    # confirm_llm moves to AnthropicClient, or this double never gets used and the test hits the
+    # real Gemini API.
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
@@ -316,6 +330,71 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
     assert len(issues1) == 1
     assert len(issues2) == 1
     assert issues1[0]["id"] != issues2[0]["id"]
+
+
+# reference_document_ids가 실제로 review_document()까지 (id, raw_text) 쌍으로 도달하는지,
+# 그리고 XDC 이슈가 API 응답까지 관계형 필드가 매핑된 채로 나오는지 — 전체 배선 확인.
+async def test_qa_job_with_reference_document_ids_passes_texts_and_maps_xdc_issue(monkeypatch) -> None:
+    captured_reference_documents: list[tuple[str, str]] = []
+    captured_reference_caches: list[Any] = []
+
+    def fake_review_document(
+        doc_id: str,
+        document_text: str,
+        rulebook: Any,
+        screen_llm: Any,
+        confirm_llm: Any,
+        *,
+        reference_documents: list[tuple[str, str]] | None = None,
+        xdc_rulebook: Any = None,
+        xdc_aliases: Any = None,
+        reference_cache: Any = None,
+        extra_absence_check_rule_ids: frozenset[str] = frozenset(),
+    ) -> qa_jobs.ReviewResult:
+        captured_reference_documents.extend(reference_documents or [])
+        captured_reference_caches.append(reference_cache)
+        issue = qa_jobs.ReviewIssue(
+            doc_id=doc_id,
+            level="Paragraph",
+            rule_id="XDC-01",
+            location="1. 배경 및 문제 정의",
+            description="신청 기한이 다름",
+            original_text="간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원.",
+            rationale="참고문서와 지원 범위가 다름",
+            reference_document="REF-DOC",
+            reference_section="§2-1",
+            reference_quote="참고문서 원문",
+            difference_type="scope",
+        )
+        return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(issue,))
+
+    monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
+    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        current_doc = (await client.post("/documents", json={"raw_text": _TEST_DOCUMENT})).json()["document_id"]
+        reference_doc = (await client.post("/documents", json={"raw_text": "참고문서 본문"})).json()["document_id"]
+
+        job_id = (
+            await client.post(
+                f"/documents/{current_doc}/qa-jobs", json={"reference_document_ids": [reference_doc]}
+            )
+        ).json()["job_id"]
+        status = (await client.get(f"/qa-jobs/{job_id}/status")).json()
+        issues = (await client.get(f"/qa-jobs/{job_id}/issues")).json()
+
+    assert status["status"] == "done"
+    assert captured_reference_documents == [(reference_doc, "참고문서 본문")]
+    # 프로세스 생애 동안 유지되는 같은 딕셔너리가 넘어가는지 — 매 job마다 새로 만들어지면
+    # 참고문서를 캐시할 수 없다(매번 재인덱싱하게 됨).
+    assert captured_reference_caches == [qa_jobs._reference_cache]
+    [issue] = issues
+    assert issue["criteria"] == "타 문서 정합성"
+    assert issue["related_location"] == "[REF-DOC] §2-1"
+    assert issue["related_original_text"] == "참고문서 원문"
+    assert issue["frame_type"] == "range"
 
 
 # 문서 본문 순서로 이슈를 내려주려면(SCREEN 02 "다음"/오버뷰가 왼쪽 원본을 위→아래로 훑도록) 각
@@ -456,6 +535,35 @@ def test_dedupe_conflicting_categories_never_drops_team_rule_issues() -> None:
     assert {issue.rule_id for issue in kept} == {"GA-01", "TEAM-abc-123"}
 
 
+# 회귀 테스트(sunic5-planqa/planqa#115 리뷰) — dedup 키가 (location, original_text)만 쓰면
+# 같은 문단이 참고문서 A/B 둘 다와 따로 충돌해도 XDC 이슈 하나만 남고 하나는 사라진다.
+# reference_document를 키에 포함시켜서 막는다.
+def test_dedupe_conflicting_categories_keeps_xdc_issues_from_different_reference_docs() -> None:
+    rulebook = _xdc_lookup_rulebook()
+    against_doc_a = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="6. FAQ",
+        description="d",
+        original_text="같은 문구",
+        reference_document="DOC-A",
+    )
+    against_doc_b = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="6. FAQ",
+        description="d",
+        original_text="같은 문구",
+        reference_document="DOC-B",
+    )
+
+    kept = qa_jobs._dedupe_conflicting_categories((against_doc_a, against_doc_b), rulebook)
+
+    assert {issue.reference_document for issue in kept} == {"DOC-A", "DOC-B"}
+
+
 # 회귀 테스트(PR #113) — _korean_label()은 rulebook_v1.0.md의 "<한글> <English>" 헤더에서
 # 영어 절반을 잘라내려고 만든 함수라, 팀 규칙의 자유 텍스트 rule_name에 그대로 돌리면 첫 영어
 # 단어 앞에서 잘려나간다. TEAM 카테고리는 원문 rule_name을 그대로 criteria로 써야 한다.
@@ -463,7 +571,7 @@ def test_to_issue_record_keeps_team_rule_name_with_english_words_intact() -> Non
     from sunnic_backend.models.team_rule import TeamRule
     from sunnic_backend.qa_engine.team_rule_adapter import merge_team_rules
 
-    rulebook = merge_team_rules(
+    rulebook, _ = merge_team_rules(
         qa_jobs._load_rulebook(),
         [TeamRule(id="abc-123", team_code="T1", rule_name="회원가입 API 정책 검토", description="설명")],
     )
@@ -472,6 +580,50 @@ def test_to_issue_record_keeps_team_rule_name_with_english_words_intact() -> Non
     record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, {})
 
     assert record.criteria == "회원가입 API 정책 검토"
+
+
+def _xdc_lookup_rulebook() -> RuleBook:
+    return qa_jobs._rulebook_for_lookup(qa_jobs._load_rulebook(), qa_jobs._load_xdc_rulebook())
+
+
+# XDC-01~04는 _CATEGORY_PRIORITY에 GA와 동급(0)으로 등록돼 있다 — 등록 전엔 TEAM처럼 미등록
+# 카테고리라 최하위 취급되어, 기본 룰과 같은 문구를 가리키기만 하면 XDC 이슈가 조용히
+# 사라지는 버그가 있었다(sunic5-planqa/planqa#115에서 발견).
+def test_dedupe_conflicting_categories_keeps_xdc_over_lower_priority_category() -> None:
+    rulebook = _xdc_lookup_rulebook()
+    tc_issue = _issue("TC-01", "6. FAQ", "같은 문구")
+    xdc_issue = _issue("XDC-01", "6. FAQ", "같은 문구")
+
+    kept = qa_jobs._dedupe_conflicting_categories((tc_issue, xdc_issue), rulebook)
+
+    assert [issue.rule_id for issue in kept] == ["XDC-01"]
+
+
+# XDC의 "두 번째 위치"는 같은 문서가 아니라 참고문서 쪽이라 reference_document/
+# reference_section/reference_quote에 담겨 온다 — 프론트까지 새 필드를 뚫지 않고, 관계형
+# (LG/LF/GA)이 이미 쓰는 related_location/related_original_text 표시 경로를 재사용한다.
+def test_to_issue_record_maps_xdc_reference_into_related_location_fields() -> None:
+    rulebook = _xdc_lookup_rulebook()
+    issue = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="4-1",
+        description="신청 기한이 다름",
+        original_text="단순 변심 | 상품 수령일로부터 7일 이내",
+        rationale="현재 문서는 7일, 참고문서는 14일",
+        reference_document="DOC-005",
+        reference_section="§2-1",
+        reference_quote="신청 기한: 상품 수령일로부터 14일 이내",
+        difference_type="value",
+    )
+
+    record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, {})
+
+    assert record.criteria == "타 문서 정합성"
+    assert record.related_location == "[DOC-005] §2-1"
+    assert record.related_original_text == "신청 기한: 상품 수령일로부터 14일 이내"
+    assert record.frame_type == qa_jobs.FrameType.RANGE
 
 
 # 원문 헤딩 자체의 번호는 작성자마다 있기도 없기도 해서 신뢰할 수 없다는 게 실사용 피드백으로

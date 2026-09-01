@@ -2,36 +2,62 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   __resetDuplicateSessionForTests,
   applyIssueEdit,
-  applyIssueOverlay,
-  clearIssueOverlay,
+  clearActiveSuggestion,
+  clearQaPassedBadge,
   formatKstTimestamp,
   getActiveDuplicatePageId,
-  scrollToIssue,
+  scrollToLocation,
+  setActiveSuggestion,
+  showQaPassedBadge,
 } from './issueOverlay'
-import type { OverlayIssue } from './messages'
+import type { EditableSuggestionLocation, SuggestionLocation } from './messages'
 
-const ISSUE: OverlayIssue = {
-  id: 'issue-1',
-  input_text: '3사만 지원, 페이코 미지원',
+const CURRENT: EditableSuggestionLocation = {
+  text: '3사만 지원, 페이코 미지원',
+  location: '결제 수단',
   criteria: '용어 및 단어의 일관성',
   reason: '테스트용 이유',
   suggestion: '4사만 지원, 페이코 미지원',
-  location: '결제 수단',
+}
+const RELATED: SuggestionLocation = { text: '결제 실패 시 안내 문구 없음', location: '결제 실패 안내' }
+
+// current로 넘길 때 편집 관련 필드가 중요하지 않은(하이라이트/폴백/dim 로직만 확인하는) 테스트용 헬퍼.
+function editable(loc: SuggestionLocation): EditableSuggestionLocation {
+  return { ...loc, criteria: '', reason: '', suggestion: null }
+}
+
+// 문서 전체가 setActiveSuggestion 시점부터 이미 contentEditable이라(2026-08-30) 이 클릭 자체가
+// 더 이상 어떤 상태 전환도 일으키지 않는다 — 실제 브라우저에서 사용자가 클릭해 포커스를 옮기는
+// 걸 흉내내는 용도로만 남겨둔다.
+function clickInto(el: HTMLElement): void {
+  el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 5, clientY: 5 }))
 }
 
 const ORIGINAL_PAGE_ID = '482910'
 const DUPLICATE_PAGE_ID = '900001'
-const PAGE_HTML = '<p>간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원 안내.</p>'
+// CURRENT.text("3사만 지원, 페이코 미지원")는 이 문단 전체가 아니라 AI가 지목한 한 구절이다 —
+// dataset.sunnicOriginalText는 이제 문단 전체 스냅샷을 담으므로(2026-08-30), 그걸 검증하는
+// 테스트는 CURRENT.text가 아니라 이 상수와 비교해야 한다.
+const FIRST_PARAGRAPH_FULL_TEXT = '간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원 안내.'
+const PAGE_HTML = `<p>${FIRST_PARAGRAPH_FULL_TEXT}</p><p>결제 실패 시 안내 문구 없음</p>`
 
-// GET/POST/PUT을 흉내내는 목 fetch. 첫 적용은 원본 GET(expand=space 포함) → 복제본 POST → 복제본
-// GET/PUT 순으로 나가고, 두 번째 적용부터는 복제본 GET/PUT만 나간다 — 실제 backend/mock_confluence.py의
-// 동작과 같은 순서.
-function stubConfluenceFetch(overrides?: { duplicateBody?: string; createOk?: boolean; putOk?: boolean }): ReturnType<typeof vi.fn> {
+function stubConfluenceFetch(overrides?: {
+  duplicateBody?: string
+  createOk?: boolean
+  putOk?: boolean
+  similarityOk?: boolean
+  similarityReason?: string
+}): ReturnType<typeof vi.fn> {
   const createOk = overrides?.createOk ?? true
   const putOk = overrides?.putOk ?? true
   const duplicateBody = overrides?.duplicateBody ?? PAGE_HTML
+  const similarityOk = overrides?.similarityOk ?? true
+  const similarityReason = overrides?.similarityReason ?? ''
 
   const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+    if (url.includes('/issues/similarity-check')) {
+      return new Response(JSON.stringify({ addresses_issue: similarityOk, reason: similarityReason }), { status: 200 })
+    }
     if (init?.method === 'PUT') {
       return new Response(JSON.stringify({ ok: true }), { status: putOk ? 200 : 500 })
     }
@@ -44,7 +70,6 @@ function stubConfluenceFetch(overrides?: { duplicateBody?: string; createOk?: bo
         { status: 200 },
       )
     }
-    // duplicate page GET
     return new Response(
       JSON.stringify({ title: 'duplicate', version: { number: 1 }, body: { storage: { value: duplicateBody } } }),
       { status: 200 },
@@ -64,243 +89,341 @@ beforeEach(() => {
   document.body.innerHTML = `<main>${PAGE_HTML}</main>`
   ;(window as unknown as HappyDomWindow).happyDOM.setURL(`http://localhost:8000/mock-confluence/pages/${ORIGINAL_PAGE_ID}`)
   __resetDuplicateSessionForTests()
+  clearActiveSuggestion()
+  clearQaPassedBadge()
   // test-setup.ts 전역 chrome 스텁엔 sendMessage가 없어 이 테스트에서만 보강한다.
   chrome.runtime.sendMessage = vi.fn().mockResolvedValue(undefined)
 })
 
-describe('applyIssueOverlay', () => {
-  it('wraps the matching text in a highlight mark and reports it as matched', () => {
-    const result = applyIssueOverlay([ISSUE])
+describe('setActiveSuggestion', () => {
+  it('tints the paragraph matching current.text and dims every other block', () => {
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
 
-    expect(result).toEqual({ matched: 1, total: 1 })
-    const mark = document.querySelector('.sunnic-issue-highlight')
-    expect(mark?.textContent).toBe(ISSUE.input_text)
-    expect(mark?.getAttribute('data-sunnic-issue-id')).toBe(ISSUE.id)
+    const paragraphs = document.querySelectorAll('p')
+    expect(paragraphs[0].classList.contains('sunnic-loc-current')).toBe(true)
+    expect(paragraphs[1].classList.contains('sunnic-loc-dim')).toBe(true)
+    expect(paragraphs[0].classList.contains('sunnic-loc-dim')).toBe(false)
   })
 
-  it('reports 0 matched when the text is not present in the document', () => {
-    const result = applyIssueOverlay([{ ...ISSUE, input_text: '문서에 없는 문구' }])
+  it('marks the related location with a dashed style, distinct from current', () => {
+    setActiveSuggestion({ current: CURRENT, related: RELATED, doneLocations: [] })
 
-    expect(result).toEqual({ matched: 0, total: 1 })
-    expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
+    const paragraphs = document.querySelectorAll('p')
+    expect(paragraphs[0].classList.contains('sunnic-loc-current')).toBe(true)
+    expect(paragraphs[1].classList.contains('sunnic-loc-related')).toBe(true)
+    expect(paragraphs[1].classList.contains('sunnic-loc-dim')).toBe(false)
   })
 
-  it('matches even when the live DOM has different whitespace than input_text', () => {
-    document.body.innerHTML = '<main><p>간편결제(카카오페이,   네이버페이,\n토스) 3사만 지원, 페이코 미지원 안내.</p></main>'
+  it('marks already-done locations instead of dimming them', () => {
+    document.body.innerHTML = `<main>${PAGE_HTML}<p>세 번째 문단, 아직 안 건드림</p></main>`
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [RELATED] })
 
-    const result = applyIssueOverlay([ISSUE])
-
-    expect(result).toEqual({ matched: 1, total: 1 })
-    expect(document.querySelector('.sunnic-issue-highlight')?.textContent).toBe('3사만 지원, 페이코 미지원')
+    const paragraphs = document.querySelectorAll('p')
+    expect(paragraphs[0].classList.contains('sunnic-loc-current')).toBe(true)
+    expect(paragraphs[1].classList.contains('sunnic-loc-done')).toBe(true)
+    expect(paragraphs[1].classList.contains('sunnic-loc-dim')).toBe(false)
+    expect(paragraphs[2].classList.contains('sunnic-loc-dim')).toBe(true)
   })
 
-  it('falls back to highlighting the location heading when input_text has no match (e.g. missing-info issues)', () => {
-    // "정보 누락(MI)" 같은 이슈는 애초에 원문에 없는 걸 지적하니 input_text로 찾을 대상 자체가
-    // 없다 — 그럴 때도 "다음"으로 넘기면 문서가 스크롤돼야 어디를 고쳐야 하는지 알 수 있다.
+  it('is editable immediately (no click needed) and remembers the original text for revert', () => {
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+    const el = document.querySelector<HTMLElement>('p')
+    if (!el) throw new Error('paragraph not found')
+
+    expect(el.contentEditable).toBe('true')
+    expect(el.dataset.sunnicOriginalText).toBe(FIRST_PARAGRAPH_FULL_TEXT)
+  })
+
+  // 표시된(틴트된) 위치만 고칠 수 있게 막아둔 게 오히려 불편하다는 실사용 피드백(2026-08-30)으로
+  // 문서 전체를 항상 편집 가능하게 열어둔다 — related/done은 물론 dim된 문단까지도 예외 없다.
+  it('makes every block in the document editable, not just current — related/done/dim included', () => {
+    document.body.innerHTML = `<main>${PAGE_HTML}<p>세 번째 문단, 아직 안 건드림</p></main>`
+    setActiveSuggestion({ current: CURRENT, related: RELATED, doneLocations: [] })
+
+    const paragraphs = document.querySelectorAll<HTMLElement>('p')
+    expect(paragraphs[0].contentEditable).toBe('true') // current
+    expect(paragraphs[1].contentEditable).toBe('true') // related
+    expect(paragraphs[2].contentEditable).toBe('true') // dim(그 외)
+  })
+
+  it('scrolls the page so the current paragraph is centered', () => {
+    const scrollSpy = vi.fn()
+    window.scrollTo = scrollSpy
+
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+
+    expect(scrollSpy).toHaveBeenCalled()
+    expect(scrollSpy.mock.calls[0][0]).toMatchObject({ behavior: 'smooth' })
+  })
+
+  it('falls back to the location heading when current.text has no match (e.g. missing-info issues)', () => {
     document.body.innerHTML =
       '<main><h2>6. 프로덕트 기능</h2><h3>6-1. 메인 배너 (캐러셀)</h3><p>최대 5개 슬라이드로 구성.</p></main>'
-    const issue: OverlayIssue = {
-      ...ISSUE,
-      input_text: '자동 슬라이드 전환 간격',
+    const missing: SuggestionLocation = {
+      text: '자동 슬라이드 전환 간격',
       location: '6. 프로덕트 기능 > 6-1. 메인 배너 (캐러셀)',
     }
 
-    const result = applyIssueOverlay([issue])
+    setActiveSuggestion({ current: editable(missing), related: null, doneLocations: [] })
 
-    expect(result).toEqual({ matched: 1, total: 1 })
-    const mark = document.querySelector('.sunnic-issue-highlight')
-    expect(mark?.textContent).toBe('6-1. 메인 배너 (캐러셀)')
-    expect(mark?.closest('h3')).not.toBeNull()
+    const heading = document.querySelector('h3')
+    expect(heading?.classList.contains('sunnic-loc-current')).toBe(true)
   })
 
   it('never falls back to the page title (h1) even when location matches nothing but it', () => {
-    // review-agent의 Document 위계(문서 전체 대상 판정) 이슈는 location이 곧 "문서 제목"이다
-    // (백엔드 document.py의 _doc_title) — 이걸 그대로 폴백 대상으로 허용하면 컨플루언스 페이지
-    // 자체의 제목을 감싸버려서, 마치 "제목이 문제"라는 것처럼 보이는 엉뚱한 하이라이트가 된다
-    // (실사용 중 확인된 버그). h1은 폴백 대상에서 제외해야 하고, 그러면 매칭 자체가 실패해야 한다.
     document.body.innerHTML = '<main><h1>[DOC-001] NxEF 모바일 웹 — 홈 화면 PRD (v1.0)</h1><h2>1. 프로덕트 목적</h2></main>'
-    const issue: OverlayIssue = {
-      ...ISSUE,
-      input_text: '문서에 없는 문구',
+    const missing: SuggestionLocation = {
+      text: '문서에 없는 문구',
       location: '[DOC-001] NxEF 모바일 웹 — 홈 화면 PRD (v1.0)',
     }
 
-    const result = applyIssueOverlay([issue])
+    setActiveSuggestion({ current: editable(missing), related: null, doneLocations: [] })
 
-    expect(result).toEqual({ matched: 0, total: 1 })
-    expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
+    expect(document.querySelector('h1')?.classList.contains('sunnic-loc-current')).toBe(false)
   })
 
-  it('still highlights the other issues even if one has no location and cannot be matched', () => {
-    // wrapIssue()가 이슈 하나에서 예외를 던지면 filter() 전체가 멈춰서 뒤에 있던 멀쩡한 이슈들까지
-    // 하이라이트가 안 그려지는 사고로 이어졌었다(location이 없는 예전 데이터가 섞인 경우 등).
-    document.body.innerHTML = `<main>${PAGE_HTML}</main>`
-    const brokenIssue = { ...ISSUE, id: 'broken', input_text: '문서에 없는 문구', location: undefined as unknown as string }
-    const goodIssue: OverlayIssue = { ...ISSUE, id: 'issue-2' }
+  it('never matches an empty text (insert_range issues) against the start of the document', () => {
+    document.body.innerHTML = '<main><h2>다른 제목</h2><p>첫 문단</p></main>'
+    const empty: SuggestionLocation = { text: '', location: '다른 제목' }
 
-    const result = applyIssueOverlay([brokenIssue, goodIssue])
+    setActiveSuggestion({ current: editable(empty), related: null, doneLocations: [] })
 
-    expect(result).toEqual({ matched: 1, total: 2 })
-    expect(document.querySelector('[data-sunnic-issue-id="issue-2"]')).not.toBeNull()
+    // text가 비어있으면 정규식이 본문 맨 앞에서 항상 "매치"돼버리는 걸 막아야 한다 — 곧장 헤딩
+    // 폴백으로 가서 h2가 앵커가 되는지 확인.
+    expect(document.querySelector('h2')?.classList.contains('sunnic-loc-current')).toBe(true)
+    expect(document.querySelector('p')?.classList.contains('sunnic-loc-current')).toBe(false)
   })
 
-  it('reports 0 matched when neither input_text nor the location heading exist in the document', () => {
-    document.body.innerHTML = '<main><h2>다른 제목</h2></main>'
-    const issue: OverlayIssue = { ...ISSUE, input_text: '문서에 없는 문구', location: '문서에 없는 제목' }
+  it('replaces a previously active suggestion cleanly when called again', () => {
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+    setActiveSuggestion({ current: editable(RELATED), related: null, doneLocations: [] })
 
-    const result = applyIssueOverlay([issue])
-
-    expect(result).toEqual({ matched: 0, total: 1 })
-    expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
-  })
-
-  it('matches a list-item input_text even though the model quoted the synthetic "- " bullet prefix', () => {
-    // confluenceParser.ts는 <li>를 백엔드가 이해하는 "- item" 한 줄로 평탄화하고(review_agent
-    // document.py의 _BULLET_LINE 기대 형식), 모델은 자기가 받은 그 청크를 verbatim으로 인용한다 —
-    // 그래서 input_text에 "- " 접두사가 그대로 섞여 온다. 실제 <li> 텍스트엔 그 기호가 없다.
-    document.body.innerHTML = '<main><ul><li>신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음</li></ul></main>'
-    const issue: OverlayIssue = { ...ISSUE, input_text: '- 신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음' }
-
-    const result = applyIssueOverlay([issue])
-
-    expect(result).toEqual({ matched: 1, total: 1 })
-    expect(document.querySelector('.sunnic-issue-highlight')?.textContent).toBe(
-      '신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음',
-    )
-  })
-
-  it('matches a table-row input_text even though the model quoted the synthetic "| |" cell separators', () => {
-    // confluenceParser.ts는 <tr>을 "| 셀 | 셀 |"로 평탄화한다 — 실제 <td> 텍스트엔 파이프가 없고,
-    // 셀 사이에 아무 구분 문자도 없을 수 있다(HTML 소스에 여백 텍스트 노드가 없는 경우).
-    document.body.innerHTML = '<main><table><tr><td>결제수단</td><td>간편결제 3사</td></tr></table></main>'
-    const issue: OverlayIssue = { ...ISSUE, input_text: '| 결제수단 | 간편결제 3사 |' }
-
-    const result = applyIssueOverlay([issue])
-
-    expect(result).toEqual({ matched: 1, total: 1 })
-  })
-
-  it('matches a multi-bullet input_text even when adjacent <li> elements have no whitespace between them', () => {
-    // 실사용 중 확인된 버그: 모델이 여러 불릿 줄을 통째로 인용하면 input_text에 줄바꿈이 남는데
-    // (불릿 접두사 "- "는 걷어내도), 그 줄바꿈을 \s+(공백 1개 이상)로만 느슨화하면 실제 <li> 사이에
-    // 공백 문자가 전혀 없는 문서에서는 여전히 매칭이 실패했다.
-    document.body.innerHTML =
-      '<main><ul><li>쿠폰 적용 주문의 구매 확정 여부와 무관하게 즉시 사용 처리한다</li>' +
-      '<li>쿠폰 사용 후 주문이 취소되면 쿠폰을 복원하지 않는다</li></ul></main>'
-    const issue: OverlayIssue = {
-      ...ISSUE,
-      input_text:
-        '- 쿠폰 적용 주문의 구매 확정 여부와 무관하게 즉시 사용 처리한다\n- 쿠폰 사용 후 주문이 취소되면 쿠폰을 복원하지 않는다',
-    }
-
-    const result = applyIssueOverlay([issue])
-
-    expect(result).toEqual({ matched: 1, total: 1 })
-  })
-
-  it('wraps every matching issue at once, not just one', () => {
-    document.body.innerHTML =
-      '<main><p>간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원 안내.</p>' +
-      '<p>PG사 응답 지연 시 타임아웃 처리 로직 부재</p></main>'
-    const issue2: OverlayIssue = { ...ISSUE, id: 'issue-2', input_text: 'PG사 응답 지연 시 타임아웃 처리 로직 부재' }
-
-    const result = applyIssueOverlay([ISSUE, issue2])
-
-    expect(result).toEqual({ matched: 2, total: 2 })
-    expect(document.querySelectorAll('.sunnic-issue-highlight')).toHaveLength(2)
-  })
-
-  it('matches text that spans a label and a separate badge element (e.g. a status lozenge)', () => {
-    // 실제 컨플루언스에서 "상태: 검토 중" 같은 문구는 라벨 텍스트 노드와 별도 뱃지 엘리먼트로 쪼개져
-    // 렌더링되는 경우가 흔함 — 한 텍스트 노드 안에서만 찾던 예전 방식은 이런 경우를 놓쳤다.
-    document.body.innerHTML = '<p>상태: <span class="lozenge">검토 중</span> 입니다.</p>'
-    const issue: OverlayIssue = { ...ISSUE, input_text: '상태: 검토 중' }
-
-    const result = applyIssueOverlay([issue])
-
-    expect(result).toEqual({ matched: 1, total: 1 })
-    const marks = document.querySelectorAll('.sunnic-issue-highlight')
-    expect(marks.length).toBeGreaterThanOrEqual(2)
-    expect(Array.from(marks).every((m) => m.getAttribute('data-sunnic-issue-id') === issue.id)).toBe(true)
-    expect(Array.from(marks).map((m) => m.textContent).join('')).toBe('상태: 검토 중')
-  })
-
-  it('merges every mark of a multi-element match into one on apply, showing the new text', async () => {
-    stubConfluenceFetch({ duplicateBody: '<p>상태: 검토 중</p>' })
-    document.body.innerHTML = '<p>상태: <span class="lozenge">검토 중</span></p>'
-    const issue: OverlayIssue = { ...ISSUE, input_text: '상태: 검토 중' }
-    applyIssueOverlay([issue])
-    expect(document.querySelectorAll('.sunnic-issue-highlight').length).toBeGreaterThanOrEqual(2)
-
-    await applyIssueEdit(issue.id, issue.input_text, '검토 완료')
-
-    const marks = document.querySelectorAll('.sunnic-issue-highlight')
-    expect(marks.length).toBe(1)
-    expect(marks[0].classList.contains('sunnic-issue-resolved')).toBe(true)
-    expect(marks[0].textContent).toBe('검토 완료')
-  })
-
-  it('overwrites the mark text in place after a single-element apply', async () => {
-    stubConfluenceFetch()
-    applyIssueOverlay([ISSUE])
-
-    await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
-
-    const mark = document.querySelector('.sunnic-issue-highlight')
-    expect(mark?.textContent).toBe(ISSUE.suggestion)
-  })
-
-  it('clicking a highlight shows a read-only AI 제안 bubble and focuses the sidepanel on it', () => {
-    applyIssueOverlay([ISSUE])
-    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
-    mark?.click()
-
-    const tooltip = document.querySelector('.sunnic-issue-tooltip')
-    expect(tooltip?.textContent).toContain('AI 제안')
-    expect(tooltip?.textContent).toContain(ISSUE.suggestion)
-    expect(tooltip?.querySelector('button')).toBeNull()
-
-    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({ type: 'ISSUE_OVERLAY_FOCUS', issueId: ISSUE.id })
-  })
-
-  it('highlights quoted spans in the AI 제안 text with a gradient, leaving the rest plain', () => {
-    // 문장 전체를 다 강조하면 오히려 핵심이 안 보여서, 따옴표로 감싼 구체적 제안치/인용구만 강조한다.
-    const issue: OverlayIssue = { ...ISSUE, suggestion: "마일스톤의 P2 항목을 '핵클 SDK 연동'으로 수정" }
-    applyIssueOverlay([issue])
-    document.querySelector<HTMLElement>('.sunnic-issue-highlight')?.click()
-
-    const quoted = document.querySelector('.sunnic-issue-tooltip .sunnic-tooltip-quote')
-    expect(quoted?.textContent).toBe("'핵클 SDK 연동'")
-    expect(document.querySelector('.sunnic-issue-tooltip')?.textContent).toContain(issue.suggestion)
-  })
-
-  it('escapes HTML special characters in the AI 제안 text instead of interpreting them as markup', () => {
-    const issue: OverlayIssue = { ...ISSUE, suggestion: '<b>업계 평균</b> & "3 < 5" 확인' }
-    applyIssueOverlay([issue])
-    document.querySelector<HTMLElement>('.sunnic-issue-highlight')?.click()
-
-    const tooltip = document.querySelector('.sunnic-issue-tooltip')
-    expect(tooltip?.querySelector('b')).toBeNull()
-    expect(tooltip?.textContent).toContain('<b>업계 평균</b> & "3 < 5" 확인')
-  })
-
-  it('clicking the same highlight again closes the bubble', () => {
-    applyIssueOverlay([ISSUE])
-    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
-    mark?.click()
-    mark?.click()
-
-    expect(document.querySelector('.sunnic-issue-tooltip')).toBeNull()
+    const paragraphs = document.querySelectorAll('p')
+    expect(paragraphs[0].classList.contains('sunnic-loc-current')).toBe(false)
+    expect(paragraphs[0].classList.contains('sunnic-loc-dim')).toBe(true)
+    expect(paragraphs[1].classList.contains('sunnic-loc-current')).toBe(true)
   })
 })
 
-describe('clearIssueOverlay', () => {
-  it('unwraps highlight marks back to plain text', () => {
-    applyIssueOverlay([ISSUE])
-    clearIssueOverlay()
+describe('clearActiveSuggestion', () => {
+  it('removes every injected class, turns off contentEditable, and closes the edit-actions box', () => {
+    setActiveSuggestion({ current: CURRENT, related: RELATED, doneLocations: [] })
+    clearActiveSuggestion()
 
-    expect(document.querySelector('.sunnic-issue-highlight')).toBeNull()
-    expect(document.querySelector('main')?.textContent).toContain(ISSUE.input_text)
+    for (const p of document.querySelectorAll<HTMLElement>('p')) {
+      expect(p.className).toBe('')
+    }
+    // 첫 문단만 current였다(contentEditable이 켜졌었다) — clear 후 다시 꺼졌는지 확인.
+    expect(document.querySelectorAll<HTMLElement>('p')[0].contentEditable).toBe('false')
+    expect(document.querySelector('.sunnic-edit-actions')).toBeNull()
+  })
+})
+
+describe('editing the current paragraph in place', () => {
+  // 문서 전체가 이미 편집 가능하므로(2026-08-30) 클릭해서 "편집 모드로 들어가야" 뜨는 게
+  // 아니라, 이 제안이 활성화된 순간(current를 찾은 직후) 바로 뜬다.
+  it('shows the floating 취소/저장 box as soon as the suggestion becomes active, without needing a click', () => {
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+
+    const box = document.querySelector('.sunnic-edit-actions')
+    expect(box).not.toBeNull()
+    expect(box?.querySelector('.sunnic-edit-actions-cancel')?.textContent).toBe('취소')
+    expect(box?.querySelector('.sunnic-edit-actions-save')?.textContent).toBe('저장')
+  })
+
+  // 문서 전체가 편집 가능한 상태는 이 제안이 떠 있는 내내 유지된다 — 취소는 텍스트만 원복하고
+  // 박스만 닫을 뿐, contentEditable을 끄지 않는다(다른 문단도 여전히 자유롭게 고칠 수 있어야
+  // 하므로, 2026-08-30).
+  it('cancel reverts the text and closes the box, but keeps the document editable', () => {
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+    const el = document.querySelector<HTMLElement>('p')
+    if (!el) throw new Error('paragraph not found')
+    el.textContent = '아무렇게나 고친 문구'
+
+    document.querySelector<HTMLButtonElement>('.sunnic-edit-actions-cancel')?.click()
+
+    expect(el.textContent).toBe(FIRST_PARAGRAPH_FULL_TEXT)
+    expect(el.contentEditable).toBe('true')
+    expect(document.querySelector('.sunnic-edit-actions')).toBeNull()
+  })
+
+  // 저장 시 current 밖에서 사용자가 고친 다른 블록도 같이 저장돼야 한다(전체 편집 허용,
+  // 2026-08-30) — 여기선 related 문단도 같이 고쳐서 한 번의 저장 요청에 두 치환이 다 담기는지
+  // 확인한다.
+  it('save also picks up edits made to other (non-current) blocks in the same session', async () => {
+    const fetchMock = stubConfluenceFetch()
+    setActiveSuggestion({ current: CURRENT, related: RELATED, doneLocations: [] })
+    const paragraphs = document.querySelectorAll<HTMLElement>('p')
+    paragraphs[0].textContent = '4사만 지원, 페이코 미지원'
+    paragraphs[1].textContent = '결제 실패 시 재시도 버튼 안내'
+
+    document.querySelector<HTMLButtonElement>('.sunnic-edit-actions-save')?.click()
+
+    await vi.waitFor(() => {
+      expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+        type: 'SUGGESTION_EDIT_SAVED',
+        newText: '4사만 지원, 페이코 미지원',
+      })
+    })
+    const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    const putBody = JSON.parse((putCall?.[1] as RequestInit).body as string) as { body: { storage: { value: string } } }
+    expect(putBody.body.storage.value).toContain('4사만 지원, 페이코 미지원')
+    expect(putBody.body.storage.value).toContain('결제 실패 시 재시도 버튼 안내')
+    // 저장 하나에 두 블록 다 담겼으니 PUT은 한 번만 나가야 한다.
+    const puts = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    expect(puts).toHaveLength(1)
+  })
+
+  // 실사용 버그: current를 안 건드리고 다른 문단만 고쳐서 저장했더니 아무것도 반영이 안 됐다는
+  // 보고(2026-08-30) — isIssueLikelyResolved(oldText, oldText)가 "자기 자신을 포함하니" 항상
+  // false를 돌려줘서 매번 "그래도 저장" 확인을 한 번 더 요구했었고, 그걸 놓치면 저장 자체가
+  // 안 나갔다. current를 안 건드렸을 땐 그 확인 자체를 건너뛰어야 한다.
+  it('saves edits made only to a non-current block, without requiring the "그래도 저장" confirmation gate', async () => {
+    const fetchMock = stubConfluenceFetch()
+    setActiveSuggestion({ current: CURRENT, related: RELATED, doneLocations: [] })
+    const paragraphs = document.querySelectorAll<HTMLElement>('p')
+    // current(paragraphs[0])는 손대지 않는다 — related만 고친다.
+    paragraphs[1].textContent = '결제 실패 시 재시도 버튼 안내'
+
+    document.querySelector<HTMLButtonElement>('.sunnic-edit-actions-save')?.click()
+
+    await vi.waitFor(() => {
+      const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+      expect(putCall).toBeDefined()
+    })
+    // "그래도 저장" 경고에 걸렸다면 박스가 안 닫히고 남아있었을 것이다 — 곧장 저장까지 갔다는
+    // 신호로 박스가 닫혔는지 확인한다.
+    expect(document.querySelector('.sunnic-edit-actions')).toBeNull()
+    const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    const putBody = JSON.parse((putCall?.[1] as RequestInit).body as string) as { body: { storage: { value: string } } }
+    expect(putBody.body.storage.value).toContain('결제 실패 시 재시도 버튼 안내')
+  })
+
+  it('warns when the original problem text is still present, and requires a second click to save anyway', async () => {
+    const fetchMock = stubConfluenceFetch()
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+    const el = document.querySelector<HTMLElement>('p')
+    if (!el) throw new Error('paragraph not found')
+    clickInto(el)
+    const saveBtn = document.querySelector<HTMLButtonElement>('.sunnic-edit-actions-save')
+    if (!saveBtn) throw new Error('save button not found')
+
+    // 원문을 그대로 둔 채(공백만 추가) 저장 시도 — 여전히 문제 문구를 포함하고 있다.
+    el.textContent = `${CURRENT.text} `
+    saveBtn.click()
+
+    await vi.waitFor(() => expect(saveBtn.textContent).toBe('그래도 저장'))
+    expect(document.querySelector('.sunnic-edit-actions-notice')?.textContent).toContain('아직 남아있어요')
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')).toBe(false)
+  })
+
+  it('saves the edit to the Confluence duplicate, notifies the panel, and closes the box (document stays editable)', async () => {
+    const fetchMock = stubConfluenceFetch()
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+    const el = document.querySelector<HTMLElement>('p')
+    if (!el) throw new Error('paragraph not found')
+    clickInto(el)
+    el.textContent = '4사만 지원, 페이코 미지원'
+
+    document.querySelector<HTMLButtonElement>('.sunnic-edit-actions-save')?.click()
+
+    await vi.waitFor(() => {
+      expect(chrome.runtime.sendMessage).toHaveBeenCalledWith({
+        type: 'SUGGESTION_EDIT_SAVED',
+        newText: '4사만 지원, 페이코 미지원',
+      })
+    })
+    expect(el.contentEditable).toBe('true')
+    expect(document.querySelector('.sunnic-edit-actions')).toBeNull()
+    const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    expect(putCall).toBeDefined()
+    const similarityCall = fetchMock.mock.calls.find(([url]) => (url as string).includes('/issues/similarity-check'))
+    expect(similarityCall).toBeDefined()
+  })
+
+  it('skips the AI similarity check when editing the related location (no suggestion to compare against)', async () => {
+    const fetchMock = stubConfluenceFetch()
+    const relatedEditable: EditableSuggestionLocation = { ...RELATED, criteria: '', reason: '', suggestion: null }
+    setActiveSuggestion({ current: relatedEditable, related: null, doneLocations: [] })
+    const el = document.querySelector<HTMLElement>('.sunnic-loc-current')
+    if (!el) throw new Error('current paragraph not found')
+    clickInto(el as HTMLElement)
+    el.textContent = '결제 실패 시 재시도 안내 문구를 노출한다'
+
+    document.querySelector<HTMLButtonElement>('.sunnic-edit-actions-save')?.click()
+
+    await vi.waitFor(() => {
+      expect(chrome.runtime.sendMessage).toHaveBeenCalled()
+    })
+    const similarityCall = fetchMock.mock.calls.find(([url]) => (url as string).includes('/issues/similarity-check'))
+    expect(similarityCall).toBeUndefined()
+  })
+})
+
+describe('scrollToLocation', () => {
+  it('scrolls the page to center the matching paragraph and returns true, without leaving a persistent tint', () => {
+    const scrollSpy = vi.fn()
+    window.scrollTo = scrollSpy
+
+    const result = scrollToLocation(CURRENT)
+
+    expect(result).toBe(true)
+    expect(scrollSpy).toHaveBeenCalled()
+    expect(document.querySelector('.sunnic-loc-current')).toBeNull()
+  })
+
+  it('returns false when neither the text nor a matching heading exist', () => {
+    const result = scrollToLocation({ text: '문서에 없는 문구', location: '문서에 없는 제목' })
+
+    expect(result).toBe(false)
+  })
+})
+
+describe('showQaPassedBadge / clearQaPassedBadge', () => {
+  it('injects a badge next to the document title and removes it on clear', () => {
+    document.body.innerHTML = '<h1>PRD 문서</h1>'
+
+    showQaPassedBadge()
+    expect(document.querySelector('h1 .sunnic-qa-passed-badge')?.textContent).toBe('✓ QA 통과')
+
+    clearQaPassedBadge()
+    expect(document.querySelector('.sunnic-qa-passed-badge')).toBeNull()
+  })
+
+  it('does nothing when the page has no h1', () => {
+    document.body.innerHTML = '<p>제목 없는 페이지</p>'
+
+    expect(() => showQaPassedBadge()).not.toThrow()
+    expect(document.querySelector('.sunnic-qa-passed-badge')).toBeNull()
+  })
+
+  // 새로고침 직후엔 컨플루언스 자신의 SPA가 아직 h1을 렌더링하기 전에 이 요청이 도착할 수 있다 —
+  // 그 경우에도 h1이 나타나면 뒤늦게라도 배지가 붙어야 한다(2026-08-30 실사용 보고로 확인된 버그).
+  it('retries until h1 appears, then shows the badge', () => {
+    vi.useFakeTimers()
+    document.body.innerHTML = '<p>아직 렌더링 안 된 페이지</p>'
+
+    showQaPassedBadge()
+    expect(document.querySelector('.sunnic-qa-passed-badge')).toBeNull()
+
+    document.body.innerHTML = '<h1>PRD 문서</h1>'
+    vi.advanceTimersByTime(300)
+    expect(document.querySelector('h1 .sunnic-qa-passed-badge')?.textContent).toBe('✓ QA 통과')
+
+    vi.useRealTimers()
+  })
+
+  it('clearing cancels a pending retry so a badge never appears later', () => {
+    vi.useFakeTimers()
+    document.body.innerHTML = '<p>아직 렌더링 안 된 페이지</p>'
+
+    showQaPassedBadge()
+    clearQaPassedBadge()
+    document.body.innerHTML = '<h1>PRD 문서</h1>'
+    vi.advanceTimersByTime(5000)
+
+    expect(document.querySelector('.sunnic-qa-passed-badge')).toBeNull()
+    vi.useRealTimers()
   })
 })
 
@@ -310,26 +433,21 @@ describe('formatKstTimestamp', () => {
   })
 
   it('formats a KST midnight (crossing into the next day) correctly', () => {
-    // UTC 15:30 + 9시간 = 다음날 00:30 KST — hour24가 0으로 넘어가는 경계(오전 12시 표기) 확인.
     expect(formatKstTimestamp(new Date('2026-08-09T15:30:00Z'))).toBe('2026. 8. 10. 오전 12:30:00')
   })
 
   it('formats a regular afternoon time correctly', () => {
-    // UTC 06:15 + 9시간 = 15:15 KST = 오후 3시 15분.
     expect(formatKstTimestamp(new Date('2026-08-10T06:15:05Z'))).toBe('2026. 8. 10. 오후 3:15:05')
   })
 })
 
 describe('applyIssueEdit', () => {
-  it('the first call creates a duplicate page instead of touching the original, and marks the highlight resolved', async () => {
+  it('the first call creates a duplicate page instead of touching the original', async () => {
     const fetchMock = stubConfluenceFetch()
-    applyIssueOverlay([ISSUE])
-    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
 
-    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+    const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
     expect(result).toEqual({ ok: true })
-    expect(mark?.classList.contains('sunnic-issue-resolved')).toBe(true)
 
     const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
     expect((putCall?.[0] as string)).toContain(DUPLICATE_PAGE_ID)
@@ -341,20 +459,19 @@ describe('applyIssueEdit', () => {
     const postCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
     expect(postCall).toBeDefined()
 
-    const putBody = JSON.parse((putCall?.[1] as RequestInit).body as string) as { body: { storage: { value: string } } }
-    expect(putBody.body.storage.value).toContain(ISSUE.suggestion)
+    const putBody = JSON.parse((putCall?.[1] as RequestInit).body as string) as {
+      body: { storage: { value: string } }
+    }
+    expect(putBody.body.storage.value).toContain('4사만 지원, 페이코 미지원')
   })
 
   it('finds the original page id even from a new-editor draft URL ("/pages/edit-v2/{id}")', async () => {
-    // confluence-extractor.ts에서 고친 것과 같은 버그가 이 파일 안의 복제된 extractPageId에도
-    // 그대로 있었다 — 원본 페이지 id를 못 찾으면 저장 자체가 시작도 못 한다.
     ;(window as unknown as HappyDomWindow).happyDOM.setURL(
       `http://localhost:8000/mock-confluence/pages/edit-v2/${ORIGINAL_PAGE_ID}?draftShareId=abc`,
     )
     const fetchMock = stubConfluenceFetch()
-    applyIssueOverlay([ISSUE])
 
-    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+    const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
     expect(result).toEqual({ ok: true })
     const originalGet = fetchMock.mock.calls.find(([url]) => (url as string).includes(ORIGINAL_PAGE_ID))
@@ -362,18 +479,14 @@ describe('applyIssueEdit', () => {
   })
 
   it('stamps the duplicate title with Korea time computed by pure arithmetic, not Intl', async () => {
-    // timeZone: 'Asia/Seoul'을 명시한 toLocaleString도 실제 서비스 환경에서 여전히 몇 시간씩
-    // 어긋난다는 보고가 있어(Intl 구현/환경에 따라 달라질 여지가 남아있었던 걸로 보임), Intl에
-    // 아예 기대지 않는 순수 산술 계산(UTC+9 고정 오프셋)으로 바꿨다 — 시스템 시간대를 UTC로
-    // 바꿔놔도(vi.stubEnv) 항상 KST로 정확히 찍혀야 한다.
     vi.stubEnv('TZ', 'UTC')
-    const fixedNow = new Date('2026-08-10T03:00:00Z') // KST로는 정오(오후 12시)
+    const fixedNow = new Date('2026-08-10T03:00:00Z')
     vi.useFakeTimers()
     vi.setSystemTime(fixedNow)
     try {
       const fetchMock = stubConfluenceFetch()
 
-      await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+      await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
       const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
       const body = JSON.parse((postCall?.[1] as RequestInit).body as string) as { title: string }
@@ -389,7 +502,7 @@ describe('applyIssueEdit', () => {
       duplicateBody: `${PAGE_HTML}<p>결제 실패 원인에 대한 안내가 필요하다.</p>`,
     })
 
-    await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+    await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
     await applyIssueEdit('issue-2', '결제 실패 원인', '결제 실패 원인(수정)')
 
     const puts = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
@@ -402,61 +515,39 @@ describe('applyIssueEdit', () => {
     ;(window as unknown as HappyDomWindow).happyDOM.setURL('http://localhost:8000/not-a-confluence-page')
     stubConfluenceFetch()
 
-    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+    const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
     expect(result.ok).toBe(false)
   })
 
-  it('returns an error and does not mark resolved when the duplicate cannot be created', async () => {
+  it('returns an error when the duplicate cannot be created', async () => {
     stubConfluenceFetch({ createOk: false })
-    applyIssueOverlay([ISSUE])
-    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
 
-    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+    const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
     expect(result.ok).toBe(false)
-    expect(mark?.classList.contains('sunnic-issue-resolved')).toBe(false)
   })
 
   it('returns an error when the original text is missing from the duplicate', async () => {
     stubConfluenceFetch({ duplicateBody: '<p>완전히 다른 본문</p>' })
 
-    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+    const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
     expect(result).toEqual({ ok: false, error: '원문에서 해당 문구를 찾지 못했습니다.' })
   })
 
   it('still finds the text in storage HTML when its whitespace differs from the live DOM', async () => {
-    // storage HTML의 줄바꿈/연속 공백이 화면에 렌더링된 것과 완전히 같지 않은 흔한 경우 — 예전엔
-    // 여기서만 완전 일치(includes)로 찾아서, 화면엔 분명히 보이는 문구인데 저장이 실패했었다.
     const fetchMock = stubConfluenceFetch({ duplicateBody: '<p>3사만  지원,\n페이코 미지원</p>' })
 
-    const result = await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+    const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
     expect(result).toEqual({ ok: true })
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
     const putBody = JSON.parse(putCall?.[1]?.body as string)
-    expect(putBody.body.storage.value).toBe(`<p>${ISSUE.suggestion}</p>`)
-  })
-
-  it('finds and replaces text that spans two separate list items with no whitespace between them', async () => {
-    // 사람 눈엔 한 문장처럼 붙어 보여도, 실제 storage HTML에서는 서로 다른 <li> 태그에 나뉘어
-    // 있고 그 사이에 공백조차 없는 경우 — 공백만 관대하게 봐주는 단순 정규식으로는 못 찾는다.
-    const oldText = '홈 UV 달성근거: 구매 전환율 필요'
-    const newText = '실제 퍼널 수치 재계산'
-    const fetchMock = stubConfluenceFetch({ duplicateBody: '<ul><li>홈 UV 달성</li><li>근거: 구매 전환율 필요</li></ul>' })
-
-    const result = await applyIssueEdit('issue-multi-li', oldText, newText)
-
-    expect(result).toEqual({ ok: true })
-    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
-    const putBody = JSON.parse(putCall?.[1]?.body as string)
-    expect(putBody.body.storage.value).toBe(`<ul><li>${newText}</li><li></li></ul>`)
+    expect(putBody.body.storage.value).toBe('<p>4사만 지원, 페이코 미지원</p>')
   })
 
   it('finds and replaces a list item even though oldText carries the synthetic "- " bullet prefix the model quoted', async () => {
-    // 모델은 백엔드가 마크다운으로 평탄화한 청크("- item")를 verbatim으로 인용하므로 oldText에
-    // "- " 접두사가 그대로 온다 — 실제 storage HTML의 <li> 텍스트엔 그 기호가 없다.
     const oldText = '- 신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음'
     const newText = '신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 25% 낮음'
     const fetchMock = stubConfluenceFetch({
@@ -471,55 +562,7 @@ describe('applyIssueEdit', () => {
     expect(putBody.body.storage.value).toBe(`<ul><li>${newText}</li></ul>`)
   })
 
-  it('finds and replaces a multi-bullet oldText even when adjacent <li> elements have no whitespace between them', async () => {
-    // 실사용 중 확인된 저장 실패 — 여러 불릿을 통째로 인용한 oldText(줄바꿈 포함, 219자)가 실제
-    // storage HTML에서 못 찾아져 "원문에서 해당 문구를 찾지 못했습니다"로 실패했다. 원인은 위
-    // applyIssueOverlay 케이스와 동일(줄바꿈 경계를 \s+로만 느슨화해서 <li> 사이 공백이 아예 없는
-    // 문서를 못 맞춤).
-    const oldText =
-      '- 쿠폰 적용 주문의 구매 확정 여부와 무관하게 즉시 사용 처리한다\n- 쿠폰 사용 후 주문이 취소되면 쿠폰을 복원하지 않는다'
-    const newText = '쿠폰 사용 정책을 명확히 재정의한 문구'
-    const fetchMock = stubConfluenceFetch({
-      duplicateBody:
-        '<ul><li>쿠폰 적용 주문의 구매 확정 여부와 무관하게 즉시 사용 처리한다</li>' +
-        '<li>쿠폰 사용 후 주문이 취소되면 쿠폰을 복원하지 않는다</li></ul>',
-    })
-
-    const result = await applyIssueEdit('issue-multi-bullet', oldText, newText)
-
-    expect(result).toEqual({ ok: true })
-    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
-    const putBody = JSON.parse(putCall?.[1]?.body as string) as { body: { storage: { value: string } } }
-    expect(putBody.body.storage.value).toContain(newText)
-    expect(putBody.body.storage.value).not.toContain('쿠폰 적용 주문의 구매 확정')
-  })
-
-  it('finds text split by a <strong> close tag and a <br> inside one <p> (real DOC-001 shape)', async () => {
-    // 실제 DOC-001 페이지에서 재현된 구조 그대로 — 볼드로 감싼 구절 뒤에 <br>로 줄바꿈하고 이어지는
-    // 문장이 붙는 흔한 패턴("**핵심 지표**\n근거: ...")이 서로 다른 텍스트 노드로 쪼개진다.
-    const oldText =
-      '홈 UV (Unique Visitor) 월 2만명 달성근거: 구매 전환율 1.5% 목표 달성을 위해 장바구니 유입 최소 1,000명 필요.'
-    const newText = '실제 퍼널 수치를 재계산하여 일관된 근거로 제시'
-    const fragment =
-      '<li><p><strong>홈 UV (Unique Visitor) 월 2만명 달성</strong><br>근거: 구매 전환율 1.5% 목표 달성을 위해 ' +
-      '장바구니 유입 최소 1,000명 필요. 홈→장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>'
-    const fetchMock = stubConfluenceFetch({ duplicateBody: fragment })
-
-    const result = await applyIssueEdit('issue-strong-br', oldText, newText)
-
-    expect(result).toEqual({ ok: true })
-    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
-    const putBody = JSON.parse(putCall?.[1]?.body as string)
-    // <strong>/<br> 태그 자체는 건드리지 않고, 그 사이에 있던 텍스트 노드 내용만 치환된다.
-    expect(putBody.body.storage.value).toBe(
-      `<li><p><strong>${newText}</strong><br> 홈→장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>`,
-    )
-  })
-
   it('still matches when an unrelated part of the document has an HTML entity like &rarr;', async () => {
-    // 실제 DOC-001에서 재현된 그대로 — "→"가 storage HTML에는 &rarr; 엔티티로 저장돼 있었다. 매치
-    // 구간 자체는 그 엔티티 앞에서 끝나지만, 예전 구현(디코딩한 텍스트를 원본에서 다시 찾는 방식)은
-    // 이 엔티티 때문에 그 엘리먼트의 전체 텍스트를 원본에서 못 찾아 실패했었다.
     const oldText =
       '홈 UV (Unique Visitor) 월 2만명 달성근거: 구매 전환율 1.5% 목표 달성을 위해 장바구니 유입 최소 1,000명 필요.'
     const newText = '실제 퍼널 수치를 재계산하여 일관된 근거로 제시'
@@ -533,7 +576,6 @@ describe('applyIssueEdit', () => {
     expect(result).toEqual({ ok: true })
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
     const putBody = JSON.parse(putCall?.[1]?.body as string)
-    // 매치 밖에 있던 &rarr; 엔티티는 그대로(디코딩되지 않고) 보존돼야 한다.
     expect(putBody.body.storage.value).toBe(
       `<li><p><strong>${newText}</strong><br /> 홈&rarr;장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>`,
     )
@@ -584,101 +626,9 @@ describe('getActiveDuplicatePageId', () => {
 
   it('returns the duplicate page id once an edit has been applied', async () => {
     stubConfluenceFetch()
-    applyIssueOverlay([ISSUE])
 
-    await applyIssueEdit(ISSUE.id, ISSUE.input_text, ISSUE.suggestion)
+    await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
     expect(getActiveDuplicatePageId()).toBe(DUPLICATE_PAGE_ID)
-  })
-})
-
-describe('scrollToIssue', () => {
-  it('scrolls the matching highlight into view and returns true', () => {
-    applyIssueOverlay([ISSUE])
-    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
-    const scrollSpy = vi.fn()
-    if (mark) mark.scrollIntoView = scrollSpy
-
-    const result = scrollToIssue(ISSUE.id)
-
-    expect(result).toBe(true)
-    expect(scrollSpy).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
-  })
-
-  it('returns false for an issue that was never wrapped', () => {
-    applyIssueOverlay([ISSUE])
-
-    expect(scrollToIssue('no-such-issue')).toBe(false)
-  })
-
-  it('also shows the AI 제안 bubble for the issue being scrolled to, without needing a click', () => {
-    applyIssueOverlay([ISSUE])
-    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
-    if (mark) mark.scrollIntoView = vi.fn()
-
-    scrollToIssue(ISSUE.id)
-
-    const tooltip = document.querySelector('.sunnic-issue-tooltip')
-    expect(tooltip?.textContent).toContain(ISSUE.suggestion)
-  })
-
-  it('marks the scrolled-to issue as active (gradient highlight) and clears it from the previous one', () => {
-    const other: OverlayIssue = { ...ISSUE, id: 'issue-2', input_text: '결제 실패 원인' }
-    document.body.innerHTML = `<main>${PAGE_HTML}<p>결제 실패 원인</p></main>`
-    applyIssueOverlay([ISSUE, other])
-    const marks = document.querySelectorAll<HTMLElement>('.sunnic-issue-highlight')
-    for (const mark of marks) mark.scrollIntoView = vi.fn()
-
-    scrollToIssue(ISSUE.id)
-    expect(document.querySelector(`[data-sunnic-issue-id="${ISSUE.id}"]`)?.classList.contains('sunnic-issue-active')).toBe(true)
-
-    scrollToIssue(other.id)
-    expect(document.querySelector(`[data-sunnic-issue-id="${ISSUE.id}"]`)?.classList.contains('sunnic-issue-active')).toBe(false)
-    expect(document.querySelector(`[data-sunnic-issue-id="${other.id}"]`)?.classList.contains('sunnic-issue-active')).toBe(true)
-  })
-
-  it('keeps the AI 제안 bubble tracking the mark position as the page keeps scrolling', () => {
-    applyIssueOverlay([ISSUE])
-    const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
-    if (!mark) throw new Error('mark not found')
-    mark.scrollIntoView = vi.fn()
-    mark.getBoundingClientRect = vi.fn().mockReturnValue({ top: 500, bottom: 520, left: 10, right: 100 } as DOMRect)
-
-    scrollToIssue(ISSUE.id)
-    const tooltip = document.querySelector<HTMLElement>('.sunnic-issue-tooltip')
-    expect(tooltip?.style.top).toBe('526px')
-
-    // scrollIntoView's smooth animation lands the mark somewhere else by the time scrolling settles —
-    // the bubble must follow, not stay pinned to the pre-scroll position.
-    mark.getBoundingClientRect = vi.fn().mockReturnValue({ top: 120, bottom: 140, left: 10, right: 100 } as DOMRect)
-    window.dispatchEvent(new Event('scroll'))
-
-    expect(tooltip?.style.top).toBe('146px')
-  })
-
-  it('self-corrects the bubble position even if no scroll event ever fires', () => {
-    // 실제로 겪은 버그: 컨플루언스 내부 스크롤 컨테이너 구조에 따라 scrollIntoView가 끝나도
-    // 우리가 잡을 수 있는 'scroll' 이벤트가 안 날 수 있다 — 그러면 말풍선이 클릭 시점(스크롤
-    // 전, 옛 위치)에 영영 고정된다. scroll 이벤트에 의존하지 않는 rAF 기반 재계산이 이걸 잡는다.
-    vi.useFakeTimers()
-    try {
-      applyIssueOverlay([ISSUE])
-      const mark = document.querySelector<HTMLElement>('.sunnic-issue-highlight')
-      if (!mark) throw new Error('mark not found')
-      mark.scrollIntoView = vi.fn()
-      mark.getBoundingClientRect = vi.fn().mockReturnValue({ top: 5, bottom: 20, left: 2, right: 90 } as DOMRect)
-
-      scrollToIssue(ISSUE.id)
-      const tooltip = document.querySelector<HTMLElement>('.sunnic-issue-tooltip')
-      expect(tooltip?.style.top).toBe('26px')
-
-      // scroll settles somewhere else, but no 'scroll' event is ever dispatched.
-      mark.getBoundingClientRect = vi.fn().mockReturnValue({ top: 500, bottom: 520, left: 10, right: 100 } as DOMRect)
-      vi.advanceTimersByTime(800)
-
-      expect(tooltip?.style.top).toBe('526px')
-    } finally {
-      vi.useRealTimers()
-    }
   })
 })

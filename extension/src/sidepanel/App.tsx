@@ -2,6 +2,7 @@ import { ErrorBanner } from '../components/common/ErrorBanner'
 import { HistoryExportScreen } from '../components/screens/HistoryExportScreen'
 import { LoadingScreen } from '../components/screens/LoadingScreen'
 import { MainScreen } from '../components/screens/MainScreen'
+import { NumberingCheckScreen } from '../components/screens/NumberingCheckScreen'
 import { ProgressScreen } from '../components/screens/ProgressScreen'
 import { SuggestionDetailScreen } from '../components/screens/SuggestionDetailScreen'
 import { SuggestionListScreen } from '../components/screens/SuggestionListScreen'
@@ -22,6 +23,7 @@ export function App() {
       {screen === 'progress' && <ProgressScreen />}
       {screen === 'issues' && (activeIssueId ? <SuggestionDetailScreen /> : <SuggestionListScreen />)}
       {screen === 'suggestion-summary' && <SuggestionSummaryScreen />}
+      {screen === 'numbering-check' && <NumberingCheckScreen />}
       {screen === 'history' && <HistoryExportScreen />}
       {screen === 'team-rules' && <TeamRulesScreen />}
     </main>

@@ -1,13 +1,22 @@
 import type {
   IssueAction,
   IssueResponse,
+  NumberingIssueResponse,
   ParsedStructure,
   QAJobStatusResponse,
   RulebookCategoryResponse,
   TeamRuleResponse,
 } from '../api/types'
 
-export type Screen = 'main' | 'loading' | 'progress' | 'issues' | 'history' | 'suggestion-summary' | 'team-rules'
+export type Screen =
+  | 'main'
+  | 'loading'
+  | 'progress'
+  | 'issues'
+  | 'history'
+  | 'suggestion-summary'
+  | 'team-rules'
+  | 'numbering-check'
 
 export type ConfluenceStatus = 'idle' | 'detecting' | 'detected' | 'not_confluence' | 'error'
 
@@ -63,6 +72,7 @@ export interface AppState {
   jobId: string | null
   jobStatus: QAJobStatusResponse | null
   issues: IssueResponse[]
+  numberingIssues: NumberingIssueResponse[]
   // null이면 3a(목록) 화면, 값이 있으면 3b/3c(상세) 화면 — "지금 작업 중인 제안"을 id로 직접
   // 가리킨다(예전의 인덱스 기반 currentIssueIndex는 이슈 배열이 바뀔 때 범위를 벗어나는 문제가
   // 있었고, 이제는 목록/상세 화면 전환 자체를 이 값의 null 여부로 표현하므로 인덱스가 필요 없다).
@@ -103,6 +113,7 @@ export const initialAppState: AppState = {
   jobId: null,
   jobStatus: null,
   issues: [],
+  numberingIssues: [],
   activeIssueId: null,
   activeLocationIndex: 0,
   issueEdits: {},

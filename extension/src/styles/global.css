@@ -1897,3 +1897,100 @@ textarea {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* ---- 넘버링 오류 확인 (NumberingCheckScreen) ---- */
+
+.numbering-check-heading {
+  font-size: 0.95rem;
+  font-weight: 800;
+  margin: 0;
+  color: var(--text-heading);
+}
+
+.numbering-check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.numbering-check-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: #fafafb;
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.numbering-check-checkbox {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+
+.numbering-check-item-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.numbering-check-item-top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.numbering-status-badge {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.numbering-status-badge-auto {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+}
+
+.numbering-status-badge-confirm {
+  color: #a6790a;
+  background: color-mix(in srgb, #a6790a 15%, transparent);
+}
+
+.numbering-check-item-location {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.numbering-check-item-problem {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-heading);
+}
+
+.numbering-check-item-diff {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.numbering-check-before {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.numbering-check-after {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.numbering-check-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}

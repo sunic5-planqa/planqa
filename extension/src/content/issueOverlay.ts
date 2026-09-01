@@ -1,10 +1,14 @@
 import { api } from '../api/client'
 import { isIssueLikelyResolved } from '../state/editValidation'
 import type {
+  ApplyIssueEditRequest,
+  ApplyIssueEditResponse,
   ClearActiveSuggestionRequest,
   ClearActiveSuggestionResponse,
   ClearQaPassedBadgeRequest,
   EditableSuggestionLocation,
+  GetActiveDuplicatePageRequest,
+  GetActiveDuplicatePageResponse,
   QaPassedBadgeResponse,
   ScrollToLocationRequest,
   ScrollToLocationResponse,
@@ -803,6 +807,12 @@ export function __resetDuplicateSessionForTests(): void {
   duplicateSession = null
 }
 
+// 사이드패널이 "지금 리뷰 중 수정이 실제로 쌓이고 있는 페이지"를 알아야 할 때(예: 넘버링 재검증 전
+// 최신 본문을 다시 읽어올 때) 쓴다 — 아직 한 건도 적용 안 했으면 복제본이 없으므로 null.
+export function getActiveDuplicatePageId(): string | null {
+  return duplicateSession?.pageId ?? null
+}
+
 // timeZone: 'Asia/Seoul'을 명시한 toLocaleString도 실제 서비스 환경에서 여전히 몇 시간씩
 // 어긋난다는 보고가 있었다(Intl 구현/브라우저 설정에 따라 달라질 수 있는 여지가 남아있는 듯) —
 // 그래서 Intl에 아예 기대지 않는 방식으로 바꾼다. Date.getTime()의 epoch ms는 시간대와 무관한
@@ -861,6 +871,38 @@ async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: tru
 // 있다 — 실제 치환/저장은 이 복수형이 전담하고, 단일 치환은 그 특수 케이스(길이 1짜리 배열)로
 // 구현한다. 두 함수 모두 이 파일 안에서만 직접 호출되는 일반 함수다(패널 쪽에서 이 메시지를
 // 보내는 코드는 없다 — chrome.runtime 메시지가 아니라 여기 handleSaveClick이 직접 호출).
+// backend qa_engine/numbering_validation.py의 _NUMBER_RE, extension/src/utils/locationLabel.ts의
+// LEADING_NUMBER_RE와 동일한 조건 — 헤딩 텍스트 맨 앞의 "번호" 세그먼트만 골라낸다.
+const LEADING_NUMBER_RE = /^\s*\d+(?:[-.]\d+)*[.\s]+/
+
+// 넘버링 이슈는 (AI 이슈가 아니라 애초에 mark 하이라이트 대상이 아니므로) 저장은 복제본에
+// 성공해도 지금 보고 있는 원본 화면엔 아무 변화가 없어 "반영이 안 됐다"는 오인 보고로 이어졌다
+// (실사용 확인됨). oldText/newText는 헤딩 텍스트 전체지만 실제로 다른 부분은 맨 앞 번호뿐이므로
+// (백엔드 _replace_number와 동일 전제), 헤딩을 통째로 갈아치우지 않고 그 헤딩의 첫 텍스트 노드에서
+// 번호 접두어만 치환한다 — 강조/링크 등 인라인 마크업이 번호 뒤에 있어도(예: "4. 해결
+// <strong>방안</strong>") 안전하다. 조건이 안 맞으면(번호를 못 뽑았거나, 헤딩을 못 찾았거나,
+// 첫 텍스트 노드가 그 번호로 시작하지 않으면) 조용히 포기한다 — 실제 저장(복제본)엔 영향 없는
+// 순수 로컬 표시라 실패해도 안전하다.
+function overwriteHeadingTextInDom(oldText: string, newText: string): void {
+  const oldNumber = LEADING_NUMBER_RE.exec(oldText)?.[0]
+  const newNumber = LEADING_NUMBER_RE.exec(newText)?.[0]
+  if (!oldNumber || !newNumber) return
+
+  const target = normalizeHeadingText(oldText)
+  const heading = Array.from(document.querySelectorAll<HTMLElement>('h2, h3, h4, h5, h6')).find(
+    (h) => !isInsideOverlayNode(h) && normalizeHeadingText(h.textContent ?? '') === target,
+  )
+  if (!heading) return
+
+  const walker = document.createTreeWalker(heading, NodeFilter.SHOW_TEXT)
+  const first = walker.nextNode() as Text | null
+  if (!first) return
+
+  const prefixMatch = new RegExp(`^${buildLooseTextRegex(oldNumber).source}`).exec(first.data)
+  if (!prefixMatch) return
+  first.data = newNumber + first.data.slice(prefixMatch[0].length)
+}
+
 export async function applyIssueEdits(edits: EditPair[]): Promise<ApplyResult> {
   if (edits.length === 0) return { ok: true }
 
@@ -870,7 +912,14 @@ export async function applyIssueEdits(edits: EditPair[]): Promise<ApplyResult> {
   const session = await ensureDuplicateSession(originalPageId)
   if (!session.ok) return session
 
-  return replaceAllAndSave(session.pageId, edits)
+  const result = await replaceAllAndSave(session.pageId, edits)
+  if (!result.ok) return result
+
+  // 저장 자체는 원본이 아니라 복제본에 쌓이지만, 넘버링 하모나이징(번호만 바뀌는 편집)은 지금 보고
+  // 있는 원본 화면에도 즉시 반영해야 "반영이 안 됐다"는 오인이 없다 — 위 overwriteHeadingTextInDom
+  // 참고. 번호가 아닌 일반 편집은 이 함수가 조용히 no-op한다.
+  for (const { oldText, newText } of edits) overwriteHeadingTextInDom(oldText, newText)
+  return result
 }
 
 export async function applyIssueEdit(_issueId: string, oldText: string, newText: string): Promise<ApplyResult> {
@@ -883,11 +932,15 @@ type OverlayRequest =
   | ScrollToLocationRequest
   | ShowQaPassedBadgeRequest
   | ClearQaPassedBadgeRequest
+  | GetActiveDuplicatePageRequest
+  | ApplyIssueEditRequest
 type OverlayResponse =
   | SetActiveSuggestionResponse
   | ClearActiveSuggestionResponse
   | ScrollToLocationResponse
   | QaPassedBadgeResponse
+  | GetActiveDuplicatePageResponse
+  | ApplyIssueEditResponse
 
 chrome.runtime.onMessage.addListener(
   (message: OverlayRequest, _sender, sendResponse: (response: OverlayResponse) => void) => {
@@ -912,6 +965,14 @@ chrome.runtime.onMessage.addListener(
     if (message.type === 'CLEAR_QA_PASSED_BADGE') {
       clearQaPassedBadge()
       sendResponse({ ok: true })
+      return true
+    }
+    if (message.type === 'APPLY_ISSUE_EDIT') {
+      void applyIssueEdit(message.issueId, message.oldText, message.newText).then(sendResponse)
+      return true
+    }
+    if (message.type === 'GET_ACTIVE_DUPLICATE_PAGE') {
+      sendResponse({ ok: true, pageId: getActiveDuplicatePageId(), originalPageId: extractPageId(location.href) })
       return true
     }
     return undefined

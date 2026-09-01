@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { IssueResponse, TeamRuleResponse } from '../api/types'
+import type { IssueResponse, NumberingIssueResponse, TeamRuleResponse } from '../api/types'
 import { appReducer } from './appReducer'
 import { initialAppState } from './types'
 
@@ -81,6 +81,25 @@ describe('appReducer', () => {
       relatedEditedText: '두 번째 위치 수정본',
       skipReason: undefined,
     })
+  })
+
+  it('NUMBERING_ISSUES_LOADED stores the issues and switches to the numbering-check screen', () => {
+    const issues: NumberingIssueResponse[] = [
+      {
+        id: 'n1',
+        status: 'auto',
+        sub_type: 'missing',
+        location: '3. 해결 방안',
+        problem: '번호 누락',
+        before_text: '4. 해결 방안',
+        after_text: '3. 해결 방안',
+      },
+    ]
+
+    const state = appReducer({ ...initialAppState, screen: 'issues' }, { type: 'NUMBERING_ISSUES_LOADED', issues })
+
+    expect(state.numberingIssues).toEqual(issues)
+    expect(state.screen).toBe('numbering-check')
   })
 
   it('STAGE_ISSUE_EDIT with a skipReason persists it, and a later stage without one keeps it', () => {

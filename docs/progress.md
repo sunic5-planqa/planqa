@@ -2916,3 +2916,37 @@ git commit 없이 워킹 디렉토리에 uncommitted 상태로만 남아있었�
 - 재검증: 백엔드 `uv run pytest` **170개** 전부 통과, 프론트 `vitest` **117개** 전부 통과,
   `npm run build`(tsc + vite) 성공.
 - **Next 항목은 그대로 유효**: 실제 Confluence 페이지에서의 수동 확인은 아직 안 됨.
+
+
+## 2026-09-03 — 넘버링: 검토 중 인라인으로 고친 헤딩 번호가 QA 완료 검증에 반영되게
+
+은성님 보고: "QA 완료" 시 넘버링 검증이 검토 시작 전부터 있던 오류만 잡고, 검토 중 좌측
+문서 뷰에서 직접 고친 H2~H6 헤딩 번호로 새로 생긴 오류는 못 잡는다.
+
+- **근본 원인**: `validate_numbering` 알고리즘은 정상. `finishQA`(`SuggestionSummaryScreen`)가
+  복제본 페이지 저장본을 읽어 검증에 넘기는데, 좌측 인라인 편집은 제안 "저장"(`handleSaveClick`
+  → `changedElements` 스윕)에 딸려갈 때만 복제본에 반영된다. 번호만 고치고 저장 안 하거나 저장
+  없이 다음 제안으로 넘어가면(`dataset.sunnicOriginalText` 재스냅샷) 그 편집이 복제본에 못 감.
+- **수정**: `finishQA`가 넘버링 조회 직전에 새 메시지 `COMMIT_DOCUMENT_EDITS`를 보낸다.
+  `issueOverlay.commitDocumentEdits()`가 라이브 DOM의 h2~h6 헤딩을 저장본(복제본 또는 원본)과
+  **위치(순서) 기준**으로 대조 → 번호만 바뀐 헤딩을 기존 `replaceAllAndSave`로 복제본에 반영.
+  헤딩 개수가 다르면(삽입/삭제) 위치 매칭 생략(`skippedCountMismatch`). oldText가 문서 전체
+  디코드 텍스트에서 전역 매치 1건이 아니면(산문 충돌/중복 헤딩) 자동 reconcile 제외.
+  실패해도(탭 없음/GET 실패 등) 기존 QA 완료 흐름 안 막음.
+- **선행 수정**: `duplicateSession`에 `originalPageId` 필드 추가. Confluence SPA 특성상 탭 내
+  페이지 이동 시 content script가 재주입되지 않아 이전 세션이 스테일해질 수 있어,
+  `ensureDuplicateSession`/`getActiveDuplicatePageId(originalPageId)`가 현재 원본과 맞을 때만
+  재사용하도록 했다. `getActiveDuplicatePageId`는 인자 필수로 시그니처 변경.
+- 백엔드 로직 무변경 — `test_numbering_validation.py`에 형제 그룹 독립성 회귀 테스트만 추가
+  (`2-x` 그룹이 밀려도 `1-x`는 안 건드림).
+- 검증: 백엔드 `pytest` **220개** 통과, 프론트 `vitest` **132개** 통과(`issueOverlay` +11),
+  `npm run build` 성공(단 `diff` 패키지 미설치 상태였어서 `npm install` 먼저 필요했음).
+
+### Next
+
+- 실제 Confluence에서 수동 확인(시나리오 A: 제안 저장 없이 헤딩 번호 직접 수정 → QA 완료 →
+  넘버링 화면에 검출 / B: 제안 일부 적용 후 수정 / C: 제안 0건이라 복제본이 이때 처음 생성).
+- **후속 이슈(동일 근본 원인, 이번 범위 밖)**: 헤딩이 아닌 본문 인라인 편집도 제안 저장에
+  안 묶이면 복제본에 유실된다. H1(본문 대주제) 인라인 편집은 `BLOCK_SELECTOR`가 h1 제외라
+  애초에 편집이 안 된다. 헤딩 삽입/삭제로 개수가 바뀐 경우의 reconcile도 미구현.
+- `replaceInStorageHtml`에 occurrence index를 넘길 수 있게 하면 중복 헤딩도 자동 처리 가능(하드닝).

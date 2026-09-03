@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import type {
   ClearQaPassedBadgeRequest,
+  CommitDocumentEditsRequest,
+  CommitDocumentEditsResponse,
   FetchPageMarkdownRequest,
   FetchPageMarkdownResponse,
   GetActiveDuplicatePageRequest,
@@ -83,6 +85,18 @@ export function SuggestionSummaryScreen() {
     }
     setFinishingQA(true)
     try {
+      // 넘버링을 조회하기 전에, 좌측 문서 뷰에서 제안 저장 없이 직접 고친 헤딩 번호를 복제본에
+      // 먼저 반영한다 — 안 그러면 아래 FETCH_PAGE_MARKDOWN이 그 편집이 빠진 옛 저장본을 읽어
+      // "검토 중 새로 생긴 넘버링 오류"를 놓친다. 실패해도(탭 없음/GET 실패/복제 실패 등) 기존
+      // 흐름을 막지 않는다 — 이건 넘버링 검증의 보조 안전장치일 뿐이다.
+      const commitResponse = await sendToDocumentTab<CommitDocumentEditsRequest, CommitDocumentEditsResponse>(
+        confluenceTabId,
+        { type: 'COMMIT_DOCUMENT_EDITS' },
+      )
+      if (commitResponse && !commitResponse.ok) {
+        console.warn('[SunniC] 좌측 문서 편집분 동기화 실패 — 넘버링 검증이 최신 상태를 못 볼 수 있음', commitResponse.error)
+      }
+
       let freshText = confluenceMarkdown
       const dupResponse = await sendToDocumentTab<GetActiveDuplicatePageRequest, GetActiveDuplicatePageResponse>(
         confluenceTabId,

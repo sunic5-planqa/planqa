@@ -70,6 +70,19 @@ export interface GetActiveDuplicatePageRequest {
 
 export type GetActiveDuplicatePageResponse = { ok: true; pageId: string | null; originalPageId: string | null }
 
+// 사이드패널 → content script: "QA 완료" 직전에 좌측 문서 뷰(라이브 DOM)의 h2~h6 헤딩 상태를
+// 저장본(복제본 또는 원본)과 대조해, 사용자가 제안 저장 없이 직접 고친 헤딩 번호를 복제본에
+// 반영해달라는 요청 — 이래야 이어지는 넘버링 검증이 옛 저장본이 아니라 지금 화면 상태를 본다.
+// reconciled는 실제로 복제본에 반영한 헤딩 수, skippedCountMismatch는 헤딩 개수가 달라 위치
+// 기반 대조를 건너뛴 경우(삽입/삭제 — 이번 범위 밖).
+export interface CommitDocumentEditsRequest {
+  type: 'COMMIT_DOCUMENT_EDITS'
+}
+
+export type CommitDocumentEditsResponse =
+  | { ok: true; reconciled: number; skippedCountMismatch?: boolean }
+  | { ok: false; error: string }
+
 // 사이드패널 → content script: 넘버링 확인 화면(NumberingCheckScreen)에서 체크한 항목들을 하나씩
 // 적용해달라는 요청 — 일반 AI 제안 편집(handleSaveClick)과 달리 패널이 직접 트리거해야 한다(그
 // 이슈들은 문서에서 클릭해 들어갈 수 있는 하이라이트가 애초에 없으므로).

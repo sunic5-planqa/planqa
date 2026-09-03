@@ -165,6 +165,26 @@ def test_subsections_shifted_by_one_are_all_flagged_with_expected_starting_at_1(
     assert third.after_text == "1-3. 세 번째"
 
 
+def test_second_h1_subsections_shifted_during_review_do_not_touch_the_first_h1_group() -> None:
+    # "검토 중 좌측 문서 뷰에서 직접 수정"으로 두 번째 대주제의 소주제가 2-2, 2-3으로 밀린 상태
+    # (원래 2-1, 2-2) — commitDocumentEdits가 이 라이브 상태를 검증에 넘기면, 두 번째 그룹만
+    # 오류로 잡히고 정상인 첫 번째 대주제의 1-1, 1-2는 절대 건드리면 안 된다(형제 그룹 독립성).
+    doc = (
+        "## 1. 개요\n### 1-1. 목적\n### 1-2. 적용 범위\n"
+        "## 2. 문제 정의\n### 2-2. 배경\n### 2-3. 문제점"
+    )
+    issues = validate_numbering(doc)
+    assert {issue.before_text for issue in issues} == {"2-2. 배경", "2-3. 문제점"}
+
+    missing = _by_before(issues, "2-2. 배경")
+    assert missing.sub_type == "missing"
+    assert missing.after_text == "2-1. 배경"
+
+    order = _by_before(issues, "2-3. 문제점")
+    assert order.sub_type == "order"
+    assert order.after_text == "2-2. 문제점"
+
+
 # ---------------------------------------------------------------------------
 # Baseline regression — 실제 서비스 문서 전체 구조. 이 테스트가 실패하면 그 자체로 회귀다.
 # ---------------------------------------------------------------------------

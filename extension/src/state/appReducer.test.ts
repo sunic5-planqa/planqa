@@ -83,6 +83,77 @@ describe('appReducer', () => {
     })
   })
 
+  it('FINALIZE_UNRESOLVED_AS_SKIPPED skips only untouched issues, never overwriting resolved ones', () => {
+    const state = {
+      ...initialAppState,
+      issues: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }] as IssueResponse[],
+      issueEdits: {
+        a: { action: 'apply' as const },
+        b: { action: 'skip' as const, skipReason: '이번엔 안 함' },
+        c: { action: 'edit' as const, editedText: '수정본' },
+      },
+    }
+
+    const next = appReducer(state, { type: 'FINALIZE_UNRESOLVED_AS_SKIPPED' })
+
+    expect(next.issueEdits).toEqual({
+      a: { action: 'apply' },
+      b: { action: 'skip', skipReason: '이번엔 안 함' },
+      c: { action: 'edit', editedText: '수정본' },
+      d: { action: 'skip' },
+    })
+  })
+
+  it('FINALIZE_UNRESOLVED_AS_SKIPPED is a no-op when every issue is already resolved', () => {
+    const edits = { a: { action: 'apply' as const }, b: { action: 'skip' as const } }
+    const state = { ...initialAppState, issues: [{ id: 'a' }, { id: 'b' }] as IssueResponse[], issueEdits: edits }
+
+    const next = appReducer(state, { type: 'FINALIZE_UNRESOLVED_AS_SKIPPED' })
+
+    expect(next.issueEdits).toEqual(edits)
+  })
+
+  it('RESET_QA_SESSION clears the QA session but keeps confluence detection and team state', () => {
+    const state = {
+      ...initialAppState,
+      screen: 'issues' as const,
+      documentId: 'doc-1',
+      jobId: 'job-1',
+      issues: [{ id: 'a' }] as IssueResponse[],
+      issueEdits: { a: { action: 'apply' as const } },
+      activeIssueId: 'a',
+      numberingIssues: [{ id: 'n1' }] as NumberingIssueResponse[],
+      confluencePageId: '12345',
+      confluenceTabId: 7,
+      teamCode: 'ABC123',
+      teamRules: [teamRule()],
+    }
+
+    const next = appReducer(state, { type: 'RESET_QA_SESSION' })
+
+    expect(next.documentId).toBeNull()
+    expect(next.jobId).toBeNull()
+    expect(next.issues).toEqual([])
+    expect(next.issueEdits).toEqual({})
+    expect(next.activeIssueId).toBeNull()
+    expect(next.numberingIssues).toEqual([])
+    // 세션 밖 상태는 유지 — 다시검사 후 문서 재감지/팀 재연결이 필요 없어야 한다.
+    expect(next.confluencePageId).toBe('12345')
+    expect(next.confluenceTabId).toBe(7)
+    expect(next.teamCode).toBe('ABC123')
+    expect(next.teamRules).toHaveLength(1)
+  })
+
+  it('NUMBERING_ISSUES_LOADED with an empty list still switches to the numbering-check screen', () => {
+    const state = appReducer({ ...initialAppState, screen: 'suggestion-summary' }, {
+      type: 'NUMBERING_ISSUES_LOADED',
+      issues: [],
+    })
+
+    expect(state.numberingIssues).toEqual([])
+    expect(state.screen).toBe('numbering-check')
+  })
+
   it('NUMBERING_ISSUES_LOADED stores the issues and switches to the numbering-check screen', () => {
     const issues: NumberingIssueResponse[] = [
       {

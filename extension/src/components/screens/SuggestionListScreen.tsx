@@ -1,15 +1,23 @@
+import { useEffect, useState } from 'react'
+import { api } from '../../api/client'
+import { NotImplementedError } from '../../api/errors'
+import type { SuggestionEditSavedMessage } from '../../content/messages'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { getRuleSource } from '../../state/ruleSourceDefaults'
-import { deriveProgress, getOpenIssues } from '../../state/suggestionProgress'
+import { deriveProgress } from '../../state/suggestionProgress'
 import { Button } from '../common/Button'
+import { ConfirmDialog } from '../common/ConfirmDialog'
 import { SuggestionCard } from '../suggestions/SuggestionCard'
+import { SuggestionExpandPanel } from '../suggestions/SuggestionExpandPanel'
 
-// 3a — QA 시작 직후 검출된 제안을 한눈에 보고 처리 순서를 잡는 목록 화면. 카드는 팀/기본 규칙으로
-// 묶지 않고 원래(위치) 순서 그대로 나열한다 — 실제 .dc.html 레퍼런스도 README의 "그룹핑" 설명과
-// 달리 뒤섞인 순서로 카드를 보여준다(판단 지점 #7). 심각도(High/Medium/Low) 개념은 쓰지 않는다.
+// 3 — 수정 방향성 제안을 한 화면에 전부 나열한다(예전의 목록→상세 위저드는 폐기). 각 카드는
+// 원래(위치) 순서 그대로 있고, 클릭하면 그 자리에서 펼쳐진다(맨 위로 이동하거나 순서를 바꾸지
+// 않는다). 처리(적용/건너뜀)는 카드마다 독립적으로 하고, 하단 "수정완료/다시검사"는 남은 이슈
+// 유무와 무관하게 항상 누를 수 있다.
 export function SuggestionListScreen() {
-  const { issues, issueEdits } = useAppState()
+  const { issues, issueEdits, activeIssueId, activeLocationIndex } = useAppState()
   const dispatch = useAppDispatch()
+  const [confirmingRecheck, setConfirmingRecheck] = useState(false)
 
   const progress = deriveProgress(issues, issueEdits)
   const teamCount = issues.filter((issue) => getRuleSource(issue) === 'team').length
@@ -17,10 +25,53 @@ export function SuggestionListScreen() {
   const processedCount = progress.done + progress.skipped
   const percent = progress.total === 0 ? 0 : Math.round((processedCount / progress.total) * 100)
 
-  const startFirstOpen = () => {
-    const open = getOpenIssues(issues, issueEdits)
-    if (open.length > 0) dispatch({ type: 'SELECT_ISSUE_BY_ID', issueId: open[0].id })
-    else dispatch({ type: 'NAVIGATE', screen: 'suggestion-summary' })
+  // 왼쪽 문서에서 직접 편집이 저장되면 content script가 SUGGESTION_EDIT_SAVED를 발사한다 —
+  // content script는 issueId를 모르므로, 지금 펼쳐져 있는 카드(activeIssueId)와 위치
+  // 내비게이터(activeLocationIndex)를 기준으로 여기서 STAGE_ISSUE_EDIT을 처리한다. 위저드와 달리
+  // 다음 제안으로 자동 이동하지 않고, 카드도 접지 않는다(펼침·회색 상태 그대로 유지).
+  useEffect(() => {
+    if (!activeIssueId) return
+    const activeIssue = issues.find((issue) => issue.id === activeIssueId)
+    if (!activeIssue) return
+    const target: 'primary' | 'related' =
+      activeLocationIndex === 1 && activeIssue.related_original_text ? 'related' : 'primary'
+
+    const listener = (message: SuggestionEditSavedMessage) => {
+      if (message.type !== 'SUGGESTION_EDIT_SAVED') return
+      dispatch({ type: 'STAGE_ISSUE_EDIT', issueId: activeIssue.id, action: 'edit', target, editedText: message.newText })
+      void api.updateIssue(activeIssue.id, { action: 'edit', edited_text: message.newText }).catch((err) => {
+        if (!(err instanceof NotImplementedError)) {
+          dispatch({ type: 'SET_ERROR', error: err instanceof Error ? err.message : String(err) })
+        }
+      })
+    }
+    chrome.runtime.onMessage.addListener(listener)
+    return () => chrome.runtime.onMessage.removeListener(listener)
+  }, [issues, activeIssueId, activeLocationIndex, dispatch])
+
+  const toggleCard = (issueId: string) => {
+    if (activeIssueId === issueId) dispatch({ type: 'CLEAR_ACTIVE_ISSUE' })
+    else dispatch({ type: 'SELECT_ISSUE_BY_ID', issueId })
+  }
+
+  const markDone = () => {
+    dispatch({ type: 'FINALIZE_UNRESOLVED_AS_SKIPPED' })
+    for (const issue of issues) {
+      if (issueEdits[issue.id] === undefined) {
+        void api.updateIssue(issue.id, { action: 'skip' }).catch((err) => {
+          if (!(err instanceof NotImplementedError)) {
+            dispatch({ type: 'SET_ERROR', error: err instanceof Error ? err.message : String(err) })
+          }
+        })
+      }
+    }
+    dispatch({ type: 'NAVIGATE', screen: 'suggestion-summary' })
+  }
+
+  const confirmRecheck = () => {
+    setConfirmingRecheck(false)
+    dispatch({ type: 'RESET_QA_SESSION' })
+    dispatch({ type: 'NAVIGATE', screen: 'main' })
   }
 
   return (
@@ -53,22 +104,37 @@ export function SuggestionListScreen() {
         ) : (
           <div className="suggestion-card-list">
             {issues.map((issue) => (
-              <SuggestionCard
-                key={issue.id}
-                issue={issue}
-                status={issueEdits[issue.id]?.action}
-                onClick={() => dispatch({ type: 'SELECT_ISSUE_BY_ID', issueId: issue.id })}
-              />
+              <div key={issue.id} className="suggestion-card-slot">
+                <SuggestionCard
+                  issue={issue}
+                  status={issueEdits[issue.id]?.action}
+                  expanded={activeIssueId === issue.id}
+                  onClick={() => toggleCard(issue.id)}
+                />
+                {activeIssueId === issue.id && <SuggestionExpandPanel issue={issue} />}
+              </div>
             ))}
           </div>
         )}
       </div>
 
-      <div className="screen-footer">
-        <Button className="btn-cta" onClick={startFirstOpen}>
-          첫 제안부터 보기
+      <div className="screen-footer suggestion-list-footer">
+        <Button variant="outline-pill" onClick={() => setConfirmingRecheck(true)}>
+          다시검사
+        </Button>
+        <Button className="btn-cta" onClick={markDone}>
+          수정완료
         </Button>
       </div>
+
+      {confirmingRecheck && (
+        <ConfirmDialog
+          message="지금까지 처리한 수정 내용을 초기화하고 QA를 다시 실행합니다."
+          confirmLabel="다시검사"
+          onConfirm={confirmRecheck}
+          onCancel={() => setConfirmingRecheck(false)}
+        />
+      )}
     </div>
   )
 }

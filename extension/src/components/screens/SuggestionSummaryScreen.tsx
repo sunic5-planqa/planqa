@@ -15,7 +15,6 @@ import { groupIssuesByCriteria } from '../../state/issueGrouping'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { deriveProgress } from '../../state/suggestionProgress'
 import { Button } from '../common/Button'
-import { Mascot } from '../common/Mascot'
 
 // chrome.tabs.query({active:true})로 매번 다시 찾지 않고 문서를 처음 감지한 탭(confluenceTabId)에
 // 고정해서 보낸다 — 그렇지 않으면 이 화면이 떠 있는 동안 다른 탭에 가 있을 때 배지 표시/제거
@@ -29,16 +28,16 @@ async function sendToDocumentTab<Req, Res>(tabId: number | null, message: Req): 
   }
 }
 
-// 3d — 모든 제안을 처리한 뒤 보여주는 완료 요약. "팀 규칙 충족 현황"은 실제로 팀 규칙 출처 데이터가
-// 없어서(판단 지점 #4) criteria(검증기준)별 완료 집계로 대체한다 — 존재하지 않는 규칙명을 지어내지
-// 않는다.
+// QA 검토 요약 — 수정사항 검토 화면에서 "수정완료"를 누르면 온다. QA 결과를 요약해서만 보여주고
+// (원본/수정본 diff 화면이 아니다), "돌아가기"로 수정사항 검토로 되돌아가거나 "넘버링 확인"으로
+// 마지막 단계(넘버링 하모나이징)로 넘어간다.
 export function SuggestionSummaryScreen() {
   const { issues, issueEdits, confluenceTabId, documentId, confluencePageId, jobId, confluenceMarkdown } = useAppState()
   const dispatch = useAppDispatch()
   const [finishingQA, setFinishingQA] = useState(false)
 
   const progress = deriveProgress(issues, issueEdits)
-  const skippedIssues = issues.filter((issue) => issueEdits[issue.id]?.action === 'skip')
+  const skippedCount = issues.filter((issue) => issueEdits[issue.id]?.action === 'skip').length
   const complianceGroups = groupIssuesByCriteria(issues).map((group) => ({
     criteria: group.criteria,
     done: group.issues.filter((issue) => {
@@ -55,13 +54,8 @@ export function SuggestionSummaryScreen() {
     }
   }, [confluenceTabId])
 
-  // 이 화면에 도달했다는 것 자체가 잔여 미해결 이슈 0건을 뜻한다(SuggestionDetailScreen의
-  // advanceAfterResolving이 getNextOpenIssueId===null일 때만 여기로 보낸다) — 그래서 "검토
-  // 종료"라는 별도 버튼을 한 번 더 누르지 않아도 여기 도달한 시점에 바로 백엔드에 QA 통과를
-  // 기록한다. 예전엔 다음 화면(HistoryExportScreen)의 "검토 종료" 버튼에만 이 호출이 있었는데,
-  // 이 화면의 "QA 완료" 버튼이 사실상 완료로 읽혀서 사용자가 그 다음 버튼을 안 누르고 끝내는
-  // 경우 배지가 영영 안 켜지는 문제로 확인됨(2026-08-30). 실패해도 조용히 넘어간다 — 배지가
-  // 아직 안 켜질 뿐, 검토 자체는 이미 끝난 상태라 막을 이유가 없다.
+  // 여기 도달한 시점에 바로 백엔드에 QA 통과를 기록한다 — 실패해도 조용히 넘어간다(배지가 아직
+  // 안 켜질 뿐, 검토 자체는 진행 중이라 막을 이유가 없다).
   useEffect(() => {
     if (!documentId || !confluencePageId) return
     api.updateQaStatus(documentId, confluencePageId, true).catch(() => {
@@ -75,20 +69,16 @@ export function SuggestionSummaryScreen() {
   // AppState의 기존 confluenceMarkdown을 그대로 재사용하지 않는다: 그건 AI QA용으로 추출된 것이라
   // 본문 h1이 h2와 같은 레벨로 뭉개져 있어서(review_agent 청크 분할용 — confluenceParser.ts 참고),
   // 대주제를 Heading 1로 쓴 실제 문서에서 대주제/소주제가 전부 한 그룹으로 섞여 오탐이 났었다(실사용
-  // 확인된 버그). preserveHeadingLevels:true로 다시 받아 h1~h6 원래 레벨을 그대로 보존한다. 오류가
-  // 없거나 조회 자체가 실패하면(유사도체크와 동일한 "안전장치일 뿐 필수 게이트 아님" 철학) 지금까지
-  // 처럼 곧장 검토 종료 화면으로 보내고, 오류가 있을 때만 넘버링 확인 화면으로 분기한다.
+  // 확인된 버그). preserveHeadingLevels:true로 다시 받아 h1~h6 원래 레벨을 그대로 보존한다.
+  // 넘버링 하모나이징은 QA의 마지막 사용자 확인 단계라, 오류가 0건이든 조회가 실패하든 항상 그
+  // 화면으로 보낸다(NUMBERING_ISSUES_LOADED에 빈 배열이라도 넘긴다).
   const finishQA = async () => {
     if (!jobId) {
-      dispatch({ type: 'NAVIGATE', screen: 'history' })
+      dispatch({ type: 'NUMBERING_ISSUES_LOADED', issues: [] })
       return
     }
     setFinishingQA(true)
     try {
-      // 넘버링을 조회하기 전에, 좌측 문서 뷰에서 제안 저장 없이 직접 고친 헤딩 번호를 복제본에
-      // 먼저 반영한다 — 안 그러면 아래 FETCH_PAGE_MARKDOWN이 그 편집이 빠진 옛 저장본을 읽어
-      // "검토 중 새로 생긴 넘버링 오류"를 놓친다. 실패해도(탭 없음/GET 실패/복제 실패 등) 기존
-      // 흐름을 막지 않는다 — 이건 넘버링 검증의 보조 안전장치일 뿐이다.
       const commitResponse = await sendToDocumentTab<CommitDocumentEditsRequest, CommitDocumentEditsResponse>(
         confluenceTabId,
         { type: 'COMMIT_DOCUMENT_EDITS' },
@@ -111,19 +101,10 @@ export function SuggestionSummaryScreen() {
         if (pageResponse?.ok) freshText = pageResponse.markdown
       }
 
-      if (!freshText) {
-        dispatch({ type: 'NAVIGATE', screen: 'history' })
-        return
-      }
-
-      const numberingIssues = await api.getNumberingIssues(jobId, freshText)
-      if (numberingIssues.length === 0) {
-        dispatch({ type: 'NAVIGATE', screen: 'history' })
-      } else {
-        dispatch({ type: 'NUMBERING_ISSUES_LOADED', issues: numberingIssues })
-      }
+      const numberingIssues = freshText ? await api.getNumberingIssues(jobId, freshText) : []
+      dispatch({ type: 'NUMBERING_ISSUES_LOADED', issues: numberingIssues })
     } catch {
-      dispatch({ type: 'NAVIGATE', screen: 'history' })
+      dispatch({ type: 'NUMBERING_ISSUES_LOADED', issues: [] })
     } finally {
       setFinishingQA(false)
     }
@@ -136,8 +117,8 @@ export function SuggestionSummaryScreen() {
         <hr className="panel-divider" />
 
         <div className="summary-mascot-card">
-          <Mascot />
-          <p className="summary-mascot-title">수정 방향성 제안 {progress.total}건을 모두 처리했어요</p>
+          <img className="summary-logo" src="/logo-icon.svg" alt="똑독" />
+          <p className="summary-mascot-title">수정 방향성 제안 {progress.total}건 검토를 마쳤어요</p>
         </div>
 
         <div className="summary-stats-row">
@@ -147,7 +128,7 @@ export function SuggestionSummaryScreen() {
           </div>
           <div className="summary-stat summary-stat-skipped">
             <span className="summary-stat-number">{progress.skipped}</span>
-            <span className="summary-stat-label">사유 남기고 건너뜀</span>
+            <span className="summary-stat-label">건너뜀</span>
           </div>
         </div>
 
@@ -165,20 +146,17 @@ export function SuggestionSummaryScreen() {
           </div>
         )}
 
-        {skippedIssues.length > 0 && (
-          <button type="button" className="summary-skipped-card" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'history' })}>
-            <span>건너뛴 제안 {skippedIssues.length}건</span>
-            <span className="summary-skipped-link">기록 보기 →</span>
-          </button>
+        {skippedCount > 0 && (
+          <p className="hint">건너뛴 제안 {skippedCount}건은 "돌아가기"에서 회색 카드로 다시 확인할 수 있어요.</p>
         )}
       </div>
 
       <div className="screen-footer suggestion-summary-footer">
-        <Button variant="outline-pill" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'main' })}>
-          다시 검사
+        <Button variant="outline-pill" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'issues' })}>
+          돌아가기
         </Button>
         <Button className="btn-cta" onClick={() => void finishQA()} disabled={finishingQA}>
-          QA 완료
+          {finishingQA ? '마무리 중...' : '마무리'}
         </Button>
       </div>
     </div>

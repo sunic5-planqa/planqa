@@ -233,6 +233,7 @@ class IssueResponse(BaseModel):
     suggestion: str
     frame_type: FrameType
     related_location: str | None
+    related_location_number: str | None
     related_original_text: str | None
 
 
@@ -427,6 +428,9 @@ def _to_issue_record(
         end=start + len(input_text),
         frame_type=frame_type,
         related_location=related_location,
+        # XDC(타문서 정합성)의 related_location은 "[문서명] 섹션"이라 이 문서의 heading_numbers에
+        # 없다 — 그때는 None으로 두고 프론트가 라벨로 폴백한다.
+        related_location_number=heading_numbers.get(issue.related_location or ""),
         related_original_text=related_original_text,
     )
 
@@ -581,6 +585,7 @@ async def list_qa_job_issues(job_id: str) -> list[IssueResponse]:
             suggestion=issue.suggestion,
             frame_type=issue.frame_type,
             related_location=issue.related_location,
+            related_location_number=issue.related_location_number,
             related_original_text=issue.related_original_text,
         )
         for issue in issues

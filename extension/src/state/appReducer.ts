@@ -9,6 +9,7 @@ import type {
   TeamRuleResponse,
 } from '../api/types'
 import type { AppState, ConfluenceSiblingDoc, ReferenceFile, Screen } from './types'
+import { initialAppState } from './types'
 
 export type Action =
   | { type: 'DOCUMENT_CREATED'; documentId: string; parsedStructure: ParsedStructure }
@@ -21,6 +22,8 @@ export type Action =
   | { type: 'SELECT_ISSUE_BY_ID'; issueId: string }
   | { type: 'CLEAR_ACTIVE_ISSUE' }
   | { type: 'CYCLE_ACTIVE_LOCATION' }
+  | { type: 'FINALIZE_UNRESOLVED_AS_SKIPPED' }
+  | { type: 'RESET_QA_SESSION' }
   | {
       type: 'STAGE_ISSUE_EDIT'
       issueId: string
@@ -69,8 +72,8 @@ export function appReducer(state: AppState, action: Action): AppState {
         screen: 'issues',
       }
 
-    // 넘버링 오류가 하나도 없을 때는 이 액션을 아예 dispatch하지 않고 곧장 NAVIGATE 'history'로
-    // 보낸다(호출부 책임) — 이 케이스는 오류가 있을 때(최초 진입/적용 후 재검증 둘 다)만 쓰인다.
+    // 넘버링 하모나이징은 QA의 마지막 사용자 확인 단계다 — 오류가 0건이어도 호출부(finishQA)가
+    // 빈 배열로 이 액션을 dispatch해서 반드시 이 화면에 진입한다. 적용 후 재검증도 같은 액션을 쓴다.
     case 'NUMBERING_ISSUES_LOADED':
       return { ...state, numberingIssues: action.issues, screen: 'numbering-check' }
 
@@ -91,6 +94,35 @@ export function appReducer(state: AppState, action: Action): AppState {
 
     case 'CYCLE_ACTIVE_LOCATION':
       return { ...state, activeLocationIndex: state.activeLocationIndex === 0 ? 1 : 0 }
+
+    // "수정완료" — 사용자가 손대지 않은 이슈(issueEdits 엔트리 없음)만 건너뜀으로 확정한다. 이미
+    // apply/edit/skip으로 처리한 이슈의 상태(사유 포함)는 절대 덮어쓰지 않는다.
+    case 'FINALIZE_UNRESOLVED_AS_SKIPPED': {
+      const issueEdits = { ...state.issueEdits }
+      for (const issue of state.issues) {
+        if (issueEdits[issue.id] === undefined) issueEdits[issue.id] = { action: 'skip' }
+      }
+      return { ...state, issueEdits }
+    }
+
+    // "다시검사" — 우리 서비스 내부의 QA 세션/처리 상태만 비운다. 문서 감지(confluence*), 팀
+    // 연결(teamCode/teamRules), 참고문서는 그대로 두고, 이미 Confluence 문서에 적용된 수정도
+    // 당연히 안 건드린다. 이후 main에서 "QA 시작"을 누르면 현재 문서로 새 검토가 돈다.
+    case 'RESET_QA_SESSION':
+      return {
+        ...state,
+        documentId: initialAppState.documentId,
+        parsedStructure: initialAppState.parsedStructure,
+        jobId: initialAppState.jobId,
+        jobStatus: initialAppState.jobStatus,
+        issues: initialAppState.issues,
+        numberingIssues: initialAppState.numberingIssues,
+        activeIssueId: initialAppState.activeIssueId,
+        activeLocationIndex: initialAppState.activeLocationIndex,
+        issueEdits: initialAppState.issueEdits,
+        qaEngineUnavailable: initialAppState.qaEngineUnavailable,
+        error: initialAppState.error,
+      }
 
     case 'STAGE_ISSUE_EDIT': {
       // target이 'related'면 relatedEditedText만 갱신하고 editedText(첫 번째 위치)는 기존 값을

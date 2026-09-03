@@ -77,6 +77,7 @@ export interface IssueResponse {
   suggestion: string
   frame_type: FrameType
   related_location: string | null
+  related_location_number: string | null
   related_original_text: string | null
 }
 

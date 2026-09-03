@@ -104,7 +104,7 @@ export interface ClearActiveSuggestionResponse {
 }
 
 // 사이드패널 → content script: 지속적인 틴트/마커 없이 그냥 그 위치로 스크롤만 해달라는 요청 —
-// 3d 완료 이후의 "기록" 화면(HistoryExportScreen)처럼 활성 제안 개념이 없는 화면에서 쓴다.
+// 넘버링 하모나이징 화면(NumberingCheckScreen)처럼 활성 제안 개념이 없는 화면에서 쓴다.
 export interface ScrollToLocationRequest {
   type: 'SCROLL_TO_LOCATION'
   location: SuggestionLocation

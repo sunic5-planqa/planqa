@@ -1,61 +1,45 @@
 import type { IssueResponse } from '../../api/types'
 import { useAppDispatch, useAppState } from '../../state/hooks'
-import { formatLocationLabel } from '../../utils/locationLabel'
+import { locationLeaf } from '../../utils/locationLabel'
 
-// 관계형 이슈(related_original_text 있음)에서만 ‹ › 순회가 의미 있다 — 없으면 단일 위치만 보여주고
-// 버튼은 비활성화한다. activeLocationIndex(전역 상태)를 그대로 반영하므로, 여기서 순회하면
-// SuggestionDirectionCard가 편집하는 대상과 문서 쪽 틴트도 함께 따라 바뀐다.
+// 관계형 오류(LG/LF/GA, related_original_text 있음)에서만 나온다 — 두 위치를 탭으로 보여줘서
+// "지금 문서에서 어느 쪽을 편집 중인지"(activeLocationIndex)를 전환할 수 있게 한다. 단일 위치
+// 오류의 위치는 RuleEvidenceCard의 "문서 위치"에서 이미 보여주므로 여기선 아무것도 그리지 않는다.
+//
+// 탭 텍스트는 백엔드가 계산한 넘버(2, 2-3, 3-5 …)를 쓴다. 넘버를 못 구하는 경우(타문서 정합성
+// XDC처럼 "[문서명] 섹션"이거나 LLM 라벨이 계산 키와 안 맞을 때)만 짧은 제목으로 폴백한다.
 export function LocationNavigator({ issue }: { issue: IssueResponse }) {
   const { activeLocationIndex } = useAppState()
   const dispatch = useAppDispatch()
 
-  const hasRelated = !!issue.related_original_text
-  const locations = hasRelated
-    ? [formatLocationLabel(issue.location, issue.location_number), issue.related_location ?? '관련 위치']
-    : [formatLocationLabel(issue.location, issue.location_number)]
+  if (!issue.related_original_text) return null
 
-  const total = locations.length
-  const index = hasRelated ? activeLocationIndex : 0
-  const nextLabel = locations[(index + 1) % total]
+  const tabs = [
+    issue.location_number ?? locationLeaf(issue.location),
+    issue.related_location_number ?? (issue.related_location ? locationLeaf(issue.related_location) : '관련 위치'),
+  ]
+
+  // activeLocationIndex는 0/1 두 값뿐이라 "다른 쪽 탭 클릭 = 토글"과 같다.
+  const select = (target: 0 | 1) => {
+    if (target !== activeLocationIndex) dispatch({ type: 'CYCLE_ACTIVE_LOCATION' })
+  }
 
   return (
     <div className="location-navigator">
-      <div className="location-navigator-row">
-        <button
-          type="button"
-          className="location-navigator-btn location-navigator-btn-prev"
-          disabled={!hasRelated}
-          onClick={() => dispatch({ type: 'CYCLE_ACTIVE_LOCATION' })}
-        >
-          ‹
-        </button>
-        <div className="location-navigator-center">
-          <span className="location-navigator-label">{locations[index]}</span>
-          {hasRelated && (
-            <span className="location-navigator-counter">
-              {index + 1} / {total} · 다음은 {nextLabel}
-            </span>
-          )}
-        </div>
-        <button
-          type="button"
-          className="location-navigator-btn location-navigator-btn-next"
-          disabled={!hasRelated}
-          onClick={() => dispatch({ type: 'CYCLE_ACTIVE_LOCATION' })}
-        >
-          ›
-        </button>
+      <div className="location-navigator-tabs" role="tablist">
+        {tabs.map((text, i) => (
+          <button
+            key={i}
+            type="button"
+            role="tab"
+            aria-selected={i === activeLocationIndex}
+            className={`location-navigator-tab ${i === activeLocationIndex ? 'location-navigator-tab-active' : ''}`.trim()}
+            onClick={() => select(i as 0 | 1)}
+          >
+            {text}
+          </button>
+        ))}
       </div>
-      {hasRelated && (
-        <div className="location-navigator-steps">
-          {locations.map((_, i) => (
-            <span
-              key={i}
-              className={`location-navigator-step ${i === index ? 'location-navigator-step-active' : ''}`.trim()}
-            />
-          ))}
-        </div>
-      )}
     </div>
   )
 }

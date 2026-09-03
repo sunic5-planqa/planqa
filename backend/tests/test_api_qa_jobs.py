@@ -624,6 +624,50 @@ def test_to_issue_record_maps_xdc_reference_into_related_location_fields() -> No
     assert record.related_location == "[DOC-005] §2-1"
     assert record.related_original_text == "신청 기한: 상품 수령일로부터 14일 이내"
     assert record.frame_type == qa_jobs.FrameType.RANGE
+    # XDC의 두 번째 위치는 다른 문서라 이 문서의 heading_numbers에 없다 — 번호 없이 라벨로만.
+    assert record.related_location_number is None
+
+
+# 관계형(LG/LF/GA) 이슈의 두 번째 위치도 첫 번째와 같은 방식으로 문서 등장 순서 기반 넘버를
+# 붙여준다 — related_location이 heading_numbers 키와 맞으면 그 번호, 아니면 None(프론트가 라벨 폴백).
+def test_to_issue_record_numbers_the_related_location_when_it_matches_a_heading() -> None:
+    rulebook = qa_jobs._load_rulebook()
+    heading_numbers = {"배경": "1", "요구사항": "2", "요구사항 > 결제": "2-1"}
+    issue = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="GA-01",
+        location="배경",
+        description="d",
+        original_text="원문",
+        rationale="r",
+        related_location="요구사항 > 결제",
+        related_original_text="상충 문구",
+    )
+
+    record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, heading_numbers)
+
+    assert record.location_number == "1"
+    assert record.related_location_number == "2-1"
+
+
+def test_to_issue_record_leaves_related_location_number_none_when_no_heading_matches() -> None:
+    rulebook = qa_jobs._load_rulebook()
+    issue = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="GA-01",
+        location="배경",
+        description="d",
+        original_text="원문",
+        rationale="r",
+        related_location="어디에도 없는 위치",
+        related_original_text="상충 문구",
+    )
+
+    record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, {"배경": "1"})
+
+    assert record.related_location_number is None
 
 
 # 원문 헤딩 자체의 번호는 작성자마다 있기도 없기도 해서 신뢰할 수 없다는 게 실사용 피드백으로

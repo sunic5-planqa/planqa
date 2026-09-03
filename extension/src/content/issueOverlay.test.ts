@@ -426,6 +426,41 @@ describe('showQaPassedBadge / clearQaPassedBadge', () => {
     expect(document.querySelector('.sunnic-qa-passed-badge')).toBeNull()
     vi.useRealTimers()
   })
+
+  it('never stacks more than one badge, even when show is called repeatedly', () => {
+    document.body.innerHTML = '<h1>PRD 문서</h1>'
+
+    showQaPassedBadge()
+    showQaPassedBadge()
+    showQaPassedBadge()
+
+    expect(document.querySelectorAll('.sunnic-qa-passed-badge')).toHaveLength(1)
+  })
+
+  // SPA가 h1을 다시 그리는 사이 재시도 타이머(이미 큐에 들어간 stale 콜백)와 새 show가 겹쳐
+  // 배지가 두 개 붙던 회귀(제목에 "✓ QA 통과"가 여러 번). 세대 토큰 + append 직전 중복 체크로 방지.
+  it('does not stack a badge when a stale retry fires after a fresh show', () => {
+    vi.useFakeTimers()
+    document.body.innerHTML = '<p>아직 렌더링 안 된 페이지</p>'
+
+    showQaPassedBadge() // h1 없음 → 재시도 예약
+    document.body.innerHTML = '<h1>PRD 문서</h1>'
+    showQaPassedBadge() // h1 있음 → 즉시 append (이전 재시도 체인은 무효화돼야 함)
+    vi.advanceTimersByTime(5000) // stale 재시도 콜백들이 전부 소진되도록
+
+    expect(document.querySelectorAll('.sunnic-qa-passed-badge')).toHaveLength(1)
+    vi.useRealTimers()
+  })
+
+  it('sweeps up multiple pre-existing badges on clear', () => {
+    document.body.innerHTML =
+      '<h1>PRD 문서<span class="sunnic-qa-passed-badge">✓ QA 통과</span>' +
+      '<span class="sunnic-qa-passed-badge">✓ QA 통과</span></h1>'
+
+    clearQaPassedBadge()
+
+    expect(document.querySelector('.sunnic-qa-passed-badge')).toBeNull()
+  })
 })
 
 describe('formatKstTimestamp', () => {

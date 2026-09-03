@@ -587,7 +587,7 @@ export function setActiveSuggestion(payload: {
   return currentEl !== null
 }
 
-// 활성 제안 개념이 없는 화면(HistoryExportScreen)에서 쓰는 가벼운 버전 — 지속되는 틴트/마커 없이
+// 활성 제안 개념이 없는 화면(넘버링 하모나이징 등)에서 쓰는 가벼운 버전 — 지속되는 틴트/마커 없이
 // 스크롤만 하고 잠깐 배경을 반짝여 위치를 알려준다.
 export function scrollToLocation(loc: SuggestionLocation): boolean {
   ensureStyleInjected()
@@ -606,19 +606,27 @@ export function scrollToLocation(loc: SuggestionLocation): boolean {
 const _BADGE_MAX_RETRIES = 10
 const _BADGE_RETRY_DELAY_MS = 300
 let badgeRetryTimeout: ReturnType<typeof setTimeout> | null = null
+// SHOW_QA_PASSED_BADGE는 여러 곳에서(문서 감지 훅, 요약 화면, 넘버링 화면) 켜질 수 있고, SPA가
+// h1을 다시 그리는 사이 재시도 타이머가 겹치면 이미 큐에 들어간 stale 콜백이 배지를 한 번 더
+// 붙여 제목에 "✓ QA 통과"가 여러 개 쌓였다(실사용 보고). 세대 토큰으로 지난 재시도 체인을
+// 무효화하고, 실제 append 직전에 이미 배지가 있으면 건너뛴다.
+let badgeGeneration = 0
 
 function cancelBadgeRetry(): void {
+  badgeGeneration += 1
   if (badgeRetryTimeout !== null) {
     clearTimeout(badgeRetryTimeout)
     badgeRetryTimeout = null
   }
 }
 
-function attemptShowBadge(retriesLeft: number): void {
+function attemptShowBadge(retriesLeft: number, generation: number): void {
+  if (generation !== badgeGeneration) return // 더 최근의 show/clear에 의해 밀려난 체인
+  if (document.querySelector(`.${QA_BADGE_CLASS}`)) return // 이미 붙어 있음
   const h1 = document.querySelector('h1')
   if (!h1) {
     if (retriesLeft <= 0) return
-    badgeRetryTimeout = setTimeout(() => attemptShowBadge(retriesLeft - 1), _BADGE_RETRY_DELAY_MS)
+    badgeRetryTimeout = setTimeout(() => attemptShowBadge(retriesLeft - 1, generation), _BADGE_RETRY_DELAY_MS)
     return
   }
   const badge = document.createElement('span')
@@ -630,12 +638,12 @@ function attemptShowBadge(retriesLeft: number): void {
 export function showQaPassedBadge(): void {
   ensureStyleInjected()
   clearQaPassedBadge()
-  attemptShowBadge(_BADGE_MAX_RETRIES)
+  attemptShowBadge(_BADGE_MAX_RETRIES, badgeGeneration)
 }
 
 export function clearQaPassedBadge(): void {
   cancelBadgeRetry()
-  document.querySelector(`.${QA_BADGE_CLASS}`)?.remove()
+  document.querySelectorAll(`.${QA_BADGE_CLASS}`).forEach((el) => el.remove())
 }
 
 // 컨플루언스 URL(/pages/{id}/..., /pages/edit-v2/{id} 등 또는 ?pageId=)에서 페이지 id를 뽑는다.

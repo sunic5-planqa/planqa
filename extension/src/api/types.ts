@@ -36,6 +36,7 @@ export interface CreateQAJobResponse {
 
 export interface CreateQAJobRequest {
   team_code?: string | null
+  reference_document_ids?: string[]
 }
 
 export type CategoryItemStatus = 'pending' | 'in_progress' | 'done'

@@ -4,7 +4,6 @@ import type {
   NumberingIssueResponse,
   ParsedStructure,
   QAJobStatusResponse,
-  RulebookCategoryResponse,
   TeamRuleResponse,
 } from '../api/types'
 
@@ -83,7 +82,6 @@ export interface AppState {
   qaEngineUnavailable: boolean
   error: string | null
 
-  ruleCategories: RulebookCategoryResponse[]
   teamCode: string | null
   teamName: string | null
   teamDescription: string | null
@@ -119,7 +117,6 @@ export const initialAppState: AppState = {
   qaEngineUnavailable: false,
   error: null,
 
-  ruleCategories: [],
   teamCode: null,
   teamName: null,
   teamDescription: null,

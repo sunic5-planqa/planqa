@@ -1,25 +1,28 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/errors'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { Button } from '../common/Button'
 
-// rulebook_v1.0.md의 카테고리 헤더는 이름만 있고 한 줄 설명이 없다 — Figma 목업 문구를 그대로
-// 프론트엔드에 고정 데이터로 둔다(백엔드는 안 건드림, 사용자 확인 완료). 패널 폭이 좁아 한 줄에
-// 안 들어가는 경우가 있어 원문 의미를 유지하면서 짧게 축약했다(CSS 말줄임 대신 문구 자체 축약).
-const BASE_RULE_DESCRIPTIONS: Record<string, string> = {
-  LG: '문서 내용 사이의 연결이 비약하는 경우',
-  LF: '내용의 전개 순서나 연결성이 자연스럽지 않은 경우',
-  TC: '동일한 개념을 서로 다른 용어나 표기로 사용하는 경우',
-  TM: '용어를 의미와 다르게 사용하거나 부적절하게 쓰는 경우',
-  AE: '의미가 불명확하거나 여러 해석이 가능한 표현인 경우',
-  MI: '목적 달성에 필요한 정보가 존재하지 않는 경우',
-  RD: '동일하거나 유사한 내용을 반복 전달하는 경우',
-  GA: '상위 목표와 하위 내용이 어긋나는 경우',
-}
+// rulebook_v1.0.md의 8개 카테고리는 저장소에 커밋된 정적 파일이라 사용자/문서마다 달라지지
+// 않는다 — 예전엔 라벨만 /rulebook/categories로 매번 새로 받아왔는데, 그 응답이 올 때까지
+// "적용된 규칙: 0개"로 보였다가(백엔드 콜드스타트 땐 수십 초까지) 갑자기 8개로 바뀌는 게
+// 실사용 혼란으로 이어졌다(2026-09-05). 한 줄 설명은 이미 프론트엔드에 고정돼 있었으니(Figma
+// 목업 문구, 백엔드에 없음) 라벨도 같이 고정해서 백엔드 호출 자체를 없앤다 — rulebook_v1.0.md가
+// 바뀌면 이 배열도 같이 고쳐야 한다.
+const BASE_RULE_CATEGORIES: { category: string; label: string; description: string }[] = [
+  { category: 'LG', label: '논리비약', description: '문서 내용 사이의 연결이 비약하는 경우' },
+  { category: 'LF', label: '논리흐름', description: '내용의 전개 순서나 연결성이 자연스럽지 않은 경우' },
+  { category: 'TC', label: '용어 및 단어의 일관성', description: '동일한 개념을 서로 다른 용어나 표기로 사용하는 경우' },
+  { category: 'TM', label: '용어 오용', description: '용어를 의미와 다르게 사용하거나 부적절하게 쓰는 경우' },
+  { category: 'AE', label: '모호한 표현', description: '의미가 불명확하거나 여러 해석이 가능한 표현인 경우' },
+  { category: 'MI', label: '정보 누락', description: '목적 달성에 필요한 정보가 존재하지 않는 경우' },
+  { category: 'RD', label: '불필요한 중복', description: '동일하거나 유사한 내용을 반복 전달하는 경우' },
+  { category: 'GA', label: '상위 목표와 세부 내용의 정합성', description: '상위 목표와 하위 내용이 어긋나는 경우' },
+]
 
 export function RuleSection() {
-  const { ruleCategories, teamCode, teamName, teamRules } = useAppState()
+  const { teamCode, teamName, teamRules } = useAppState()
   const dispatch = useAppDispatch()
 
   const [teamCodeInput, setTeamCodeInput] = useState('')
@@ -32,15 +35,6 @@ export function RuleSection() {
   const [creating, setCreating] = useState(false)
 
   const [togglingId, setTogglingId] = useState<string | null>(null)
-
-  useEffect(() => {
-    api
-      .getRulebookCategories()
-      .then((categories) => dispatch({ type: 'RULE_CATEGORIES_LOADED', categories }))
-      .catch(() => {
-        // 기본 규칙 목록은 부가 정보라 실패해도 화면 자체는 그대로 동작해야 한다.
-      })
-  }, [dispatch])
 
   const connectTeam = async () => {
     if (!teamCodeInput.trim()) return
@@ -98,7 +92,7 @@ export function RuleSection() {
     }
   }
 
-  const ruleCount = ruleCategories.length + teamRules.filter((rule) => rule.enabled).length
+  const ruleCount = BASE_RULE_CATEGORIES.length + teamRules.filter((rule) => rule.enabled).length
 
   return (
     <div className="rule-section">
@@ -109,12 +103,12 @@ export function RuleSection() {
       <div className="rule-card">
         <p className="rule-card-header">✅ 기본 규칙</p>
         <ul className="rule-base-list">
-          {ruleCategories.map((category, index) => (
+          {BASE_RULE_CATEGORIES.map((category, index) => (
             <li key={category.category} className="rule-base-item">
               <span className="rule-number-badge">{index + 1}</span>
               <div className="rule-base-item-text">
                 <p className="rule-base-item-name">{category.label}</p>
-                <p className="rule-base-item-description">{BASE_RULE_DESCRIPTIONS[category.category] ?? ''}</p>
+                <p className="rule-base-item-description">{category.description}</p>
               </div>
             </li>
           ))}

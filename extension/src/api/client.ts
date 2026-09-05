@@ -11,7 +11,6 @@ import type {
   NumberingIssueResponse,
   QAJobStatusResponse,
   QaStatusResponse,
-  RulebookCategoryResponse,
   SimilarityCheckResponse,
   TeamResponse,
   TeamRuleInput,
@@ -107,8 +106,6 @@ export const api = {
 
   getQaStatusByPage: (confluencePageId: string) =>
     request<QaStatusResponse>(`/documents/by-page/${confluencePageId}/qa-status`),
-
-  getRulebookCategories: () => request<RulebookCategoryResponse[]>('/rulebook/categories'),
 
   createTeam: (body: CreateTeamRequest) =>
     request<TeamResponse>('/teams', { method: 'POST', body: JSON.stringify(body) }),

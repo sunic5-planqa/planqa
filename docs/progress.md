@@ -2916,3 +2916,170 @@ git commit 없이 워킹 디렉토리에 uncommitted 상태로만 남아있었�
 - 재검증: 백엔드 `uv run pytest` **170개** 전부 통과, 프론트 `vitest` **117개** 전부 통과,
   `npm run build`(tsc + vite) 성공.
 - **Next 항목은 그대로 유효**: 실제 Confluence 페이지에서의 수동 확인은 아직 안 됨.
+
+
+## 2026-09-03 — 넘버링: 검토 중 인라인으로 고친 헤딩 번호가 QA 완료 검증에 반영되게
+
+은성님 보고: "QA 완료" 시 넘버링 검증이 검토 시작 전부터 있던 오류만 잡고, 검토 중 좌측
+문서 뷰에서 직접 고친 H2~H6 헤딩 번호로 새로 생긴 오류는 못 잡는다.
+
+- **근본 원인**: `validate_numbering` 알고리즘은 정상. `finishQA`(`SuggestionSummaryScreen`)가
+  복제본 페이지 저장본을 읽어 검증에 넘기는데, 좌측 인라인 편집은 제안 "저장"(`handleSaveClick`
+  → `changedElements` 스윕)에 딸려갈 때만 복제본에 반영된다. 번호만 고치고 저장 안 하거나 저장
+  없이 다음 제안으로 넘어가면(`dataset.sunnicOriginalText` 재스냅샷) 그 편집이 복제본에 못 감.
+- **수정**: `finishQA`가 넘버링 조회 직전에 새 메시지 `COMMIT_DOCUMENT_EDITS`를 보낸다.
+  `issueOverlay.commitDocumentEdits()`가 라이브 DOM의 h2~h6 헤딩을 저장본(복제본 또는 원본)과
+  **위치(순서) 기준**으로 대조 → 번호만 바뀐 헤딩을 기존 `replaceAllAndSave`로 복제본에 반영.
+  헤딩 개수가 다르면(삽입/삭제) 위치 매칭 생략(`skippedCountMismatch`). oldText가 문서 전체
+  디코드 텍스트에서 전역 매치 1건이 아니면(산문 충돌/중복 헤딩) 자동 reconcile 제외.
+  실패해도(탭 없음/GET 실패 등) 기존 QA 완료 흐름 안 막음.
+- **선행 수정**: `duplicateSession`에 `originalPageId` 필드 추가. Confluence SPA 특성상 탭 내
+  페이지 이동 시 content script가 재주입되지 않아 이전 세션이 스테일해질 수 있어,
+  `ensureDuplicateSession`/`getActiveDuplicatePageId(originalPageId)`가 현재 원본과 맞을 때만
+  재사용하도록 했다. `getActiveDuplicatePageId`는 인자 필수로 시그니처 변경.
+- 백엔드 로직 무변경 — `test_numbering_validation.py`에 형제 그룹 독립성 회귀 테스트만 추가
+  (`2-x` 그룹이 밀려도 `1-x`는 안 건드림).
+- 검증: 백엔드 `pytest` **220개** 통과, 프론트 `vitest` **132개** 통과(`issueOverlay` +11),
+  `npm run build` 성공(단 `diff` 패키지 미설치 상태였어서 `npm install` 먼저 필요했음).
+
+### Next
+
+- 실제 Confluence에서 수동 확인(시나리오 A: 제안 저장 없이 헤딩 번호 직접 수정 → QA 완료 →
+  넘버링 화면에 검출 / B: 제안 일부 적용 후 수정 / C: 제안 0건이라 복제본이 이때 처음 생성).
+- **후속 이슈(동일 근본 원인, 이번 범위 밖)**: 헤딩이 아닌 본문 인라인 편집도 제안 저장에
+  안 묶이면 복제본에 유실된다. H1(본문 대주제) 인라인 편집은 `BLOCK_SELECTOR`가 h1 제외라
+  애초에 편집이 안 된다. 헤딩 삽입/삭제로 개수가 바뀐 경우의 reconcile도 미구현.
+- `replaceInStorageHtml`에 occurrence index를 넘길 수 있게 하면 중복 헤딩도 자동 처리 가능(하드닝).
+
+
+## 2026-09-03 — QA 수정 흐름 재구성 (수정사항 검토 단일화 + 넘버링 종료 흐름)
+
+은성님 요청: 수정사항 검토를 3화면 위저드(목록 → 한 건씩 → 요약)에서 **한 화면 · 모든 박스
+동시 렌더 · 박스별 독립 처리**로 바꾸고, 넘버링 하모나이징을 QA의 마지막 수동 확인 단계로.
+`EnterPlanMode`로 계획 승인 후 구현. 계획 파일: `~/.claude/plans/velvety-swinging-taco.md`.
+
+최종 흐름: **QA 검토 → 수정사항 검토 → 수정완료 → QA 검토 요약 → 넘버링 하모나이징 → 검토종료**
+
+### Done
+
+- **수정사항 검토 단일화**: `SuggestionDetailScreen`(위저드) 삭제. `SuggestionListScreen`을
+  통합 화면으로 재작성 — `issues`를 원래 순서대로 전부 렌더, 카드 클릭 시 그 자리에서 펼침
+  (`activeIssueId`는 "펼친 카드 + 문서 틴트 동기화" 용도로만, 재정렬/맨위이동 없음).
+  - 위저드의 apply/skip 로직 → `hooks/useIssueResolution.ts`(훅), 펼침 내용 →
+    `components/suggestions/SuggestionExpandPanel.tsx`(RuleEvidenceCard + SuggestionDirectionCard
+    + LocationNavigator + 수정적용/건너뛰기 버튼)로 분리. 처리 후 **자동 이동 없음**
+    (`advanceAfterResolving` 제거). `getNextOpenIssueId`는 함수·테스트만 남김(미사용).
+  - `SUGGESTION_EDIT_SAVED`(문서 직접 편집 저장) 리스너를 통합 화면으로 이관 — 저장해도
+    카드를 접거나 다음으로 넘어가지 않는다.
+- **처리 상태 색상**: `SuggestionCard`에 `suggestion-card-resolved`(회색) 클래스 —
+  `issueEdits[id]?.action` 유무로만 파생(펼침 여부와 무관, 클릭/리렌더에 안 흔들림).
+- **수정완료 = 미처리 일괄 건너뜀**: 신규 리듀서 액션 `FINALIZE_UNRESOLVED_AS_SKIPPED` —
+  `issueEdits` 엔트리 없는 이슈만 `{action:'skip'}`으로 채움(기존 apply/edit/skip은 불변).
+  통합 화면 푸터 `수정완료 | 다시검사` 둘 다 항상 활성.
+- **다시검사 = 세션만 초기화**: 신규 액션 `RESET_QA_SESSION` — `issues/issueEdits/jobId/
+  documentId/numberingIssues/activeIssueId...`만 비우고 `confluence*`/`teamCode`/`teamRules`/
+  `referenceFiles`는 유지. `ConfirmDialog`("…초기화하고 QA를 다시 실행합니다.") 후 main 이동.
+  이미 Confluence 문서에 반영된 수정은 우리 상태가 아니라 안 건드림.
+- **건너뛰기 사유 선택**: `SkipReasonPrompt`의 `disabled={!reason.trim()}` 제거 —
+  빈 사유로도 확정 가능. 확정 시 `reason.trim() || undefined` 전달.
+- **위치 라벨**: `formatLocationLabel`이 `" > "` 체인의 leaf 세그먼트에만 번호를 붙이도록
+  (`"발송 정책 > 발송 채널" + "3-2"` → `"3-2. 발송 채널"`). H1 전체 경로 안 보여줌.
+- **넘버링 하모나이징 = 마지막 단계**:
+  - `finishQA`의 모든 경로(오류 0건 / jobId 없음 / freshText 없음 / 예외)가
+    `NUMBERING_ISSUES_LOADED`(빈 배열이라도)로 수렴 — 넘버링 화면을 항상 거친다.
+  - `applySelected`에서 `NAVIGATE 'history'` 전부 제거 — 적용·재검증 후 화면 유지,
+    "N건 반영됨" 안내. 푸터 `넘버링 적용 | 검토종료`(→main) 분리. 0건이면 빈 상태 UI +
+    `검토종료`만.
+  - 넘버링 항목의 위치를 클릭하면 `SCROLL_TO_LOCATION`(신규 `utils/numberingLocation.ts`
+    매핑 = `{text: before_text, location}`)으로 문서 heading 점프 — 일반 QA 이슈의
+    `scrollToLocation`/`findHeadingAnchor` 그대로 재사용, **콘텐츠 스크립트 무변경**.
+  - 패널 제목 텍스트("똑독") → 메인 아이콘 `<img src="/icons/icon128.png">`.
+- **HistoryExportScreen(원본/수정본 diff) 완전 삭제**: 이 서비스는 내부 편집기가 아니라
+  사용자가 Confluence를 직접 고치는 구조라 내부 diff가 의미 없음. 파일 + `App.tsx` 라우팅 +
+  `Screen` 유니온의 `'history'` + 요약/넘버링의 `NAVIGATE 'history'` + `diff`/`@types/diff`
+  패키지 + `.history-*`/`.diff-*`/`.view-toggle*`/`.summary-skipped-*` CSS 제거.
+  `SCROLL_TO_LOCATION` 메시지·`scrollToLocation()`는 넘버링이 유일 소비자로 승계(주석만 갱신).
+- **QA 검토 요약** 유지하되 diff 성격 제거: 푸터 `다시 검사`(→main) → `돌아가기`(→issues,
+  `issueEdits` 불변 → 처리 상태 그대로 복귀), `QA 완료` → `넘버링 확인`. "건너뛴 제안 기록
+  보기" 링크 제거.
+- 테스트: `@testing-library/react` 도입 안 함(사용자 확정). `appReducer.test.ts`에
+  `FINALIZE_UNRESOLVED_AS_SKIPPED`(불변식 검증)/`RESET_QA_SESSION`(세션 밖 상태 보존)/
+  `NUMBERING_ISSUES_LOADED` 빈 배열 케이스, `locationLabel.test.ts`에 체인 케이스,
+  신규 `numberingLocation.test.ts`. 수동 E2E 26항목 → `docs/manual-tests/qa-review-flow/README.md`.
+- 검증: `npm run typecheck` / `npm run lint` 통과, `vitest` **142개** 통과(132 + 10),
+  `npm run build` 성공. 백엔드 무변경.
+
+### 후속 UI 조정 (같은 세션, 사용자 피드백 5건)
+
+- **오류 위치 표시**: `RuleEvidenceCard`에 "문서 위치" 블록 추가 —
+  `formatLocationLabel(issue.location, issue.location_number)`(+ `related_location`). "어떤
+  규칙" vs "문서 어디"를 시각적으로 분리. 새 데이터/추론 없이 기존 QA 필드만 사용.
+- **LocationNavigator에서 ‹ › 화살표 제거**: 단일 위치 오류는 청크 제목만 가운데 표시.
+  관계형 오류(`related_original_text` 有)만 위치 2개를 세그먼트 탭으로 — 탭 클릭 시
+  `CYCLE_ACTIVE_LOCATION`(0↔1)로 편집 대상 전환(문서 틴트/SuggestionDirectionCard 연동 유지).
+  `.location-navigator-row/-btn/-center/-counter/-steps` CSS 제거, `.location-navigator-tabs/-tab`
+  추가.
+- **검토 요약 화면 아이콘**: `<Mascot/>`(CSS 물개) → `<img src="/icons/icon128.png">`.
+  `Mascot.tsx` + `.mascot-summary*` CSS 삭제(다른 사용처 없음).
+- **요약 화면 버튼 `넘버링 확인` → `마무리`**(진행 중 `마무리 중...`). 넘버링 화면의
+  `검토종료`는 그대로(사용자 확정 — 요약 쪽만 변경).
+- **넘버링 카드 위치 이동**: 항목의 별도 "이동" 버튼 제거 → `numbering-check-item-body`
+  전체를 `role="button"`으로(Enter/Space 지원), 카드 본문 클릭 시 `SCROLL_TO_LOCATION`.
+  체크박스는 형제 요소라 이벤트 안 겹침(전파 분리 불필요).
+- 재검증: typecheck/lint/`vitest` 142/`build` 통과. 순수 로직 변경 없음(전부 컴포넌트/CSS) —
+  자동 테스트 추가분 없음, 수동 체크리스트에 3a/3b/16a/21 항목 반영.
+
+### QA 통과 배지가 제목에 여러 번 쌓이는 버그 수정
+
+은성님 보고: "검토 종료 후 ✓ QA 통과 글자가 제목에 여러 번 추가된다."
+
+- **원인**: `SHOW_QA_PASSED_BADGE`를 세 곳이 보낸다 — `useConfluenceAutoDetect`(문서 감지 시
+  백엔드가 passed면), `SuggestionSummaryScreen` mount, `NumberingCheckScreen` mount(이번 세션
+  추가). `issueOverlay.attemptShowBadge`는 h1이 아직 없으면 `setTimeout` 재시도를 거는데,
+  `cancelBadgeRetry`가 `clearTimeout`을 해도 **이미 큐에 들어간 콜백은 실행**된다. SPA가 h1을
+  다시 그리는 사이 stale 재시도 콜백 + 새 `showQaPassedBadge`의 동기 append가 겹쳐 배지가 2개가
+  되고, `clearQaPassedBadge`가 `querySelector`(단수) `?.remove()`라 하나씩만 지워서 계속 남았다.
+- **수정**([issueOverlay.ts](extension/src/content/issueOverlay.ts)): (1) `badgeGeneration` 세대
+  토큰 — `cancelBadgeRetry`가 증가시키고, `attemptShowBadge`는 자기 세대가 최신이 아니면 즉시
+  bail. (2) `attemptShowBadge`가 append 직전 `.sunnic-qa-passed-badge`가 이미 있으면 건너뜀.
+  (3) `clearQaPassedBadge`를 `querySelectorAll(...).forEach(remove)`로 — 이미 쌓인 것도 싹 정리.
+- 회귀 테스트 3개 추가(`issueOverlay.test.ts`): 반복 show → 1개 유지 / stale 재시도 + fresh
+  show → 1개 / 기존에 2개 있어도 clear가 전부 제거. `vitest` **145개** 통과.
+
+### 위치 표시 정리 (사용자 피드백)
+
+- **단일 위치 오류의 하단 위치 중복 제거**: `RuleEvidenceCard`의 "문서 위치"가 이미 있으므로
+  `LocationNavigator`는 관계형 오류가 아니면 `null` 반환(하단 위치 영역 삭제).
+- **관계형 오류 탭은 넘버만 표시**: `LocationNavigator` 탭 텍스트를
+  `formatLocationLabel`(제목 포함) → `location_number` / `related_location_number`(숫자만)로.
+  넘버가 없으면 `locationLeaf(...)` 짧은 제목으로 폴백(XDC 등).
+- **백엔드에 `related_location_number` 추가**(`issues`는 인메모리 pydantic이라 마이그레이션 없음):
+  `models/issue.py` 필드, `qa_jobs._to_issue_record`가
+  `heading_numbers.get(issue.related_location or "")`로 계산(첫 번째 위치와 동일한 dict),
+  `IssueResponse` + `list_qa_job_issues`에 전달. XDC(`[문서명] 섹션`)는 dict에 없어 None →
+  프론트 폴백.
+- `formatLocationLabel`의 `leafSegment` → `locationLeaf`로 export명 변경(컴포넌트에서 재사용).
+- 테스트: 백엔드 2개 추가(related_location이 heading과 맞으면 넘버, 아니면 None + XDC None
+  회귀). 프론트 fixtures/demoIssues/issueGrouping 테스트에 새 필드 반영. 백엔드 **222개** /
+  프론트 **145개** 통과, typecheck/lint/build/ruff 통과.
+
+### 서비스 로고/아이콘 교체 (사용자 제공 `자산 1.svg`)
+
+- 사용자가 레포 루트에 둔 `자산 1.svg`(파우 + 돋보기 "Q" + "똑독" 워드마크)를 정식 asset으로
+  편입: `extension/public/logo.svg`(전체 로고), `extension/public/logo-icon.svg`(아이콘만 —
+  viewBox를 캐릭터 영역으로 크롭 `163 112 780 785`, 흰 배경 rect 제거). 원본 `자산 1.svg` 삭제.
+- 사이드패널은 폭이 좁아 워드마크가 뭉개지므로 **아이콘만** 사용(사용자 승인):
+  `SuggestionSummaryScreen`("검토를 마쳤어요" 히어로)·`NumberingCheckScreen`(패널 제목)의
+  `/icons/icon128.png` → `/logo-icon.svg`.
+- 매니페스트 툴바 아이콘도 새 로고로 통일 — `logo-icon.svg`를 `qlmanage`로 래스터화해
+  `public/icons/icon16/48/128.png` 교체(Chrome MV3는 SVG 아이콘 미지원이라 PNG 유지).
+- 마스코트 `public/mascot/walk.png`(별개 캐릭터 — 걷는 애니메이션)는 로고가 아니라 그대로 둠.
+- 검증: typecheck/lint/build/`vitest` 145 통과.
+
+### Next
+
+- 실제 Confluence에서 `docs/manual-tests/qa-review-flow/README.md` 26항목 수동 확인.
+- 요약 화면 forward 버튼 라벨(`넘버링 확인` vs `QA 완료`)은 잠정 `넘버링 확인` — 팀 피드백 시 조정.
+- `getNextOpenIssueId`/`getOpenIssues`는 이제 호출부가 없음(테스트만 유지) — 위저드 부활 계획이
+  확실히 없으면 다음 정리 때 제거 후보.
+- PR: 직접 push 불가 → PR 열고 혜서/가영님께 merge 요청.

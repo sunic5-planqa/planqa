@@ -6,8 +6,16 @@
 // 아님). [.\s]+ 를 필수로 요구해 이런 오탐을 막는다.
 const LEADING_NUMBER_RE = /^\s*\d+(?:[-.]\d+)*[.\s]+/
 
+// 백엔드 location은 "상위 위계 > 하위 위계" 체인으로 내려온다(qa_jobs.py / numbering_validation.py).
+// 사용자에게는 H1 전체 경로가 아니라 오류가 실제로 속한 가장 안쪽 제목만 보여준다 — 예: "발송 정책
+// > 발송 채널" → "발송 채널"(+ 번호가 있으면 "3-2. 발송 채널").
+export function locationLeaf(location: string): string {
+  const parts = location.split('>')
+  return (parts[parts.length - 1] ?? location).trim()
+}
+
 export function formatLocationLabel(location: string, locationNumber: string | null): string {
-  if (!locationNumber) return location
-  const label = location.replace(LEADING_NUMBER_RE, '')
-  return `${locationNumber}. ${label}`
+  const leaf = locationLeaf(location)
+  if (!locationNumber) return leaf
+  return `${locationNumber}. ${leaf.replace(LEADING_NUMBER_RE, '')}`
 }

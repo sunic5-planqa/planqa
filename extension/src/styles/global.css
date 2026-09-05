@@ -81,6 +81,13 @@ textarea {
   margin: 0;
 }
 
+/* 마지막 확인 화면(넘버링 하모나이징)은 텍스트 제목 대신 서비스 메인 아이콘을 쓴다. */
+.panel-logo {
+  display: block;
+  width: 40px;
+  height: 40px;
+}
+
 .confluence-status {
   display: flex;
   align-items: center;
@@ -280,13 +287,6 @@ textarea {
   box-shadow: 0 -8px 20px rgba(0, 0, 0, 0.03);
 }
 
-.history-footer {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.history-back-link,
 .screen-back-link {
   align-self: center;
   background: none;
@@ -846,105 +846,7 @@ textarea {
   color: var(--success);
 }
 
-/* SCREEN 05 — "QA 검토" 옆 원본/수정본 세그먼트 토글 (Figma 실측: 트랙 #f1f1f3, 선택 탭은
-   그라데이션 배경 + 진보라 텍스트). */
-.history-header-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.history-heading {
-  font-size: 0.875rem;
-  font-weight: 700;
-  color: var(--text-heading);
-  margin: 0;
-}
-
-.view-toggle {
-  display: flex;
-  gap: 2px;
-  background: #f1f1f3;
-  border-radius: 16px;
-  padding: 3px;
-}
-
-.view-toggle-option {
-  border: none;
-  background: none;
-  padding: 5px 10px;
-  border-radius: 13px;
-  font-size: 0.688rem;
-  font-weight: 600;
-  color: #b4b4bc;
-  cursor: pointer;
-}
-
-.view-toggle-option-active {
-  background: var(--accent-gradient);
-  color: var(--accent-contrast);
-  font-weight: 700;
-}
-
-.diff-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.diff-item {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  padding: 12px 14px;
-  border: none;
-  border-radius: 12px;
-  background: #fafafb;
-  font: inherit;
-  color: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.diff-item-selected {
-  background: #faf7ff;
-  box-shadow: inset -3px 0 0 0 #c9a9ff;
-}
-
-.diff-text {
-  font-size: 0.78rem;
-  color: var(--text-heading);
-  line-height: 1.5;
-}
-
-.diff-revised-check {
-  color: var(--accent);
-  font-weight: 600;
-  margin-right: 2px;
-}
-
-/* 문단 통짜 대비(회색 취소선 원본 + 굵은 수정본) 대신, 달라진 단어만 표시 — 지운 부분은
-   취소선, 추가된 부분은 배경 강조. */
-.diff-removed {
-  color: #b4b4bc;
-  text-decoration: line-through;
-}
-
-.diff-added {
-  background: #f3e8ff;
-  color: var(--text-heading);
-  font-weight: 600;
-  border-radius: 3px;
-  padding: 0 2px;
-}
-
-.diff-unchanged {
-  color: #b4b4bc;
-  font-style: italic;
-}
-
-/* ── Fix Suggestions 패널 (3a~3d) ───────────────────────────────────────────── */
+/* ── Fix Suggestions 패널 ───────────────────────────────────────────────────── */
 
 .btn-outline-pill {
   border: 1px solid #dcd0f2;
@@ -1037,6 +939,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  width: 100%;
   background: #fff;
   border: 1px solid #efeaf7;
   border-radius: 10px;
@@ -1045,6 +948,76 @@ textarea {
   font: inherit;
   color: inherit;
   text-align: left;
+}
+
+/* 회색 = 사용자가 처리 완료(수정 적용 or 건너뜀)한 오류. 미처리는 원래 색을 유지하고, 카드를
+   펼쳤다고(expanded) 회색이 되지는 않는다. */
+.suggestion-card-resolved {
+  background: #f4f4f6;
+  border-color: #e6e6ea;
+}
+
+.suggestion-card-resolved .suggestion-card-title,
+.suggestion-card-resolved .suggestion-card-desc {
+  color: #a09dab;
+}
+
+.suggestion-card-expanded {
+  border-color: #c9a9ff;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.suggestion-card-slot {
+  display: flex;
+  flex-direction: column;
+}
+
+.suggestion-expand-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #fbfafe;
+  border: 1px solid #c9a9ff;
+  border-top: none;
+  border-bottom-left-radius: 10px;
+  border-bottom-right-radius: 10px;
+  padding: 12px 13px;
+}
+
+.suggestion-expand-actions-row {
+  display: flex;
+  gap: 8px;
+}
+
+.suggestion-expand-actions-row .btn {
+  flex: 1;
+}
+
+.suggestion-expand-resolved-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.suggestion-expand-resolved-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #6e6b79;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.suggestion-list-footer {
+  display: flex;
+  gap: 8px;
+}
+
+.suggestion-list-footer .btn-cta {
+  flex: 1;
 }
 
 .suggestion-card-header {
@@ -1201,6 +1174,23 @@ textarea {
   gap: 3px;
 }
 
+/* 문서 위치 — 규칙 설명과 시각적으로 구분되게 살짝 강조한다. */
+.rule-evidence-location {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 7px 9px;
+  background: #fff;
+  border: 1px solid #e7e2f3;
+  border-radius: 8px;
+}
+
+.rule-evidence-location-value {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-heading);
+}
+
 .rule-evidence-label {
   font-size: 0.625rem;
   font-weight: 500;
@@ -1237,97 +1227,44 @@ textarea {
   color: #45424e;
 }
 
+/* 관계형 오류(두 위치)에서만 나온다 — 편집 중인 위치를 전환하는 넘버 탭. */
 .location-navigator {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
   background: #fbfafe;
   border: 1px solid #efeaf7;
   border-radius: 10px;
-  padding: 11px 12px;
+  padding: 8px 10px;
 }
 
-.location-navigator-row {
+.location-navigator-tabs {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  gap: 2px;
+  width: 100%;
+  background: #f1f1f3;
+  border-radius: 8px;
+  padding: 3px;
 }
 
-.location-navigator-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  font-size: 0.9rem;
-  cursor: pointer;
-}
-
-.location-navigator-btn-prev {
-  background: #fff;
-  border: 1px solid #dcd0f2;
-  color: #7b5bc4;
-}
-
-.location-navigator-btn-next {
-  background: var(--accent-gradient);
-  border: none;
-  color: var(--accent-contrast);
-}
-
-/* prev/next 배경(그라디언트 포함)을 덮어써서 "관련 위치가 없다"가 opacity 하나에만 기대지 않고
-   또렷하게 회색 버튼으로 보이게 한다 — 이슈에 위치가 하나뿐일 때 버튼이 여전히 눌릴 것처럼
-   보인다는 보고(2026-08-30)에 대응. */
-.location-navigator-btn:disabled {
-  background: #ececef !important;
-  border-color: #ececef !important;
-  color: #b4b4bc !important;
-  opacity: 1;
-  cursor: not-allowed;
-}
-
-.location-navigator-center {
+.location-navigator-tab {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  text-align: center;
-}
-
-.location-navigator-label {
-  font-size: 0.72rem;
+  border: none;
+  background: none;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 0.68rem;
   font-weight: 600;
-  color: var(--text-heading);
+  color: #8b8794;
+  cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 100%;
 }
 
-.location-navigator-counter {
-  font-size: 0.625rem;
-  font-weight: 400;
-  color: #a09dab;
-}
-
-.location-navigator-steps {
-  display: flex;
-  gap: 4px;
-}
-
-.location-navigator-step {
-  flex: 1;
-  height: 3px;
-  border-radius: 2px;
-  background: #e7dff6;
-}
-
-.location-navigator-step-active {
+.location-navigator-tab-active {
   background: var(--accent-gradient);
+  color: var(--accent-contrast);
+  font-weight: 700;
 }
 
 .suggestion-detail-remaining-list {
@@ -1378,33 +1315,10 @@ textarea {
   padding: 8px 0;
 }
 
-.mascot-summary {
-  width: 52px;
-  height: 52px;
-  border-radius: 16px;
-  background: var(--accent-gradient);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.summary-logo {
+  width: 64px;
+  height: 64px;
   margin-bottom: 4px;
-}
-
-.mascot-summary-body {
-  width: 30px;
-  height: 24px;
-  border-radius: 9px;
-  background: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-}
-
-.mascot-summary-eye {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #5b3fbf;
 }
 
 .summary-mascot-title {
@@ -1488,26 +1402,6 @@ textarea {
   font-size: 0.69rem;
   font-weight: 600;
   color: #34a853;
-}
-
-.summary-skipped-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  background: #fbfafe;
-  border: 1px solid #efeaf7;
-  border-radius: 10px;
-  padding: 12px 14px;
-  font: inherit;
-  cursor: pointer;
-  color: var(--text-heading);
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
-.summary-skipped-link {
-  color: #7b5bc4;
-  font-weight: 700;
 }
 
 .suggestion-summary-footer {
@@ -1925,16 +1819,24 @@ textarea {
   padding: 12px 14px;
 }
 
+.numbering-check-item-selected {
+  background: #faf7ff;
+  box-shadow: inset -3px 0 0 0 #c9a9ff;
+}
+
 .numbering-check-checkbox {
   flex-shrink: 0;
   margin-top: 3px;
 }
 
+/* 카드 본문 전체가 클릭 대상 — 누르면 문서의 해당 헤딩으로 스크롤한다(일반 QA 이슈 위치 이동과 동일). */
 .numbering-check-item-body {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  flex: 1;
+  cursor: pointer;
 }
 
 .numbering-check-item-top {
@@ -1963,7 +1865,8 @@ textarea {
 
 .numbering-check-item-location {
   font-size: 0.72rem;
-  color: var(--text-muted);
+  font-weight: 600;
+  color: #7b5bc4;
 }
 
 .numbering-check-item-problem {
@@ -1991,6 +1894,9 @@ textarea {
 
 .numbering-check-footer {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+}
+
+.numbering-check-footer .btn-cta {
+  flex: 1;
 }

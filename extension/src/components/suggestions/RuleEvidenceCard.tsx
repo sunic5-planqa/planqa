@@ -1,5 +1,6 @@
 import type { IssueResponse } from '../../api/types'
 import { getRuleDescription, getRuleException, getRuleName, getRuleSource } from '../../state/ruleSourceDefaults'
+import { formatLocationLabel } from '../../utils/locationLabel'
 import { SourceBadge } from './SourceBadge'
 
 // 팀 규칙일 때 표시할 팀 이름 — 실제로는 팀 규칙 출처 자체가 아직 없어서(getRuleSource는 항상
@@ -17,6 +18,17 @@ export function RuleEvidenceCard({ issue }: { issue: IssueResponse }) {
         <SourceBadge source={source} />
         <span className="rule-evidence-rule-name">{getRuleName(issue)}</span>
         {source === 'team' && <span className="rule-evidence-team-badge">{TEAM_LABEL_PLACEHOLDER}</span>}
+      </div>
+      {/* "어떤 규칙에 걸렸는가"(위)와 "문서의 어디에서 났는가"(여기)를 구분해서 보여준다 —
+          위치는 QA 결과의 issue.location / issue.location_number 그대로. */}
+      <div className="rule-evidence-location">
+        <span className="rule-evidence-label">문서 위치</span>
+        <span className="rule-evidence-location-value">
+          {formatLocationLabel(issue.location, issue.location_number)}
+          {issue.related_location && (
+            <> ↔ {formatLocationLabel(issue.related_location, issue.related_location_number)}</>
+          )}
+        </span>
       </div>
       <div className="rule-evidence-block">
         <span className="rule-evidence-label">규칙 설명</span>

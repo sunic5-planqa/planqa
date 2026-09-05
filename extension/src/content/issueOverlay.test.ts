@@ -4,6 +4,7 @@ import {
   applyIssueEdit,
   clearActiveSuggestion,
   clearQaPassedBadge,
+  commitDocumentEdits,
   formatKstTimestamp,
   getActiveDuplicatePageId,
   scrollToLocation,
@@ -425,6 +426,41 @@ describe('showQaPassedBadge / clearQaPassedBadge', () => {
     expect(document.querySelector('.sunnic-qa-passed-badge')).toBeNull()
     vi.useRealTimers()
   })
+
+  it('never stacks more than one badge, even when show is called repeatedly', () => {
+    document.body.innerHTML = '<h1>PRD 문서</h1>'
+
+    showQaPassedBadge()
+    showQaPassedBadge()
+    showQaPassedBadge()
+
+    expect(document.querySelectorAll('.sunnic-qa-passed-badge')).toHaveLength(1)
+  })
+
+  // SPA가 h1을 다시 그리는 사이 재시도 타이머(이미 큐에 들어간 stale 콜백)와 새 show가 겹쳐
+  // 배지가 두 개 붙던 회귀(제목에 "✓ QA 통과"가 여러 번). 세대 토큰 + append 직전 중복 체크로 방지.
+  it('does not stack a badge when a stale retry fires after a fresh show', () => {
+    vi.useFakeTimers()
+    document.body.innerHTML = '<p>아직 렌더링 안 된 페이지</p>'
+
+    showQaPassedBadge() // h1 없음 → 재시도 예약
+    document.body.innerHTML = '<h1>PRD 문서</h1>'
+    showQaPassedBadge() // h1 있음 → 즉시 append (이전 재시도 체인은 무효화돼야 함)
+    vi.advanceTimersByTime(5000) // stale 재시도 콜백들이 전부 소진되도록
+
+    expect(document.querySelectorAll('.sunnic-qa-passed-badge')).toHaveLength(1)
+    vi.useRealTimers()
+  })
+
+  it('sweeps up multiple pre-existing badges on clear', () => {
+    document.body.innerHTML =
+      '<h1>PRD 문서<span class="sunnic-qa-passed-badge">✓ QA 통과</span>' +
+      '<span class="sunnic-qa-passed-badge">✓ QA 통과</span></h1>'
+
+    clearQaPassedBadge()
+
+    expect(document.querySelector('.sunnic-qa-passed-badge')).toBeNull()
+  })
 })
 
 describe('formatKstTimestamp', () => {
@@ -621,7 +657,7 @@ describe('applyIssueEdit', () => {
 
 describe('getActiveDuplicatePageId', () => {
   it('returns null before any edit has been applied (no duplicate created yet)', () => {
-    expect(getActiveDuplicatePageId()).toBeNull()
+    expect(getActiveDuplicatePageId(ORIGINAL_PAGE_ID)).toBeNull()
   })
 
   it('returns the duplicate page id once an edit has been applied', async () => {
@@ -629,6 +665,132 @@ describe('getActiveDuplicatePageId', () => {
 
     await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
-    expect(getActiveDuplicatePageId()).toBe(DUPLICATE_PAGE_ID)
+    expect(getActiveDuplicatePageId(ORIGINAL_PAGE_ID)).toBe(DUPLICATE_PAGE_ID)
+  })
+
+  it('returns null when asked about a different original page (stale SPA session)', async () => {
+    stubConfluenceFetch()
+
+    await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
+
+    expect(getActiveDuplicatePageId('999999')).toBeNull()
+  })
+
+  it('returns null when the caller could not determine the current page id', async () => {
+    stubConfluenceFetch()
+
+    await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
+
+    expect(getActiveDuplicatePageId(null)).toBeNull()
+  })
+})
+
+describe('commitDocumentEdits', () => {
+  // 복제본 세션이 없는 상태에서: STEP 3는 원본을 읽고, 실제 반영 시 원본을 복제해 저장한다.
+  function stubFetchForCommit(storedHtml: string, dupHtml?: string): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') return new Response(JSON.stringify({ ok: true }), { status: 200 })
+      if (init?.method === 'POST') return new Response(JSON.stringify({ id: DUPLICATE_PAGE_ID }), { status: 200 })
+      const value = url.includes(DUPLICATE_PAGE_ID) ? (dupHtml ?? storedHtml) : storedHtml
+      return new Response(
+        JSON.stringify({ title: 'PRD', space: { key: 'MFS' }, version: { number: 1 }, body: { storage: { value } } }),
+        { status: 200 },
+      )
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  const putBodies = (fetchMock: ReturnType<typeof vi.fn>): string[] =>
+    fetchMock.mock.calls
+      .filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string).body.storage.value as string)
+
+  it('reconciles only the heading whose number changed in the live DOM', async () => {
+    document.body.innerHTML = '<main><h2>1. 개요</h2><h2>3. 문제 정의</h2></main>'
+    const fetchMock = stubFetchForCommit('<h2>1. 개요</h2><h2>2. 문제 정의</h2>')
+
+    const result = await commitDocumentEdits()
+
+    expect(result).toEqual({ ok: true, reconciled: 1 })
+    expect(putBodies(fetchMock)).toEqual(['<h2>1. 개요</h2><h2>3. 문제 정의</h2>'])
+  })
+
+  it('changes only the number segment, preserving the rest of the title verbatim', async () => {
+    document.body.innerHTML = '<main><h2>1. 개요</h2><h2>2. 해결 방안(안건 A)</h2></main>'
+    const fetchMock = stubFetchForCommit('<h2>1. 개요</h2><h2>3. 해결 방안(안건 A)</h2>')
+
+    const result = await commitDocumentEdits()
+
+    expect(result).toEqual({ ok: true, reconciled: 1 })
+    expect(putBodies(fetchMock)).toEqual(['<h2>1. 개요</h2><h2>2. 해결 방안(안건 A)</h2>'])
+  })
+
+  it('skips position matching entirely when heading counts differ (insert/delete)', async () => {
+    document.body.innerHTML = '<main><h2>1. 개요</h2><h2>2. 문제 정의</h2><h2>3. 해결 방안</h2></main>'
+    const fetchMock = stubFetchForCommit('<h2>1. 개요</h2><h2>2. 문제 정의</h2>')
+
+    const result = await commitDocumentEdits()
+
+    expect(result).toEqual({ ok: true, reconciled: 0, skippedCountMismatch: true })
+    expect(putBodies(fetchMock)).toEqual([])
+  })
+
+  it('does not auto-reconcile a heading whose stored text is not unique (identical duplicate heading)', async () => {
+    document.body.innerHTML = '<main><h2>3. 개요</h2><h2>4. 개요</h2></main>'
+    const fetchMock = stubFetchForCommit('<h2>3. 개요</h2><h2>3. 개요</h2>')
+
+    const result = await commitDocumentEdits()
+
+    expect(result).toEqual({ ok: true, reconciled: 0 })
+    expect(putBodies(fetchMock)).toEqual([])
+  })
+
+  it('passes current live sub-heading numbers through even without a saved suggestion (real user bug)', async () => {
+    document.body.innerHTML =
+      '<main><h2>1. 개요</h2><h3>1-1. 목적</h3><h3>1-2. 적용 범위</h3>' +
+      '<h2>2. 문제 정의</h2><h3>2-2. 배경</h3><h3>2-3. 문제점</h3></main>'
+    const stored =
+      '<h2>1. 개요</h2><h3>1-1. 목적</h3><h3>1-2. 적용 범위</h3>' +
+      '<h2>2. 문제 정의</h2><h3>2-1. 배경</h3><h3>2-2. 문제점</h3>'
+    const fetchMock = stubFetchForCommit(stored)
+
+    const result = await commitDocumentEdits()
+
+    expect(result).toEqual({ ok: true, reconciled: 2 })
+    expect(putBodies(fetchMock)).toEqual([
+      '<h2>1. 개요</h2><h3>1-1. 목적</h3><h3>1-2. 적용 범위</h3>' +
+        '<h2>2. 문제 정의</h2><h3>2-2. 배경</h3><h3>2-3. 문제점</h3>',
+    ])
+  })
+
+  it('ignores a heading whose title changed but number did not (out of numbering scope)', async () => {
+    document.body.innerHTML = '<main><h2>1. 개요</h2><h2>2. 문제 정의 및 배경</h2></main>'
+    const fetchMock = stubFetchForCommit('<h2>1. 개요</h2><h2>2. 문제 정의</h2>')
+
+    const result = await commitDocumentEdits()
+
+    expect(result).toEqual({ ok: true, reconciled: 0 })
+    expect(putBodies(fetchMock)).toEqual([])
+  })
+
+  it('does nothing when the live headings already match the stored ones', async () => {
+    document.body.innerHTML = '<main><h2>1. 개요</h2><h2>2. 문제 정의</h2></main>'
+    const fetchMock = stubFetchForCommit('<h2>1. 개요</h2><h2>2. 문제 정의</h2>')
+
+    const result = await commitDocumentEdits()
+
+    expect(result).toEqual({ ok: true, reconciled: 0 })
+    expect(putBodies(fetchMock)).toEqual([])
+  })
+
+  it('fails without a PUT when not on a Confluence page URL', async () => {
+    ;(window as unknown as HappyDomWindow).happyDOM.setURL('http://localhost:8000/not-a-confluence-page')
+    const fetchMock = stubFetchForCommit('<h2>1. 개요</h2>')
+
+    const result = await commitDocumentEdits()
+
+    expect(result.ok).toBe(false)
+    expect(putBodies(fetchMock)).toEqual([])
   })
 })

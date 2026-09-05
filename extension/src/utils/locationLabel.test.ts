@@ -25,4 +25,16 @@ describe('formatLocationLabel', () => {
   it('does not touch numbers that are not at the very start of the label', () => {
     expect(formatLocationLabel('2024년 정책', '4')).toBe('4. 2024년 정책')
   })
+
+  it('shows only the innermost segment of a " > " chain, with the computed number', () => {
+    expect(formatLocationLabel('발송 정책 > 발송 채널', '3-2')).toBe('3-2. 발송 채널')
+  })
+
+  it('shows only the innermost segment of a chain even without a computed number', () => {
+    expect(formatLocationLabel('대상 관리 > 대상 제외 기준', null)).toBe('대상 제외 기준')
+  })
+
+  it('strips the author\'s own number on the leaf segment of a chain', () => {
+    expect(formatLocationLabel('2. 발송 정책 > 2-3. 대상 제외 기준', '2-3')).toBe('2-3. 대상 제외 기준')
+  })
 })

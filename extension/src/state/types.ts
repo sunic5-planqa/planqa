@@ -13,7 +13,6 @@ export type Screen =
   | 'loading'
   | 'progress'
   | 'issues'
-  | 'history'
   | 'suggestion-summary'
   | 'team-rules'
   | 'numbering-check'

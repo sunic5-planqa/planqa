@@ -6,6 +6,8 @@ import type {
   ClearActiveSuggestionRequest,
   ClearActiveSuggestionResponse,
   ClearQaPassedBadgeRequest,
+  CommitDocumentEditsRequest,
+  CommitDocumentEditsResponse,
   EditableSuggestionLocation,
   GetActiveDuplicatePageRequest,
   GetActiveDuplicatePageResponse,
@@ -585,7 +587,7 @@ export function setActiveSuggestion(payload: {
   return currentEl !== null
 }
 
-// 활성 제안 개념이 없는 화면(HistoryExportScreen)에서 쓰는 가벼운 버전 — 지속되는 틴트/마커 없이
+// 활성 제안 개념이 없는 화면(넘버링 하모나이징 등)에서 쓰는 가벼운 버전 — 지속되는 틴트/마커 없이
 // 스크롤만 하고 잠깐 배경을 반짝여 위치를 알려준다.
 export function scrollToLocation(loc: SuggestionLocation): boolean {
   ensureStyleInjected()
@@ -604,19 +606,27 @@ export function scrollToLocation(loc: SuggestionLocation): boolean {
 const _BADGE_MAX_RETRIES = 10
 const _BADGE_RETRY_DELAY_MS = 300
 let badgeRetryTimeout: ReturnType<typeof setTimeout> | null = null
+// SHOW_QA_PASSED_BADGE는 여러 곳에서(문서 감지 훅, 요약 화면, 넘버링 화면) 켜질 수 있고, SPA가
+// h1을 다시 그리는 사이 재시도 타이머가 겹치면 이미 큐에 들어간 stale 콜백이 배지를 한 번 더
+// 붙여 제목에 "✓ QA 통과"가 여러 개 쌓였다(실사용 보고). 세대 토큰으로 지난 재시도 체인을
+// 무효화하고, 실제 append 직전에 이미 배지가 있으면 건너뛴다.
+let badgeGeneration = 0
 
 function cancelBadgeRetry(): void {
+  badgeGeneration += 1
   if (badgeRetryTimeout !== null) {
     clearTimeout(badgeRetryTimeout)
     badgeRetryTimeout = null
   }
 }
 
-function attemptShowBadge(retriesLeft: number): void {
+function attemptShowBadge(retriesLeft: number, generation: number): void {
+  if (generation !== badgeGeneration) return // 더 최근의 show/clear에 의해 밀려난 체인
+  if (document.querySelector(`.${QA_BADGE_CLASS}`)) return // 이미 붙어 있음
   const h1 = document.querySelector('h1')
   if (!h1) {
     if (retriesLeft <= 0) return
-    badgeRetryTimeout = setTimeout(() => attemptShowBadge(retriesLeft - 1), _BADGE_RETRY_DELAY_MS)
+    badgeRetryTimeout = setTimeout(() => attemptShowBadge(retriesLeft - 1, generation), _BADGE_RETRY_DELAY_MS)
     return
   }
   const badge = document.createElement('span')
@@ -628,12 +638,12 @@ function attemptShowBadge(retriesLeft: number): void {
 export function showQaPassedBadge(): void {
   ensureStyleInjected()
   clearQaPassedBadge()
-  attemptShowBadge(_BADGE_MAX_RETRIES)
+  attemptShowBadge(_BADGE_MAX_RETRIES, badgeGeneration)
 }
 
 export function clearQaPassedBadge(): void {
   cancelBadgeRetry()
-  document.querySelector(`.${QA_BADGE_CLASS}`)?.remove()
+  document.querySelectorAll(`.${QA_BADGE_CLASS}`).forEach((el) => el.remove())
 }
 
 // 컨플루언스 URL(/pages/{id}/..., /pages/edit-v2/{id} 등 또는 ?pageId=)에서 페이지 id를 뽑는다.
@@ -799,7 +809,10 @@ async function replaceAllAndSave(pageId: string, edits: EditPair[]): Promise<App
 
 // QA 리뷰 세션당 복제본 1개 — 원본은 절대 쓰지 않고, 첫 적용에서 이 복제본을 만들어 이후 모든 적용을
 // 여기에 누적한다. 페이지를 새로고침하면 초기화되고 다음 적용에서 새 복제본이 다시 만들어진다.
-let duplicateSession: { pageId: string; title: string } | null = null
+// originalPageId는 이 복제본이 "어느 원본에서 나왔는지" — Confluence는 SPA라 탭 내 페이지 이동 시
+// content script가 재주입되지 않으므로, 다른 페이지로 옮겨간 뒤엔 이 세션이 스테일해진다. 그때
+// 이전 복제본을 그대로 재사용하면 엉뚱한 페이지에 저장/대조하게 되어 originalPageId로 걸러낸다.
+let duplicateSession: { pageId: string; title: string; originalPageId: string } | null = null
 
 // 테스트 전용 — 모듈이 파일 내 여러 테스트에 걸쳐 싱글턴으로 유지되므로, 세션이 없는 상태(첫 적용)를
 // 매 테스트마다 재현하려면 이걸로 초기화해야 한다.
@@ -808,9 +821,14 @@ export function __resetDuplicateSessionForTests(): void {
 }
 
 // 사이드패널이 "지금 리뷰 중 수정이 실제로 쌓이고 있는 페이지"를 알아야 할 때(예: 넘버링 재검증 전
-// 최신 본문을 다시 읽어올 때) 쓴다 — 아직 한 건도 적용 안 했으면 복제본이 없으므로 null.
-export function getActiveDuplicatePageId(): string | null {
-  return duplicateSession?.pageId ?? null
+// 최신 본문을 다시 읽어올 때) 쓴다 — 아직 한 건도 적용 안 했거나, 세션이 다른 원본 페이지 것이면 null.
+export function getActiveDuplicatePageId(originalPageId: string | null): string | null {
+  if (!duplicateSession) return null
+  // originalPageId가 null이면(URL에서 페이지 id를 못 뽑은 경우) 지금 세션이 맞는 페이지 것인지
+  // 확인할 방법이 없다 — 모르면 stale 취급하고 null을 반환한다(있는 세션을 잘못 재사용하는 것보다
+  // 안전).
+  if (duplicateSession.originalPageId !== originalPageId) return null
+  return duplicateSession.pageId
 }
 
 // timeZone: 'Asia/Seoul'을 명시한 toLocaleString도 실제 서비스 환경에서 여전히 몇 시간씩
@@ -833,7 +851,10 @@ export function formatKstTimestamp(date: Date): string {
 }
 
 async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: true; pageId: string } | { ok: false; error: string }> {
-  if (duplicateSession) return { ok: true, pageId: duplicateSession.pageId }
+  // 현재 보고 있는 원본에서 만든 세션일 때만 재사용한다 — 다른 페이지 것이면 스테일이므로 새로 만든다.
+  if (duplicateSession && duplicateSession.originalPageId === originalPageId) {
+    return { ok: true, pageId: duplicateSession.pageId }
+  }
 
   const originalRes = await fetch(`${location.origin}/wiki/rest/api/content/${originalPageId}?expand=body.storage,space`, {
     credentials: 'include',
@@ -863,7 +884,7 @@ async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: tru
   if (!createRes.ok) return { ok: false, error: `복제본 생성에 실패했습니다 (${createRes.status})` }
 
   const created = (await createRes.json()) as { id: string }
-  duplicateSession = { pageId: created.id, title }
+  duplicateSession = { pageId: created.id, title, originalPageId }
   return { ok: true, pageId: created.id }
 }
 
@@ -926,6 +947,69 @@ export async function applyIssueEdit(_issueId: string, oldText: string, newText:
   return applyIssueEdits([{ oldText, newText }])
 }
 
+const COMMIT_HEADING_SELECTOR = 'h2, h3, h4, h5, h6'
+
+function readHeadingTexts(root: ParentNode): string[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(COMMIT_HEADING_SELECTOR))
+    .filter((el) => !isInsideOverlayNode(el))
+    .map((el) => normalizeHeadingText(el.textContent ?? ''))
+    .filter(Boolean)
+}
+
+// "QA 완료" 직전 호출 — 좌측 문서 뷰(라이브 DOM)의 h2~h6 헤딩을 저장본(복제본 또는 원본)과
+// 위치(순서) 기준으로 대조해, 제안 저장에 딸려가지 못한 인라인 헤딩 편집을 복제본에 반영한다.
+// 그래야 이어지는 넘버링 검증이 옛 저장본이 아니라 지금 화면 상태를 본다. 헤딩 개수가 바뀐 경우
+// (삽입/삭제)는 위치 매칭이 깨지므로 이번엔 건너뛴다.
+export async function commitDocumentEdits(): Promise<CommitDocumentEditsResponse> {
+  const originalPageId = extractPageId(location.href)
+  if (!originalPageId) return { ok: false, error: '컨플루언스 문서 URL이 아닙니다.' }
+
+  const targetPageId = getActiveDuplicatePageId(originalPageId) ?? originalPageId
+
+  let storageHtml: string
+  try {
+    const res = await fetch(`${location.origin}/wiki/rest/api/content/${targetPageId}?expand=body.storage`, {
+      credentials: 'include',
+    })
+    if (!res.ok) return { ok: false, error: `저장본을 불러오지 못했습니다 (${res.status})` }
+    storageHtml = ((await res.json()) as { body: { storage: { value: string } } }).body.storage.value
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+
+  const stored = readHeadingTexts(new DOMParser().parseFromString(storageHtml, 'text/html'))
+  const live = readHeadingTexts(document)
+
+  // 헤딩 개수가 다르면 stored[i] ↔ live[i] 대응 자체가 성립하지 않는다 — 위치 매칭 금지.
+  if (stored.length !== live.length) return { ok: true, reconciled: 0, skippedCountMismatch: true }
+
+  const { fullText } = decodeStorageHtmlText(storageHtml)
+  const edits: EditPair[] = []
+  for (let i = 0; i < stored.length; i += 1) {
+    if (stored[i] === live[i]) continue
+    // 번호 접두어 이외(제목 본문)가 달라졌으면 이번 범위 밖 — 넘버링만 다루고, 사용자가 고친
+    // 제목까지 여기서 건드리지 않는다.
+    if (stored[i].replace(LEADING_NUMBER_RE, '') !== live[i].replace(LEADING_NUMBER_RE, '')) continue
+    // replaceInStorageHtml은 문서 전체 텍스트의 "첫 매치"만 치환한다 — 같은 문구가 본문 산문에
+    // 먼저 나오거나 동일 헤딩이 2개면 엉뚱한 곳을 고친다. 전역 매치가 정확히 1건일 때만 자동
+    // reconcile하고, 아니면 넘버링 확인 화면에서 사용자가 판단하게 둔다.
+    // (buildLooseTextRegex는 공백만 느슨화하고 숫자·마침표는 literal이라 "3. 개요"가 "2. 개요"에
+    //  매칭될 일은 없다.)
+    const occurrences = fullText.match(new RegExp(buildLooseTextRegex(stored[i]).source, 'g'))
+    if (!occurrences || occurrences.length !== 1) continue
+    edits.push({ oldText: stored[i], newText: live[i] })
+  }
+
+  if (edits.length === 0) return { ok: true, reconciled: 0 }
+
+  const session = await ensureDuplicateSession(originalPageId)
+  if (!session.ok) return session
+
+  const result = await replaceAllAndSave(session.pageId, edits)
+  if (!result.ok) return result
+  return { ok: true, reconciled: edits.length }
+}
+
 type OverlayRequest =
   | SetActiveSuggestionRequest
   | ClearActiveSuggestionRequest
@@ -934,6 +1018,7 @@ type OverlayRequest =
   | ClearQaPassedBadgeRequest
   | GetActiveDuplicatePageRequest
   | ApplyIssueEditRequest
+  | CommitDocumentEditsRequest
 type OverlayResponse =
   | SetActiveSuggestionResponse
   | ClearActiveSuggestionResponse
@@ -941,6 +1026,7 @@ type OverlayResponse =
   | QaPassedBadgeResponse
   | GetActiveDuplicatePageResponse
   | ApplyIssueEditResponse
+  | CommitDocumentEditsResponse
 
 chrome.runtime.onMessage.addListener(
   (message: OverlayRequest, _sender, sendResponse: (response: OverlayResponse) => void) => {
@@ -972,7 +1058,12 @@ chrome.runtime.onMessage.addListener(
       return true
     }
     if (message.type === 'GET_ACTIVE_DUPLICATE_PAGE') {
-      sendResponse({ ok: true, pageId: getActiveDuplicatePageId(), originalPageId: extractPageId(location.href) })
+      const originalPageId = extractPageId(location.href)
+      sendResponse({ ok: true, pageId: getActiveDuplicatePageId(originalPageId), originalPageId })
+      return true
+    }
+    if (message.type === 'COMMIT_DOCUMENT_EDITS') {
+      void commitDocumentEdits().then(sendResponse)
       return true
     }
     return undefined

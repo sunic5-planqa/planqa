@@ -9,7 +9,8 @@ import { ReferencesSection } from '../main/ReferencesSection'
 import { RuleSection } from '../main/RuleSection'
 
 export function MainScreen() {
-  const { confluenceStatus, confluenceMarkdown, error, teamCode } = useAppState()
+  const { confluenceStatus, confluenceMarkdown, error, teamCode, referenceFiles, selectedReferenceFileIds } =
+    useAppState()
   const dispatch = useAppDispatch()
   const { detect } = useConfluenceAutoDetect()
   const [submitting, setSubmitting] = useState(false)
@@ -24,9 +25,6 @@ export function MainScreen() {
       })
   }, [])
 
-  // TODO(qa-engine): selectedReferenceFileIds (state/types.ts) is collected but not yet sent to
-  // the backend — there's no consumer until the QA engine (feature/qa-engine-llm-client) lands
-  // and the Document/QAJob models grow a field for it.
   const handleStart = async () => {
     if (!confluenceMarkdown) return
 
@@ -39,7 +37,17 @@ export function MainScreen() {
       dispatch({ type: 'DOCUMENT_CREATED', documentId: doc.document_id, parsedStructure: doc.parsed_structure })
 
       try {
-        const job = await api.createQAJob(doc.document_id, teamCode)
+        // 선택된 레퍼런스 문서(References 섹션에서 체크한 형제 문서)는 이미 markdown 내용까지
+        // referenceFiles에 받아와 있다 — 타문서 정합성(XDC) 검토가 참고할 수 있으려면 이것도
+        // 현재 문서와 똑같이 백엔드에 Document로 먼저 올려서 document_id를 받아야 한다(백엔드
+        // reference_document_ids는 store에 이미 있는 문서 id만 인식함).
+        const selectedReferenceFiles = referenceFiles.filter((file) => selectedReferenceFileIds.includes(file.id))
+        const referenceDocs = await Promise.all(
+          selectedReferenceFiles.map((file) => api.createDocument(file.content)),
+        )
+        const referenceDocumentIds = referenceDocs.map((referenceDoc) => referenceDoc.document_id)
+
+        const job = await api.createQAJob(doc.document_id, teamCode, referenceDocumentIds)
         dispatch({ type: 'JOB_STARTED', jobId: job.job_id })
       } catch (jobError) {
         if (!(jobError instanceof NotImplementedError)) throw jobError

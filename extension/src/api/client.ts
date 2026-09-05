@@ -43,8 +43,8 @@ export const api = {
       body: JSON.stringify({ raw_text: rawText }),
     }),
 
-  createQAJob: (documentId: string, teamCode?: string | null) => {
-    const body: CreateQAJobRequest = { team_code: teamCode ?? null }
+  createQAJob: (documentId: string, teamCode?: string | null, referenceDocumentIds?: string[]) => {
+    const body: CreateQAJobRequest = { team_code: teamCode ?? null, reference_document_ids: referenceDocumentIds ?? [] }
     return request<CreateQAJobResponse>(`/documents/${documentId}/qa-jobs`, {
       method: 'POST',
       body: JSON.stringify(body),

@@ -117,13 +117,24 @@ async function handleFetchPageMarkdown(pageId: string, preserveHeadingLevels?: b
   }
 }
 
-// 새 편집기 URL 형식 — extractPageId가 이미 "/pages/edit-v2/{id}"를 페이지로 인식하는 것과
-// 같은 근거(실사용자가 이 URL을 실제로 만나서 확인됨).
-export function navigateToEditMode(): NavigateToEditModeResponse {
+// 새 편집기 URL은 "/wiki/pages/edit-v2/{id}"가 아니라 "/wiki/spaces/{스페이스키}/pages/edit-v2/{id}"
+// 다(스페이스 키가 없으면 404 — 실사용 확인됨). extractPageId는 pageId만 뽑고 스페이스 키는
+// 모르니, 이동 전에 그 페이지의 스페이스 키를 REST로 한 번 조회해야 한다.
+export async function navigateToEditMode(): Promise<NavigateToEditModeResponse> {
   const pageId = extractPageId(location.href)
   if (!pageId) return { ok: false, error: 'NOT_A_CONFLUENCE_PAGE' }
-  location.href = `${location.origin}/wiki/pages/edit-v2/${pageId}`
-  return { ok: true }
+  try {
+    const res = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=space`, {
+      credentials: 'include',
+    })
+    if (!res.ok) return { ok: false, error: 'FETCH_FAILED', detail: `${res.status}` }
+    const data = (await res.json()) as { space?: { key: string } }
+    if (!data.space?.key) return { ok: false, error: 'FETCH_FAILED', detail: 'no space key' }
+    location.href = `${location.origin}/wiki/spaces/${data.space.key}/pages/edit-v2/${pageId}`
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: 'FETCH_FAILED', detail: String(err) }
+  }
 }
 
 // 참고문서는 지금 문서와 다른 페이지라 이 탭 안에서 스크롤해 찾을 방법이 없다 — 새 탭으로 연다.
@@ -161,7 +172,7 @@ chrome.runtime.onMessage.addListener(
       return true
     }
     if (message.type === 'NAVIGATE_TO_EDIT_MODE') {
-      sendResponse(navigateToEditMode())
+      void navigateToEditMode().then(sendResponse)
       return true
     }
     if (message.type === 'OPEN_REFERENCE_DOCUMENT') {

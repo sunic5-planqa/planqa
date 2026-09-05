@@ -134,7 +134,9 @@ export interface NavigateToEditModeRequest {
   type: 'NAVIGATE_TO_EDIT_MODE'
 }
 
-export type NavigateToEditModeResponse = { ok: true } | { ok: false; error: 'NOT_A_CONFLUENCE_PAGE' }
+export type NavigateToEditModeResponse =
+  | { ok: true }
+  | { ok: false; error: 'NOT_A_CONFLUENCE_PAGE' | 'FETCH_FAILED'; detail?: string }
 
 // 사이드패널 → content script: 타문서 정합성(XDC) 이슈의 참고문서를 새 탭으로 연다 — 컨플루언스
 // 페이지 id만 있으면 스페이스/제목 경로 없이도 열리는 레거시 URL(viewpage.action?pageId=)을

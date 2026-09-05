@@ -33,25 +33,48 @@ describe('navigateToEditMode', () => {
     vi.unstubAllGlobals()
   })
 
-  it('navigates the tab to the edit-v2 URL for the current page', () => {
+  // 새 편집기 URL은 스페이스 키가 있어야 404가 안 난다("/wiki/pages/edit-v2/{id}"만으로는 실사용
+  // 중 "문제가 발생했습니다" 404를 실제로 만남) — 이동 전에 그 페이지의 스페이스 키를 REST로
+  // 조회해서 "/wiki/spaces/{키}/pages/edit-v2/{id}"를 만든다.
+  it('looks up the space key and navigates to the space-scoped edit-v2 URL', async () => {
     vi.stubGlobal('location', {
       href: 'https://example.atlassian.net/wiki/spaces/PLAN/pages/123456789/기획서',
       origin: 'https://example.atlassian.net',
     })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ space: { key: 'PLAN' } }), { status: 200 })),
+    )
 
-    const result = navigateToEditMode()
+    const result = await navigateToEditMode()
 
     expect(result).toEqual({ ok: true })
-    expect(location.href).toBe('https://example.atlassian.net/wiki/pages/edit-v2/123456789')
+    expect(location.href).toBe('https://example.atlassian.net/wiki/spaces/PLAN/pages/edit-v2/123456789')
   })
 
-  it('returns NOT_A_CONFLUENCE_PAGE without touching the URL when there is no page id', () => {
+  it('returns NOT_A_CONFLUENCE_PAGE without touching the URL when there is no page id', async () => {
     vi.stubGlobal('location', { href: 'https://www.google.com', origin: 'https://www.google.com' })
 
-    const result = navigateToEditMode()
+    const result = await navigateToEditMode()
 
     expect(result).toEqual({ ok: false, error: 'NOT_A_CONFLUENCE_PAGE' })
     expect(location.href).toBe('https://www.google.com')
+  })
+
+  it('returns FETCH_FAILED without touching the URL when the space lookup fails', async () => {
+    vi.stubGlobal('location', {
+      href: 'https://example.atlassian.net/wiki/spaces/PLAN/pages/123456789/기획서',
+      origin: 'https://example.atlassian.net',
+    })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 404 })),
+    )
+
+    const result = await navigateToEditMode()
+
+    expect(result).toEqual({ ok: false, error: 'FETCH_FAILED', detail: '404' })
+    expect(location.href).toBe('https://example.atlassian.net/wiki/spaces/PLAN/pages/123456789/기획서')
   })
 })
 

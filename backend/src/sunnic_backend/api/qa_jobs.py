@@ -389,7 +389,12 @@ def _build_heading_numbers(document_text: str) -> dict[str, str]:
 
 
 def _to_issue_record(
-    job_id: str, document_text: str, rulebook: RuleBook, issue: ReviewIssue, heading_numbers: dict[str, str]
+    job_id: str,
+    document_text: str,
+    rulebook: RuleBook,
+    issue: ReviewIssue,
+    heading_numbers: dict[str, str],
+    reference_document_titles: dict[str, str] | None = None,
 ) -> IssueRecord:
     rule = rulebook.rule(issue.rule_id)
     # _korean_label()은 rulebook_v1.0.md의 "<한글> <English Title Case>" 헤더에서 영어 절반을
@@ -406,9 +411,16 @@ def _to_issue_record(
     # XDC의 "두 번째 위치"는 같은 문서 안이 아니라 참고문서 쪽이라 별도 필드
     # (reference_document/reference_section/reference_quote)로 담겨 온다 — 새 스키마 필드를
     # 프론트까지 뚫는 대신, 관계형(LG/LF/GA)이 이미 쓰는 related_location/related_original_text
-    # 표시 경로를 그대로 재사용한다(어느 문서 소속인지 알 수 있게 라벨에 doc_id를 붙임).
+    # 표시 경로를 그대로 재사용한다(어느 문서 소속인지 알 수 있게 라벨에 문서 제목을 붙임 —
+    # document_id는 사람이 못 읽으니 reference_document_titles로 바꿔치기하고, 못 찾으면 id 그대로).
     if issue.reference_document:
-        related_location = f"[{issue.reference_document}] {issue.reference_section}"
+        reference_label = (reference_document_titles or {}).get(issue.reference_document, issue.reference_document)
+        # reference_section도 "상위 위계 > 하위 위계" 전체 체인으로 온다 — 프론트의 locationLeaf와
+        # 똑같이 가장 안쪽 제목만 남긴다. 안 그러면 [제목] 뒤에 전체 경로가 그대로 붙어 카드가
+        # 너무 길어지고, "[제목] A > B"를 프론트가 ">" 기준으로 다시 쪼개면 [제목] 쪽이 통째로
+        # 버려진다(locationLeaf가 마지막 세그먼트만 남기므로).
+        reference_leaf = issue.reference_section.rsplit(">", 1)[-1].strip()
+        related_location = f"[{reference_label}] {reference_leaf}"
         related_original_text = issue.reference_quote
     frame_type = _frame_type(rule.category, related_location) if rule else FrameType.OBJECT
     input_text = issue.original_text or ""
@@ -486,10 +498,15 @@ async def _execute_qa_job(
         rulebook, absence_check_rule_ids = merge_team_rules(rulebook, [rule for rule in team_rules if rule.enabled])
 
     reference_documents: list[tuple[str, str]] = []
+    # XDC 이슈의 reference_document는 document_id(UUID)라 사람이 읽을 수 없다 — 여기서 같이
+    # 모아둔 제목으로 _to_issue_record가 라벨을 바꿔치기한다.
+    reference_document_titles: dict[str, str] = {}
     for reference_document_id in reference_document_ids or []:
         reference_document = await store.get_document(reference_document_id)
         if reference_document is not None:
             reference_documents.append((reference_document_id, reference_document.raw_text))
+            if reference_document.parsed_structure.title:
+                reference_document_titles[reference_document_id] = reference_document.parsed_structure.title
     xdc_rulebook = _load_xdc_rulebook() if reference_documents else None
     lookup_rulebook = _rulebook_for_lookup(rulebook, xdc_rulebook)
 
@@ -508,7 +525,10 @@ async def _execute_qa_job(
         )
         heading_numbers = _build_heading_numbers(document_text)
         for issue in result.issues:
-            await store.save_issue(_to_issue_record(job_id, document_text, lookup_rulebook, issue, heading_numbers))
+            record = _to_issue_record(
+                job_id, document_text, lookup_rulebook, issue, heading_numbers, reference_document_titles
+            )
+            await store.save_issue(record)
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.DONE, "progress": 100}))
     except Exception:
         logger.exception("QA job %s failed for document %s", job_id, document_id)

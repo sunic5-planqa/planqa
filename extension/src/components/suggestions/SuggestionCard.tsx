@@ -41,7 +41,9 @@ export function SuggestionCard({
       <p className="suggestion-card-title">{issue.reason}</p>
       <p className="suggestion-card-desc">
         {formatLocationLabel(issue.location, issue.location_number)}
-        {issue.related_location && <> ↔ {issue.related_location}</>}
+        {issue.related_location && (
+          <> ↔ {formatLocationLabel(issue.related_location, issue.related_location_number)}</>
+        )}
       </p>
     </button>
   )

@@ -621,11 +621,58 @@ def test_to_issue_record_maps_xdc_reference_into_related_location_fields() -> No
     record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, {})
 
     assert record.criteria == "타 문서 정합성"
+    # reference_document_titles를 안 주면(호출부가 제목을 못 찾은 경우) id 그대로 폴백한다.
     assert record.related_location == "[DOC-005] §2-1"
     assert record.related_original_text == "신청 기한: 상품 수령일로부터 14일 이내"
     assert record.frame_type == qa_jobs.FrameType.RANGE
     # XDC의 두 번째 위치는 다른 문서라 이 문서의 heading_numbers에 없다 — 번호 없이 라벨로만.
     assert record.related_location_number is None
+
+
+def test_to_issue_record_shows_reference_document_title_instead_of_its_id() -> None:
+    rulebook = _xdc_lookup_rulebook()
+    issue = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="4-1",
+        description="신청 기한이 다름",
+        original_text="단순 변심 | 상품 수령일로부터 7일 이내",
+        rationale="현재 문서는 7일, 참고문서는 14일",
+        reference_document="doc-uuid-005",
+        reference_section="§2-1",
+        reference_quote="신청 기한: 상품 수령일로부터 14일 이내",
+        difference_type="value",
+    )
+
+    record = qa_jobs._to_issue_record(
+        "job-1", "문서 본문", rulebook, issue, {}, {"doc-uuid-005": "NxEF 반품/교환 정책서"}
+    )
+
+    assert record.related_location == "[NxEF 반품/교환 정책서] §2-1"
+
+
+def test_to_issue_record_trims_reference_section_to_its_leaf_heading() -> None:
+    rulebook = _xdc_lookup_rulebook()
+    issue = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="4-1",
+        description="신청 기한이 다름",
+        original_text="단순 변심 | 상품 수령일로부터 7일 이내",
+        rationale="현재 문서는 7일, 참고문서는 14일",
+        reference_document="DOC-005",
+        reference_section="2. 반품 가능 조건 및 기한 > 2-1. 단순 변심 반품",
+        reference_quote="신청 기한: 상품 수령일로부터 14일 이내",
+        difference_type="value",
+    )
+
+    record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, {})
+
+    # 전체 위계 체인이 아니라 가장 안쪽 제목만 남는다 — 안 그러면 프론트의 locationLeaf가
+    # "[DOC-005]" 쪽을 통째로 버려버린다.
+    assert record.related_location == "[DOC-005] 2-1. 단순 변심 반품"
 
 
 # 관계형(LG/LF/GA) 이슈의 두 번째 위치도 첫 번째와 같은 방식으로 문서 등장 순서 기반 넘버를

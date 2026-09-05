@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { extractPageId, parseParentInfo, parseSiblingPages } from './confluence-extractor'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { extractPageId, navigateToEditMode, parseParentInfo, parseSiblingPages } from './confluence-extractor'
 
 describe('extractPageId', () => {
   it('extracts the id from the modern /pages/{id}/{title} path', () => {
@@ -25,6 +25,33 @@ describe('extractPageId', () => {
 
   it('returns null for a non-Confluence URL', () => {
     expect(extractPageId('https://www.google.com')).toBeNull()
+  })
+})
+
+describe('navigateToEditMode', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('navigates the tab to the edit-v2 URL for the current page', () => {
+    vi.stubGlobal('location', {
+      href: 'https://example.atlassian.net/wiki/spaces/PLAN/pages/123456789/기획서',
+      origin: 'https://example.atlassian.net',
+    })
+
+    const result = navigateToEditMode()
+
+    expect(result).toEqual({ ok: true })
+    expect(location.href).toBe('https://example.atlassian.net/wiki/pages/edit-v2/123456789')
+  })
+
+  it('returns NOT_A_CONFLUENCE_PAGE without touching the URL when there is no page id', () => {
+    vi.stubGlobal('location', { href: 'https://www.google.com', origin: 'https://www.google.com' })
+
+    const result = navigateToEditMode()
+
+    expect(result).toEqual({ ok: false, error: 'NOT_A_CONFLUENCE_PAGE' })
+    expect(location.href).toBe('https://www.google.com')
   })
 })
 

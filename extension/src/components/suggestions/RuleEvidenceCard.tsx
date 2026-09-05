@@ -1,6 +1,9 @@
 import type { IssueResponse } from '../../api/types'
+import type { OpenReferenceDocumentRequest, OpenReferenceDocumentResponse } from '../../content/messages'
+import { useAppState } from '../../state/hooks'
 import { getRuleDescription, getRuleException, getRuleName, getRuleSource } from '../../state/ruleSourceDefaults'
 import { formatLocationLabel } from '../../utils/locationLabel'
+import { findReferenceDocumentId } from '../../utils/referenceDocumentLink'
 import { SourceBadge } from './SourceBadge'
 
 // 팀 규칙일 때 표시할 팀 이름 — 실제로는 팀 규칙 출처 자체가 아직 없어서(getRuleSource는 항상
@@ -11,6 +14,21 @@ const TEAM_LABEL_PLACEHOLDER = '서비스기획 2팀'
 export function RuleEvidenceCard({ issue }: { issue: IssueResponse }) {
   const source = getRuleSource(issue)
   const exception = getRuleException(issue)
+  const { referenceFiles, confluenceTabId } = useAppState()
+  // 관계형(LG/LF/GA, 같은 문서 안) 이슈는 애초에 다른 페이지가 아니니 null — 그때는 그냥 텍스트로만.
+  const referenceDocumentId = issue.related_location
+    ? findReferenceDocumentId(issue.related_location, referenceFiles)
+    : null
+
+  const openReferenceDocument = () => {
+    if (referenceDocumentId === null || confluenceTabId === null) return
+    void chrome.tabs
+      .sendMessage<OpenReferenceDocumentRequest, OpenReferenceDocumentResponse>(confluenceTabId, {
+        type: 'OPEN_REFERENCE_DOCUMENT',
+        pageId: referenceDocumentId,
+      })
+      .catch(() => {})
+  }
 
   return (
     <div className="rule-evidence-card">
@@ -26,7 +44,16 @@ export function RuleEvidenceCard({ issue }: { issue: IssueResponse }) {
         <span className="rule-evidence-location-value">
           {formatLocationLabel(issue.location, issue.location_number)}
           {issue.related_location && (
-            <> ↔ {formatLocationLabel(issue.related_location, issue.related_location_number)}</>
+            <>
+              {' ↔ '}
+              {referenceDocumentId !== null ? (
+                <button type="button" className="rule-evidence-reference-link" onClick={openReferenceDocument}>
+                  {formatLocationLabel(issue.related_location, issue.related_location_number)} ↗
+                </button>
+              ) : (
+                formatLocationLabel(issue.related_location, issue.related_location_number)
+              )}
+            </>
           )}
         </span>
       </div>

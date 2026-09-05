@@ -7,6 +7,10 @@ import type {
   FetchPageMarkdownResponse,
   ListSiblingPagesRequest,
   ListSiblingPagesResponse,
+  NavigateToEditModeRequest,
+  NavigateToEditModeResponse,
+  OpenReferenceDocumentRequest,
+  OpenReferenceDocumentResponse,
 } from './messages'
 
 export function extractPageId(url: string): string | null {
@@ -113,8 +117,34 @@ async function handleFetchPageMarkdown(pageId: string, preserveHeadingLevels?: b
   }
 }
 
-type ContentScriptRequest = ExtractConfluenceContentRequest | ListSiblingPagesRequest | FetchPageMarkdownRequest
-type ContentScriptResponse = ExtractConfluenceContentResponse | ListSiblingPagesResponse | FetchPageMarkdownResponse
+// 새 편집기 URL 형식 — extractPageId가 이미 "/pages/edit-v2/{id}"를 페이지로 인식하는 것과
+// 같은 근거(실사용자가 이 URL을 실제로 만나서 확인됨).
+export function navigateToEditMode(): NavigateToEditModeResponse {
+  const pageId = extractPageId(location.href)
+  if (!pageId) return { ok: false, error: 'NOT_A_CONFLUENCE_PAGE' }
+  location.href = `${location.origin}/wiki/pages/edit-v2/${pageId}`
+  return { ok: true }
+}
+
+// 참고문서는 지금 문서와 다른 페이지라 이 탭 안에서 스크롤해 찾을 방법이 없다 — 새 탭으로 연다.
+// 스페이스 키/제목 경로 없이 페이지 id만으로 열리는 레거시 URL이라 항상 유효하다.
+function openReferenceDocument(pageId: string): OpenReferenceDocumentResponse {
+  window.open(`${location.origin}/wiki/pages/viewpage.action?pageId=${pageId}`, '_blank', 'noopener')
+  return { ok: true }
+}
+
+type ContentScriptRequest =
+  | ExtractConfluenceContentRequest
+  | ListSiblingPagesRequest
+  | FetchPageMarkdownRequest
+  | NavigateToEditModeRequest
+  | OpenReferenceDocumentRequest
+type ContentScriptResponse =
+  | ExtractConfluenceContentResponse
+  | ListSiblingPagesResponse
+  | FetchPageMarkdownResponse
+  | NavigateToEditModeResponse
+  | OpenReferenceDocumentResponse
 
 chrome.runtime.onMessage.addListener(
   (message: ContentScriptRequest, _sender, sendResponse: (response: ContentScriptResponse) => void) => {
@@ -128,6 +158,14 @@ chrome.runtime.onMessage.addListener(
     }
     if (message.type === 'FETCH_PAGE_MARKDOWN') {
       void handleFetchPageMarkdown(message.pageId, message.preserveHeadingLevels).then(sendResponse)
+      return true
+    }
+    if (message.type === 'NAVIGATE_TO_EDIT_MODE') {
+      sendResponse(navigateToEditMode())
+      return true
+    }
+    if (message.type === 'OPEN_REFERENCE_DOCUMENT') {
+      sendResponse(openReferenceDocument(message.pageId))
       return true
     }
     return undefined

@@ -706,6 +706,9 @@ describe('commitDocumentEdits', () => {
       .filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
       .map(([, init]) => JSON.parse((init as RequestInit).body as string).body.storage.value as string)
 
+  const getCalls = (fetchMock: ReturnType<typeof vi.fn>): number =>
+    fetchMock.mock.calls.filter(([, init]) => !(init as RequestInit | undefined)?.method).length
+
   it('reconciles only the heading whose number changed in the live DOM', async () => {
     document.body.innerHTML = '<main><h2>1. 개요</h2><h2>3. 문제 정의</h2></main>'
     const fetchMock = stubFetchForCommit('<h2>1. 개요</h2><h2>2. 문제 정의</h2>')
@@ -714,6 +717,9 @@ describe('commitDocumentEdits', () => {
 
     expect(result).toEqual({ ok: true, reconciled: 1 })
     expect(putBodies(fetchMock)).toEqual(['<h2>1. 개요</h2><h2>3. 문제 정의</h2>'])
+    // 복제본이 아직 없는 첫 적용 경로: 원본 조회(+space) 1번, 새로 만든 복제본 조회 1번 — 원본을
+    // 두 번 GET하지 않는다(ensureDuplicateSession이 이미 읽어둔 걸 재사용).
+    expect(getCalls(fetchMock)).toBe(2)
   })
 
   it('changes only the number segment, preserving the rest of the title verbatim', async () => {
@@ -733,6 +739,19 @@ describe('commitDocumentEdits', () => {
     const result = await commitDocumentEdits()
 
     expect(result).toEqual({ ok: true, reconciled: 0, skippedCountMismatch: true })
+    expect(putBodies(fetchMock)).toEqual([])
+  })
+
+  it('skips headings whose stripped title repeats, even when count matches (ambiguous position match)', async () => {
+    // "배경"이 두 섹션에 각각 있고(스토어드), 사용자가 그 둘을 화면에서 맞바꿔 놓은 상태 — 개수는
+    // 그대로라 count-mismatch 가드로는 못 걸러낸다. 위치만으로 매칭하면 번호를 서로 바꿔치기하게
+    // 되므로, "배경"이 중복인 이상 아예 건드리지 않아야 한다.
+    document.body.innerHTML = '<main><h2>2-1. 배경</h2><h2>1-1. 배경</h2></main>'
+    const fetchMock = stubFetchForCommit('<h2>1-1. 배경</h2><h2>2-1. 배경</h2>')
+
+    const result = await commitDocumentEdits()
+
+    expect(result).toEqual({ ok: true, reconciled: 0 })
     expect(putBodies(fetchMock)).toEqual([])
   })
 

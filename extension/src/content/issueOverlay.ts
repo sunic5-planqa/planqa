@@ -1,5 +1,6 @@
 import { api } from '../api/client'
 import { isIssueLikelyResolved } from '../state/editValidation'
+import { LEADING_NUMBER_RE } from '../utils/locationLabel'
 import type {
   ApplyIssueEditRequest,
   ApplyIssueEditResponse,
@@ -850,25 +851,42 @@ export function formatKstTimestamp(date: Date): string {
   )
 }
 
-async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: true; pageId: string } | { ok: false; error: string }> {
+// commitDocumentEdits는 세션이 아직 없을 때 targetPageId로 originalPageId를 그대로 쓰기 때문에
+// 바로 위에서 이미 원본의 body.storage(+space)를 읽어둔 상태다 — prefetchedOriginal을 넘기면 그걸
+// 재사용해서 여기서 또 같은 리소스를 GET하지 않는다.
+async function ensureDuplicateSession(
+  originalPageId: string,
+  prefetchedOriginal?: { title: string; spaceKey: string; html: string },
+): Promise<{ ok: true; pageId: string } | { ok: false; error: string }> {
   // 현재 보고 있는 원본에서 만든 세션일 때만 재사용한다 — 다른 페이지 것이면 스테일이므로 새로 만든다.
   if (duplicateSession && duplicateSession.originalPageId === originalPageId) {
     return { ok: true, pageId: duplicateSession.pageId }
   }
 
-  const originalRes = await fetch(`${location.origin}/wiki/rest/api/content/${originalPageId}?expand=body.storage,space`, {
-    credentials: 'include',
-  })
-  if (!originalRes.ok) return { ok: false, error: `원본을 불러오지 못했습니다 (${originalRes.status})` }
+  let originalTitle: string
+  let spaceKey: string
+  let html: string
+  if (prefetchedOriginal) {
+    ;({ title: originalTitle, spaceKey, html } = prefetchedOriginal)
+  } else {
+    const originalRes = await fetch(
+      `${location.origin}/wiki/rest/api/content/${originalPageId}?expand=body.storage,space`,
+      { credentials: 'include' },
+    )
+    if (!originalRes.ok) return { ok: false, error: `원본을 불러오지 못했습니다 (${originalRes.status})` }
 
-  const original = (await originalRes.json()) as {
-    title: string
-    space?: { key: string }
-    body: { storage: { value: string } }
+    const original = (await originalRes.json()) as {
+      title: string
+      space?: { key: string }
+      body: { storage: { value: string } }
+    }
+    if (!original.space?.key) return { ok: false, error: '스페이스 정보를 확인하지 못했습니다.' }
+    originalTitle = original.title
+    spaceKey = original.space.key
+    html = original.body.storage.value
   }
-  if (!original.space?.key) return { ok: false, error: '스페이스 정보를 확인하지 못했습니다.' }
 
-  const title = `${original.title} (QA 검토 수정본 ${formatKstTimestamp(new Date())})`
+  const title = `${originalTitle} (QA 검토 수정본 ${formatKstTimestamp(new Date())})`
   const createRes = await fetch(`${location.origin}/wiki/rest/api/content`, {
     method: 'POST',
     credentials: 'include',
@@ -876,9 +894,9 @@ async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: tru
     body: JSON.stringify({
       type: 'page',
       title,
-      space: { key: original.space.key },
+      space: { key: spaceKey },
       ancestors: [{ id: originalPageId }],
-      body: { storage: { value: original.body.storage.value, representation: 'storage' } },
+      body: { storage: { value: html, representation: 'storage' } },
     }),
   })
   if (!createRes.ok) return { ok: false, error: `복제본 생성에 실패했습니다 (${createRes.status})` }
@@ -892,10 +910,6 @@ async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: tru
 // 있다 — 실제 치환/저장은 이 복수형이 전담하고, 단일 치환은 그 특수 케이스(길이 1짜리 배열)로
 // 구현한다. 두 함수 모두 이 파일 안에서만 직접 호출되는 일반 함수다(패널 쪽에서 이 메시지를
 // 보내는 코드는 없다 — chrome.runtime 메시지가 아니라 여기 handleSaveClick이 직접 호출).
-// backend qa_engine/numbering_validation.py의 _NUMBER_RE, extension/src/utils/locationLabel.ts의
-// LEADING_NUMBER_RE와 동일한 조건 — 헤딩 텍스트 맨 앞의 "번호" 세그먼트만 골라낸다.
-const LEADING_NUMBER_RE = /^\s*\d+(?:[-.]\d+)*[.\s]+/
-
 // 넘버링 이슈는 (AI 이슈가 아니라 애초에 mark 하이라이트 대상이 아니므로) 저장은 복제본에
 // 성공해도 지금 보고 있는 원본 화면엔 아무 변화가 없어 "반영이 안 됐다"는 오인 보고로 이어졌다
 // (실사용 확인됨). oldText/newText는 헤딩 텍스트 전체지만 실제로 다른 부분은 맨 앞 번호뿐이므로
@@ -965,14 +979,24 @@ export async function commitDocumentEdits(): Promise<CommitDocumentEditsResponse
   if (!originalPageId) return { ok: false, error: '컨플루언스 문서 URL이 아닙니다.' }
 
   const targetPageId = getActiveDuplicatePageId(originalPageId) ?? originalPageId
+  // 세션이 아직 없으면 targetPageId는 originalPageId 그 자체다 — 어차피 뒤에서 복제본을 만들 때
+  // 원본의 title/space가 또 필요하니, 지금 한 번에 같이 받아서 ensureDuplicateSession이 같은
+  // 페이지를 다시 GET하지 않게 한다.
+  const needsOriginalMeta = targetPageId === originalPageId
 
   let storageHtml: string
+  let originalMeta: { title: string; spaceKey: string; html: string } | undefined
   try {
-    const res = await fetch(`${location.origin}/wiki/rest/api/content/${targetPageId}?expand=body.storage`, {
+    const expand = needsOriginalMeta ? 'body.storage,space' : 'body.storage'
+    const res = await fetch(`${location.origin}/wiki/rest/api/content/${targetPageId}?expand=${expand}`, {
       credentials: 'include',
     })
     if (!res.ok) return { ok: false, error: `저장본을 불러오지 못했습니다 (${res.status})` }
-    storageHtml = ((await res.json()) as { body: { storage: { value: string } } }).body.storage.value
+    const data = (await res.json()) as { title: string; space?: { key: string }; body: { storage: { value: string } } }
+    storageHtml = data.body.storage.value
+    if (needsOriginalMeta && data.space?.key) {
+      originalMeta = { title: data.title, spaceKey: data.space.key, html: storageHtml }
+    }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
@@ -983,13 +1007,33 @@ export async function commitDocumentEdits(): Promise<CommitDocumentEditsResponse
   // 헤딩 개수가 다르면 stored[i] ↔ live[i] 대응 자체가 성립하지 않는다 — 위치 매칭 금지.
   if (stored.length !== live.length) return { ok: true, reconciled: 0, skippedCountMismatch: true }
 
+  // 위치(순서)만으로 stored[i] ↔ live[i]를 짝짓기 때문에, "번호를 뗀 제목"이 문서 안에 두 번 이상
+  // 나오면 그중 두 헤딩이 재정렬된 건지 그냥 같은 자리에 있는 건지 구분할 수 없다 — 그 상태로
+  // 번호만 바꿔 넣으면 엉뚱한 헤딩에 조용히 잘못된 번호가 붙을 수 있다. 그런 제목은 이 자동
+  // reconcile 대상에서 아예 제외하고 넘버링 확인 화면에서 사용자가 판단하게 둔다.
+  const countStrippedTitles = (headings: string[]): Map<string, number> => {
+    const counts = new Map<string, number>()
+    for (const heading of headings) {
+      const stripped = heading.replace(LEADING_NUMBER_RE, '')
+      counts.set(stripped, (counts.get(stripped) ?? 0) + 1)
+    }
+    return counts
+  }
+  // stored와 live는 같은 문서의 이전/이후 스냅샷이라 대부분의 제목이 양쪽에 다 나온다 — 그 자체는
+  // 중복이 아니다. 한쪽 스냅샷 "안에서" 같은 stripped 제목이 두 번 이상 나올 때만 위치 매칭이
+  // 애매해진다.
+  const storedTitleCounts = countStrippedTitles(stored)
+  const liveTitleCounts = countStrippedTitles(live)
+
   const { fullText } = decodeStorageHtmlText(storageHtml)
   const edits: EditPair[] = []
   for (let i = 0; i < stored.length; i += 1) {
     if (stored[i] === live[i]) continue
     // 번호 접두어 이외(제목 본문)가 달라졌으면 이번 범위 밖 — 넘버링만 다루고, 사용자가 고친
     // 제목까지 여기서 건드리지 않는다.
-    if (stored[i].replace(LEADING_NUMBER_RE, '') !== live[i].replace(LEADING_NUMBER_RE, '')) continue
+    const strippedStored = stored[i].replace(LEADING_NUMBER_RE, '')
+    if (strippedStored !== live[i].replace(LEADING_NUMBER_RE, '')) continue
+    if ((storedTitleCounts.get(strippedStored) ?? 0) > 1 || (liveTitleCounts.get(strippedStored) ?? 0) > 1) continue
     // replaceInStorageHtml은 문서 전체 텍스트의 "첫 매치"만 치환한다 — 같은 문구가 본문 산문에
     // 먼저 나오거나 동일 헤딩이 2개면 엉뚱한 곳을 고친다. 전역 매치가 정확히 1건일 때만 자동
     // reconcile하고, 아니면 넘버링 확인 화면에서 사용자가 판단하게 둔다.
@@ -1002,7 +1046,7 @@ export async function commitDocumentEdits(): Promise<CommitDocumentEditsResponse
 
   if (edits.length === 0) return { ok: true, reconciled: 0 }
 
-  const session = await ensureDuplicateSession(originalPageId)
+  const session = await ensureDuplicateSession(originalPageId, originalMeta)
   if (!session.ok) return session
 
   const result = await replaceAllAndSave(session.pageId, edits)

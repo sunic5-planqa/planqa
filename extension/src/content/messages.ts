@@ -127,6 +127,27 @@ export interface QaPassedBadgeResponse {
   ok: boolean
 }
 
+// 사이드패널 → content script: "QA 시작"을 누르면 지금 보고 있는 문서를 컨플루언스 자체
+// 편집 모드로 넘긴다 — 사용자가 이슈를 보면서 그 자리에서 직접 고칠 수 있게. pageId는 여기서
+// 다시 안 받고 content script가 자기 location에서 뽑는다(사이드패널은 이 탭의 origin을 모름).
+export interface NavigateToEditModeRequest {
+  type: 'NAVIGATE_TO_EDIT_MODE'
+}
+
+export type NavigateToEditModeResponse = { ok: true } | { ok: false; error: 'NOT_A_CONFLUENCE_PAGE' }
+
+// 사이드패널 → content script: 타문서 정합성(XDC) 이슈의 참고문서를 새 탭으로 연다 — 컨플루언스
+// 페이지 id만 있으면 스페이스/제목 경로 없이도 열리는 레거시 URL(viewpage.action?pageId=)을
+// 쓴다. 참고문서는 현재 문서와 다른 페이지라 지금 문서의 DOM 안에서 스크롤해 찾을 방법이 없다.
+export interface OpenReferenceDocumentRequest {
+  type: 'OPEN_REFERENCE_DOCUMENT'
+  pageId: string
+}
+
+export interface OpenReferenceDocumentResponse {
+  ok: boolean
+}
+
 // content script → 사이드패널: 문서에서 직접 편집(current 문단의 인라인 저장)이 성공했음을
 // 알리는 푸시. 요청/응답이 아니라 chrome.runtime.sendMessage로 발사(fire-and-forget)한다 —
 // content script는 issueId를 모르므로(SuggestionLocation은 텍스트/위치만 담음), 패널이 이미

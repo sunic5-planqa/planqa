@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import { NotImplementedError } from '../../api/errors'
+import type { NavigateToEditModeRequest, NavigateToEditModeResponse } from '../../content/messages'
 import { useConfluenceAutoDetect } from '../../hooks/useConfluenceAutoDetect'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { Button } from '../common/Button'
@@ -9,8 +10,15 @@ import { ReferencesSection } from '../main/ReferencesSection'
 import { RuleSection } from '../main/RuleSection'
 
 export function MainScreen() {
-  const { confluenceStatus, confluenceMarkdown, error, teamCode, referenceFiles, selectedReferenceFileIds } =
-    useAppState()
+  const {
+    confluenceStatus,
+    confluenceMarkdown,
+    confluenceTabId,
+    error,
+    teamCode,
+    referenceFiles,
+    selectedReferenceFileIds,
+  } = useAppState()
   const dispatch = useAppDispatch()
   const { detect } = useConfluenceAutoDetect()
   const [submitting, setSubmitting] = useState(false)
@@ -31,6 +39,18 @@ export function MainScreen() {
     setSubmitting(true)
     dispatch({ type: 'SET_ERROR', error: null })
     dispatch({ type: 'NAVIGATE', screen: 'loading' })
+
+    // QA를 시작하는 순간 문서 탭을 컨플루언스 자체 편집 모드로 넘긴다 — 사용자가 이슈를 보면서
+    // 그 자리에서 직접 고칠 수 있게. confluenceMarkdown은 이미 위에서 캡처해뒀으니(문서 생성에
+    // markdown 자체를 다시 읽어올 필요 없음) 탭이 편집 화면으로 넘어가도 QA 진행엔 영향 없다.
+    // 실패해도(권한 없음 등) QA 자체는 그대로 진행되어야 하므로 결과를 기다리지 않는다.
+    if (confluenceTabId !== null) {
+      void chrome.tabs
+        .sendMessage<NavigateToEditModeRequest, NavigateToEditModeResponse>(confluenceTabId, {
+          type: 'NAVIGATE_TO_EDIT_MODE',
+        })
+        .catch(() => {})
+    }
 
     try {
       const doc = await api.createDocument(confluenceMarkdown)

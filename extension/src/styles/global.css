@@ -1197,6 +1197,19 @@ textarea {
   color: #a09dab;
 }
 
+/* 타문서 정합성(XDC) 참고문서 위치 — 지금 문서와 다른 페이지라 클릭하면 새 탭으로 연다는 걸
+   알 수 있게 밑줄 + 강조색만 얹는다(글자 크기/두께는 rule-evidence-location-value와 동일). */
+.rule-evidence-reference-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .rule-evidence-text {
   margin: 0;
   font-size: 0.69rem;

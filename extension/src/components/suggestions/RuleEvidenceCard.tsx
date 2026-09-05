@@ -25,7 +25,9 @@ export function RuleEvidenceCard({ issue }: { issue: IssueResponse }) {
         <span className="rule-evidence-label">문서 위치</span>
         <span className="rule-evidence-location-value">
           {formatLocationLabel(issue.location, issue.location_number)}
-          {issue.related_location && <> ↔ {issue.related_location}</>}
+          {issue.related_location && (
+            <> ↔ {formatLocationLabel(issue.related_location, issue.related_location_number)}</>
+          )}
         </span>
       </div>
       <div className="rule-evidence-block">

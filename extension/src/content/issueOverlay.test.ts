@@ -675,6 +675,14 @@ describe('getActiveDuplicatePageId', () => {
 
     expect(getActiveDuplicatePageId('999999')).toBeNull()
   })
+
+  it('returns null when the caller could not determine the current page id', async () => {
+    stubConfluenceFetch()
+
+    await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
+
+    expect(getActiveDuplicatePageId(null)).toBeNull()
+  })
 })
 
 describe('commitDocumentEdits', () => {

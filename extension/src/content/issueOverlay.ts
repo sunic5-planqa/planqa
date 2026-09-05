@@ -824,7 +824,10 @@ export function __resetDuplicateSessionForTests(): void {
 // 최신 본문을 다시 읽어올 때) 쓴다 — 아직 한 건도 적용 안 했거나, 세션이 다른 원본 페이지 것이면 null.
 export function getActiveDuplicatePageId(originalPageId: string | null): string | null {
   if (!duplicateSession) return null
-  if (originalPageId !== null && duplicateSession.originalPageId !== originalPageId) return null
+  // originalPageId가 null이면(URL에서 페이지 id를 못 뽑은 경우) 지금 세션이 맞는 페이지 것인지
+  // 확인할 방법이 없다 — 모르면 stale 취급하고 null을 반환한다(있는 세션을 잘못 재사용하는 것보다
+  // 안전).
+  if (duplicateSession.originalPageId !== originalPageId) return null
   return duplicateSession.pageId
 }
 

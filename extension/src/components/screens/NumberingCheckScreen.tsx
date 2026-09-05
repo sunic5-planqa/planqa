@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
-import type { AppliedNumberingFix } from '../../api/types'
+import type { AppliedNumberingFix, NumberingIssueResponse } from '../../api/types'
 import type {
   ApplyIssueEditRequest,
   ApplyIssueEditResponse,
@@ -14,6 +14,29 @@ import { deriveDefaultChecked } from '../../state/numberingChecklist'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { numberingIssueToScrollLocation } from '../../utils/numberingLocation'
 import { Button } from '../common/Button'
+
+// 재검증마다 id가 전부 새로 발급되므로(아래 주석), 실패 메시지를 그대로 들고 있으면 다음 렌더에서
+// 엉뚱한(또는 존재하지 않는) id를 가리키게 된다. 아직 안 고쳐진 항목은 location+before_text가
+// 그대로 유지되니, 그걸로 옛 항목과 새 항목을 짝지어 에러를 옮겨준다 — 짝이 안 맞으면(고쳐졌거나
+// 사라졌으면) 버린다.
+function remapRowErrors(
+  prevErrors: Record<string, string>,
+  oldIssues: NumberingIssueResponse[],
+  newIssues: NumberingIssueResponse[],
+): Record<string, string> {
+  if (Object.keys(prevErrors).length === 0) return {}
+  const errorByKey = new Map<string, string>()
+  for (const issue of oldIssues) {
+    const message = prevErrors[issue.id]
+    if (message) errorByKey.set(`${issue.location}::${issue.before_text}`, message)
+  }
+  const next: Record<string, string> = {}
+  for (const issue of newIssues) {
+    const message = errorByKey.get(`${issue.location}::${issue.before_text}`)
+    if (message) next[issue.id] = message
+  }
+  return next
+}
 
 // 넘버링 하모나이징 — QA의 마지막 사용자 확인 단계다. 넘버링 오류가 있든 없든 이 화면에 진입하고,
 // "넘버링 적용"은 체크한 항목만 문서에 반영한 뒤 이 화면에 그대로 머문다(사용자가 실제 문서에서
@@ -38,7 +61,9 @@ export function NumberingCheckScreen() {
       .catch(() => {})
     return () => {
       void chrome.tabs
-        .sendMessage<ClearQaPassedBadgeRequest, QaPassedBadgeResponse>(confluenceTabId, { type: 'CLEAR_QA_PASSED_BADGE' })
+        .sendMessage<ClearQaPassedBadgeRequest, QaPassedBadgeResponse>(confluenceTabId, {
+          type: 'CLEAR_QA_PASSED_BADGE',
+        })
         .catch(() => {})
     }
   }, [confluenceTabId])
@@ -47,9 +72,9 @@ export function NumberingCheckScreen() {
   // 체크 상태/에러/선택을 그 새 목록 기준으로 다시 초기화한다.
   const [seenIssues, setSeenIssues] = useState(numberingIssues)
   if (numberingIssues !== seenIssues) {
+    setRowErrors((prev) => remapRowErrors(prev, seenIssues, numberingIssues))
     setSeenIssues(numberingIssues)
     setCheckedIds(deriveDefaultChecked(numberingIssues))
-    setRowErrors({})
     setSelectedId(null)
   }
 
@@ -91,15 +116,14 @@ export function NumberingCheckScreen() {
     const newRowErrors: Record<string, string> = {}
     const appliedFixes: AppliedNumberingFix[] = []
 
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
-    if (!tab.id) {
+    if (confluenceTabId === null) {
       setTopError('컨플루언스 탭을 찾을 수 없습니다.')
       setApplying(false)
       return
     }
     for (const item of toApply) {
       try {
-        const response = await chrome.tabs.sendMessage<ApplyIssueEditRequest, ApplyIssueEditResponse>(tab.id, {
+        const response = await chrome.tabs.sendMessage<ApplyIssueEditRequest, ApplyIssueEditResponse>(confluenceTabId, {
           type: 'APPLY_ISSUE_EDIT',
           issueId: item.id,
           oldText: item.before_text,
@@ -202,7 +226,9 @@ export function NumberingCheckScreen() {
                     <span className="numbering-check-before">{item.before_text}</span>
                   )}
                 </p>
-                {rowErrors[item.id] && <p className="issue-edit-notice issue-edit-notice-error">{rowErrors[item.id]}</p>}
+                {rowErrors[item.id] && (
+                  <p className="issue-edit-notice issue-edit-notice-error">{rowErrors[item.id]}</p>
+                )}
               </div>
             </li>
           ))}

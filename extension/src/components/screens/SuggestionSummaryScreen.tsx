@@ -152,7 +152,11 @@ export function SuggestionSummaryScreen() {
       </div>
 
       <div className="screen-footer suggestion-summary-footer">
-        <Button variant="outline-pill" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'issues' })}>
+        <Button
+          variant="outline-pill"
+          onClick={() => dispatch({ type: 'NAVIGATE', screen: 'issues' })}
+          disabled={finishingQA}
+        >
           돌아가기
         </Button>
         <Button className="btn-cta" onClick={() => void finishQA()} disabled={finishingQA}>

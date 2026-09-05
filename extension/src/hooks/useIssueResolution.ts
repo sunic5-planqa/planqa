@@ -7,7 +7,11 @@ import { useAppDispatch } from '../state/hooks'
 // 훅. 각 수정사항 박스가 자기 issueId로 호출한다 — 처리 후 "다음 제안으로 자동 이동"은 하지
 // 않는다(통합 화면은 모든 박스를 동시에 보여주므로 이동 개념이 없다). 백엔드 반영은 best-effort:
 // QA 엔진이 아직 없어 501이 나면(NotImplementedError) 조용히 넘어가고 로컬 상태만 남긴다.
-function persist(issueId: string, body: Parameters<typeof api.updateIssue>[1], onError: (message: string) => void): void {
+function persist(
+  issueId: string,
+  body: Parameters<typeof api.updateIssue>[1],
+  onError: (message: string) => void,
+): void {
   void api.updateIssue(issueId, body).catch((err) => {
     if (!(err instanceof NotImplementedError)) onError(err instanceof Error ? err.message : String(err))
   })

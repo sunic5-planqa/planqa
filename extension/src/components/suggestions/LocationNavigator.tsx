@@ -33,7 +33,9 @@ export function LocationNavigator({ issue }: { issue: IssueResponse }) {
             type="button"
             role="tab"
             aria-selected={i === activeLocationIndex}
-            className={`location-navigator-tab ${i === activeLocationIndex ? 'location-navigator-tab-active' : ''}`.trim()}
+            className={`location-navigator-tab ${
+              i === activeLocationIndex ? 'location-navigator-tab-active' : ''
+            }`.trim()}
             onClick={() => select(i as 0 | 1)}
           >
             {text}

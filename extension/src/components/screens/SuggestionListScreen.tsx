@@ -38,7 +38,13 @@ export function SuggestionListScreen() {
 
     const listener = (message: SuggestionEditSavedMessage) => {
       if (message.type !== 'SUGGESTION_EDIT_SAVED') return
-      dispatch({ type: 'STAGE_ISSUE_EDIT', issueId: activeIssue.id, action: 'edit', target, editedText: message.newText })
+      dispatch({
+        type: 'STAGE_ISSUE_EDIT',
+        issueId: activeIssue.id,
+        action: 'edit',
+        target,
+        editedText: message.newText,
+      })
       void api.updateIssue(activeIssue.id, { action: 'edit', edited_text: message.newText }).catch((err) => {
         if (!(err instanceof NotImplementedError)) {
           dispatch({ type: 'SET_ERROR', error: err instanceof Error ? err.message : String(err) })

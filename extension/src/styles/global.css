@@ -365,6 +365,20 @@ textarea {
   font-size: 0.85rem;
 }
 
+/* 일부 위계/참고문서 인덱싱만 실패했을 때(전체 실패는 아님) — error-banner보다 덜 알람성으로,
+   실패한 항목들을 목록으로 같이 보여준다. */
+.suggestion-list-tier-errors {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  font-size: 0.78rem;
+}
+
+.suggestion-list-tier-errors ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
 .issue-detail-card {
   display: flex;
   flex-direction: column;

@@ -59,6 +59,9 @@ export interface QAJobStatusResponse {
   current_category: string | null
   elapsed_seconds: number
   categories?: ProgressCategory[]
+  // review_agent가 한 위계나 참고문서 인덱싱에서 실패해도 다른 결과는 살리고 그 실패만 여기 담아
+  // 온다 — "이슈 0건"이 진짜 문제 없음인지 일부가 조용히 실패한 결과인지 구분하는 데 쓴다.
+  tier_errors?: string[]
 }
 
 // object: 오류 위치 하나만(TC/TM/AE/RD). insert_range: 정보 누락 자리를 포함하는 최소 상위 위계(MI).

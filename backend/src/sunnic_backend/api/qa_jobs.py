@@ -221,6 +221,7 @@ class QAJobStatusResponse(BaseModel):
     current_category: str | None
     elapsed_seconds: float
     categories: list[ProgressCategoryOut] | None = None
+    tier_errors: list[str] = []
 
 
 class IssueResponse(BaseModel):
@@ -529,7 +530,13 @@ async def _execute_qa_job(
                 job_id, document_text, lookup_rulebook, issue, heading_numbers, reference_document_titles
             )
             await store.save_issue(record)
-        await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.DONE, "progress": 100}))
+        if result.tier_errors:
+            logger.warning("QA job %s completed with tier errors: %s", job_id, list(result.tier_errors))
+        await store.save_qa_job(
+            job.model_copy(
+                update={"status": QAJobStatus.DONE, "progress": 100, "tier_errors": list(result.tier_errors)}
+            )
+        )
     except Exception:
         logger.exception("QA job %s failed for document %s", job_id, document_id)
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.FAILED, "progress": 100}))
@@ -581,6 +588,7 @@ async def get_qa_job_status(job_id: str) -> QAJobStatusResponse:
         current_category=current_category,
         elapsed_seconds=elapsed,
         categories=categories,
+        tier_errors=job.tier_errors,
     )
 
 

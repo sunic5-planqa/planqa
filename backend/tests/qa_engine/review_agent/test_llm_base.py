@@ -4,6 +4,7 @@ import pytest
 
 from sunnic_backend.qa_engine.review_agent.llm.base import (
     CallStats,
+    coerce_json_index,
     parse_json_response,
     total_elapsed_seconds,
     total_tokens,
@@ -84,6 +85,46 @@ def test_parse_json_response_does_not_break_a_valid_escaped_backslash_before_u()
     raw = '{"a": "some \\p invalid", "b": "\\\\uploads folder"}'
     result = parse_json_response(raw)
     assert result["b"] == "\\uploads folder"
+
+
+def test_coerce_json_index_passes_through_a_plain_int():
+    assert coerce_json_index(0) == 0
+    assert coerce_json_index(3) == 3
+
+
+def test_coerce_json_index_rejects_bool_despite_being_an_int_subclass():
+    assert coerce_json_index(True) is None
+    assert coerce_json_index(False) is None
+
+
+def test_coerce_json_index_parses_a_whole_float():
+    assert coerce_json_index(3.0) == 3
+
+
+def test_coerce_json_index_rejects_a_fractional_float():
+    assert coerce_json_index(3.5) is None
+
+
+def test_coerce_json_index_parses_a_numeric_string():
+    # The observed live failure mode: Anthropic always sent a JSON int, OpenAI has been
+    # seen sending the same field as a numeric string instead.
+    assert coerce_json_index("0") == 0
+    assert coerce_json_index("3") == 3
+
+
+def test_coerce_json_index_parses_a_float_formatted_numeric_string():
+    assert coerce_json_index("3.0") == 3
+
+
+def test_coerce_json_index_rejects_a_fractional_numeric_string():
+    assert coerce_json_index("3.5") is None
+
+
+def test_coerce_json_index_rejects_non_numeric_input():
+    assert coerce_json_index("not a number") is None
+    assert coerce_json_index(None) is None
+    assert coerce_json_index([0]) is None
+    assert coerce_json_index({"index": 0}) is None
 
 
 def test_parse_json_response_does_not_strip_a_comma_inside_quoted_content():

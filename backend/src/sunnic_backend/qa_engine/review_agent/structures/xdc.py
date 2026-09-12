@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sunnic_backend.qa_engine.review_agent.document import Chunk
-from sunnic_backend.qa_engine.review_agent.llm.base import LLMClient
+from sunnic_backend.qa_engine.review_agent.llm.base import LLMClient, coerce_json_index
 
 # 타문서 정합성(XDC) — "현재 문서 vs 참고문서" 비교 전용 모듈. 유진 문서(타문서와의_정합성_
 # 룰북_Section1_후보매처_보충본.md) §1의 설계를 그대로 코드로 옮긴 것 — 단계 A(구조화 키 A,
@@ -127,8 +127,8 @@ def parse_decision_records(raw: object, doc_id: str, chunks: list[Chunk]) -> lis
     for item in raw:
         if not isinstance(item, dict):
             continue
-        chunk_index = item.get("chunk_index")
-        if not (isinstance(chunk_index, int) and 0 <= chunk_index < len(chunks)):
+        chunk_index = coerce_json_index(item.get("chunk_index"))
+        if chunk_index is None or not (0 <= chunk_index < len(chunks)):
             continue
         record = _build_record(item, doc_id, chunks, chunk_index)
         if record is not None:

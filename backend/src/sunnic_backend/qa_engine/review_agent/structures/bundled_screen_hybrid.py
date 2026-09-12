@@ -16,7 +16,7 @@ from sunnic_backend.qa_engine.review_agent.instrumentation import (
     merge_usage,
     record_call,
 )
-from sunnic_backend.qa_engine.review_agent.llm.base import LLMClient
+from sunnic_backend.qa_engine.review_agent.llm.base import LLMClient, coerce_json_index
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
     RuleBook,
@@ -239,8 +239,8 @@ def _screen_pass(
     for item in raw:
         if not isinstance(item, dict):
             continue
-        chunk_index, rule_id = item.get("chunk_index"), item.get("rule_id")
-        if not (isinstance(chunk_index, int) and 0 <= chunk_index < len(chunks)) or rule_id not in valid_rule_ids:
+        chunk_index, rule_id = coerce_json_index(item.get("chunk_index")), item.get("rule_id")
+        if chunk_index is None or not (0 <= chunk_index < len(chunks)) or rule_id not in valid_rule_ids:
             continue
         candidates.append(
             _Candidate(
@@ -256,6 +256,22 @@ def _screen_pass(
         raw_decisions = response.get("decision_records", []) if isinstance(response, dict) else []
         decision_records = xdc.parse_decision_records(raw_decisions, doc_id, chunks)
     return candidates, decision_records
+
+
+# Shared by _confirm_pass and _confirm_xdc_pass below — see coerce_json_index's own comment
+# for why "index" needs coercing at all rather than a plain isinstance check.
+def _index_verdicts(raw_verdicts: object) -> dict[int, dict]:
+    if not isinstance(raw_verdicts, list):
+        return {}
+    by_index: dict[int, dict] = {}
+    for item in raw_verdicts:
+        if not isinstance(item, dict):
+            continue
+        index = coerce_json_index(item.get("index"))
+        if index is None:
+            continue
+        by_index[index] = item
+    return by_index
 
 
 def _confirm_pass(
@@ -284,17 +300,7 @@ def _confirm_pass(
 
     response = llm.complete_json(system=_CONFIRM_HYBRID_SYSTEM, prompt=prompt)
     raw_verdicts = response.get("verdicts", []) if isinstance(response, dict) else []
-    # "index" comes back as a plain int from Anthropic but some models (seen with OpenAI)
-    # emit it as a numeric string instead — coerce so a lookup by int i below still matches,
-    # rather than silently dropping every verdict (no exception, just an empty issues list).
-    by_index: dict[int, dict] = {}
-    for item in raw_verdicts:
-        if not (isinstance(item, dict) and "index" in item):
-            continue
-        try:
-            by_index[int(item["index"])] = item
-        except (TypeError, ValueError):
-            continue
+    by_index = _index_verdicts(raw_verdicts)
 
     issues: list[Issue] = []
     for i, candidate in enumerate(candidates):
@@ -505,15 +511,7 @@ def _confirm_xdc_pass(
 
     response = llm.complete_json(system=_CONFIRM_XDC_SYSTEM, prompt=prompt)
     raw_verdicts = response.get("verdicts", []) if isinstance(response, dict) else []
-    # same int-coercion guard as _confirm_pass above — see its comment.
-    by_index: dict[int, dict] = {}
-    for item in raw_verdicts:
-        if not (isinstance(item, dict) and "index" in item):
-            continue
-        try:
-            by_index[int(item["index"])] = item
-        except (TypeError, ValueError):
-            continue
+    by_index = _index_verdicts(raw_verdicts)
 
     issues: list[Issue] = []
     for i, pair in enumerate(pairs):

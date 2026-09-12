@@ -98,6 +98,49 @@ def test_review_document_two_passes_end_to_end(rulebook_path):
     assert issue.level == "Paragraph"
 
 
+def test_review_document_keeps_the_issue_when_model_sends_string_indices(rulebook_path):
+    # Regression test: Anthropic always echoed chunk_index/index as a JSON int, but OpenAI
+    # (the live confirm_llm/screen_llm backend as of this test) has been seen sending the
+    # same fields as numeric strings instead — a strict isinstance(..., int)/dict-by-int-key
+    # lookup then silently drops every candidate/verdict with no exception, so the job
+    # "succeeds" with zero issues. Both fields are strings here to prove the whole pipeline
+    # (not just one coercion site) survives it end to end.
+    rulebook = parse_rulebook(rulebook_path)
+    confirm_llm = ScriptedLLM(
+        [{"summary": ""}],
+        keyed_responses={
+            Level.PARAGRAPH: [
+                {
+                    "verdicts": [
+                        {
+                            "index": "0",
+                            "violated": True,
+                            "original_text": "간단한 목적 설명입니다.",
+                            "description": "d",
+                            "fix_direction": "f",
+                            "excused": False,
+                        }
+                    ]
+                }
+            ],
+        },
+    )
+    screen_llm = ScriptedLLM(
+        keyed_responses={
+            Level.PARAGRAPH: [
+                {"candidates": [{"chunk_index": "0", "rule_id": "MI-01", "quoted_text": "간단한 목적 설명입니다.", "reason": "r"}]}
+            ],
+            Level.DOCUMENT: [_EMPTY_CANDIDATES],
+        }
+    )
+
+    result = review_document("DOC-TEST", _DOC, rulebook, screen_llm, confirm_llm)
+
+    assert result.tier_errors == ()
+    [issue] = result.issues
+    assert issue.rule_id == "MI-01"
+
+
 def test_review_document_ignores_related_fields_for_non_relational_categories(rulebook_path):
     # MI isn't in _RELATIONAL_CATEGORIES — even if the model tries to fill
     # related_location/related_original_text anyway (defensive against it ignoring the

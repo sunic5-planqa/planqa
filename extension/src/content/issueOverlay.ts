@@ -1,6 +1,7 @@
 import { api } from '../api/client'
 import { isIssueLikelyResolved } from '../state/editValidation'
 import { LEADING_NUMBER_RE } from '../utils/locationLabel'
+import { REFERENCE_SCROLL_LOCATION_PARAM, REFERENCE_SCROLL_TEXT_PARAM } from './referenceScrollParams'
 import type {
   ApplyIssueEditRequest,
   ApplyIssueEditResponse,
@@ -1113,3 +1114,38 @@ chrome.runtime.onMessage.addListener(
     return undefined
   },
 )
+
+// 참고문서를 새 탭으로 열 때(confluence-extractor.ts의 openReferenceDocument) 어느 위치를 봐야
+// 하는지 URL 쿼리 파라미터에 실어 보낸다 — 이 탭이 방금 그렇게 열린 것이라면, 로드 후 곧장 그
+// 위치로 스크롤한다. 배지(showQaPassedBadge)와 같은 이유로 재시도가 필요하다: 컨플루언스 SPA가
+// 본문을 다 그리기 전에 이 스크립트가 먼저 실행될 수 있다.
+const _REFERENCE_SCROLL_MAX_RETRIES = 20
+const _REFERENCE_SCROLL_RETRY_DELAY_MS = 300
+
+export function scrollToReferencedLocationFromUrl(): void {
+  const params = new URLSearchParams(window.location.search)
+  const text = params.get(REFERENCE_SCROLL_TEXT_PARAM)
+  const loc = params.get(REFERENCE_SCROLL_LOCATION_PARAM)
+  if (text === null && loc === null) return
+
+  // 곧장 URL에서 지운다 — 안 지우면 사용자가 이 탭을 새로고침할 때마다 같은 위치로 다시
+  // 스크롤/반짝임이 일어난다(참고문서를 그냥 훑어보는 중에도).
+  params.delete(REFERENCE_SCROLL_TEXT_PARAM)
+  params.delete(REFERENCE_SCROLL_LOCATION_PARAM)
+  const cleanedQuery = params.toString()
+  window.history.replaceState(
+    window.history.state,
+    '',
+    `${window.location.pathname}${cleanedQuery ? `?${cleanedQuery}` : ''}${window.location.hash}`,
+  )
+
+  const target: SuggestionLocation = { text: text ?? '', location: loc ?? '' }
+  const attempt = (retriesLeft: number): void => {
+    if (scrollToLocation(target)) return
+    if (retriesLeft <= 0) return
+    window.setTimeout(() => attempt(retriesLeft - 1), _REFERENCE_SCROLL_RETRY_DELAY_MS)
+  }
+  attempt(_REFERENCE_SCROLL_MAX_RETRIES)
+}
+
+scrollToReferencedLocationFromUrl()

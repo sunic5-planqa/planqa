@@ -10,3 +10,9 @@ export function findReferenceDocumentId(relatedLocation: string, referenceFiles:
   const title = match[1]
   return referenceFiles.find((file) => file.name === title)?.id ?? null
 }
+
+// "[문서명] 위치" 앞의 문서명 접두어를 뗀, 참고문서 자체 안에서 찾을 위치 라벨만 돌려준다 — 이
+// 문서(현재 열려있는 문서)가 아니라 새로 열리는 참고문서 탭 안에서 scrollToLocation에 넘길 값.
+export function stripReferenceDocumentTitle(relatedLocation: string): string {
+  return relatedLocation.replace(/^\[[^\]]+\]\s*/, '')
+}

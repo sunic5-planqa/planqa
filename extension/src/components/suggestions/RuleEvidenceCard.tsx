@@ -3,7 +3,7 @@ import type { OpenReferenceDocumentRequest, OpenReferenceDocumentResponse } from
 import { useAppState } from '../../state/hooks'
 import { getRuleDescription, getRuleException, getRuleName, getRuleSource } from '../../state/ruleSourceDefaults'
 import { formatLocationLabel } from '../../utils/locationLabel'
-import { findReferenceDocumentId } from '../../utils/referenceDocumentLink'
+import { findReferenceDocumentId, stripReferenceDocumentTitle } from '../../utils/referenceDocumentLink'
 import { SourceBadge } from './SourceBadge'
 
 // 팀 규칙일 때 표시할 팀 이름 — 실제로는 팀 규칙 출처 자체가 아직 없어서(getRuleSource는 항상
@@ -21,11 +21,18 @@ export function RuleEvidenceCard({ issue }: { issue: IssueResponse }) {
     : null
 
   const openReferenceDocument = () => {
-    if (referenceDocumentId === null || confluenceTabId === null) return
+    if (referenceDocumentId === null || confluenceTabId === null || !issue.related_location) return
     void chrome.tabs
       .sendMessage<OpenReferenceDocumentRequest, OpenReferenceDocumentResponse>(confluenceTabId, {
         type: 'OPEN_REFERENCE_DOCUMENT',
         pageId: referenceDocumentId,
+        // 새로 열리는 탭 자신이 로드 후 이 위치로 스크롤한다 — related_original_text가 그 위치의
+        // 인용문(qa_jobs.py의 reference_quote), related_location은 "[문서명] 위치"라 문서명
+        // 접두어를 떼야 그 문서 안에서 찾을 위치 라벨(예: "3.2 결제 정책")만 남는다.
+        location: {
+          text: issue.related_original_text ?? '',
+          location: stripReferenceDocumentTitle(issue.related_location),
+        },
       })
       .catch(() => {})
   }

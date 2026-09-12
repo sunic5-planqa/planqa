@@ -11,7 +11,9 @@ import type {
   NavigateToEditModeResponse,
   OpenReferenceDocumentRequest,
   OpenReferenceDocumentResponse,
+  SuggestionLocation,
 } from './messages'
+import { REFERENCE_SCROLL_LOCATION_PARAM, REFERENCE_SCROLL_TEXT_PARAM } from './referenceScrollParams'
 
 export function extractPageId(url: string): string | null {
   // "/pages/" 바로 뒤에 숫자가 오는 형태(보기 모드) 외에, 새 편집기의 초안 URL은
@@ -138,9 +140,17 @@ export async function navigateToEditMode(): Promise<NavigateToEditModeResponse> 
 }
 
 // 참고문서는 지금 문서와 다른 페이지라 이 탭 안에서 스크롤해 찾을 방법이 없다 — 새 탭으로 연다.
-// 스페이스 키/제목 경로 없이 페이지 id만으로 열리는 레거시 URL이라 항상 유효하다.
-function openReferenceDocument(pageId: string): OpenReferenceDocumentResponse {
-  window.open(`${location.origin}/wiki/pages/viewpage.action?pageId=${pageId}`, '_blank', 'noopener')
+// 스페이스 키/제목 경로 없이 페이지 id만으로 열리는 레거시 URL이라 항상 유효하다. 어느 위치를
+// 봐야 하는지는(target) 새로 열리는 그 탭 자신의 content script가 로드 후 알아야 하므로, 여기서
+// 직접 스크롤하는 대신 URL 쿼리 파라미터에 실어 보낸다 — issueOverlay.ts가 페이지 로드 시 이
+// 파라미터를 읽어 scrollToLocation을 호출한다.
+export function openReferenceDocument(pageId: string, target: SuggestionLocation): OpenReferenceDocumentResponse {
+  const params = new URLSearchParams({
+    pageId,
+    [REFERENCE_SCROLL_TEXT_PARAM]: target.text,
+    [REFERENCE_SCROLL_LOCATION_PARAM]: target.location,
+  })
+  window.open(`${location.origin}/wiki/pages/viewpage.action?${params}`, '_blank', 'noopener')
   return { ok: true }
 }
 
@@ -176,7 +186,7 @@ chrome.runtime.onMessage.addListener(
       return true
     }
     if (message.type === 'OPEN_REFERENCE_DOCUMENT') {
-      sendResponse(openReferenceDocument(message.pageId))
+      sendResponse(openReferenceDocument(message.pageId, message.location))
       return true
     }
     return undefined

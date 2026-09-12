@@ -140,10 +140,13 @@ export type NavigateToEditModeResponse =
 
 // 사이드패널 → content script: 타문서 정합성(XDC) 이슈의 참고문서를 새 탭으로 연다 — 컨플루언스
 // 페이지 id만 있으면 스페이스/제목 경로 없이도 열리는 레거시 URL(viewpage.action?pageId=)을
-// 쓴다. 참고문서는 현재 문서와 다른 페이지라 지금 문서의 DOM 안에서 스크롤해 찾을 방법이 없다.
+// 쓴다. 참고문서는 현재 문서와 다른 페이지라 지금 문서의 DOM 안에서 스크롤해 찾을 방법이 없다 —
+// 대신 새로 열리는 탭 자체가 로드된 뒤 이 location으로 스스로 스크롤하도록, 새 탭 URL에
+// 실어 보낸다(issueOverlay.ts의 URL 파라미터 처리 참고).
 export interface OpenReferenceDocumentRequest {
   type: 'OPEN_REFERENCE_DOCUMENT'
   pageId: string
+  location: SuggestionLocation
 }
 
 export interface OpenReferenceDocumentResponse {

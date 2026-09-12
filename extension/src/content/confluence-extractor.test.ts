@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { extractPageId, navigateToEditMode, parseParentInfo, parseSiblingPages } from './confluence-extractor'
+import { extractPageId, navigateToEditMode, openReferenceDocument, parseParentInfo, parseSiblingPages } from './confluence-extractor'
+import { REFERENCE_SCROLL_LOCATION_PARAM, REFERENCE_SCROLL_TEXT_PARAM } from './referenceScrollParams'
 
 describe('extractPageId', () => {
   it('extracts the id from the modern /pages/{id}/{title} path', () => {
@@ -75,6 +76,35 @@ describe('navigateToEditMode', () => {
 
     expect(result).toEqual({ ok: false, error: 'FETCH_FAILED', detail: '404' })
     expect(location.href).toBe('https://example.atlassian.net/wiki/spaces/PLAN/pages/123456789/기획서')
+  })
+})
+
+describe('openReferenceDocument', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  // 참고문서는 다른 페이지라 이 탭 안에서 스크롤할 방법이 없다 — 새 탭이 로드 후 스스로 그
+  // 위치로 스크롤하도록(issueOverlay.ts), 어디로 가야 하는지를 새 탭 URL의 쿼리 파라미터에
+  // 실어 보내야 한다.
+  it('opens the legacy pageId URL carrying the target location as query params', () => {
+    vi.stubGlobal('location', { origin: 'https://example.atlassian.net' })
+    const openSpy = vi.fn()
+    vi.stubGlobal('open', openSpy)
+
+    const result = openReferenceDocument('987654321', { text: '월 1회로 제한한다', location: '3-2. 이용 제한' })
+
+    expect(result).toEqual({ ok: true })
+    expect(openSpy).toHaveBeenCalledTimes(1)
+    const [url, target, features] = openSpy.mock.calls[0]
+    expect(target).toBe('_blank')
+    expect(features).toBe('noopener')
+    const parsed = new URL(url)
+    expect(parsed.origin).toBe('https://example.atlassian.net')
+    expect(parsed.pathname).toBe('/wiki/pages/viewpage.action')
+    expect(parsed.searchParams.get('pageId')).toBe('987654321')
+    expect(parsed.searchParams.get(REFERENCE_SCROLL_TEXT_PARAM)).toBe('월 1회로 제한한다')
+    expect(parsed.searchParams.get(REFERENCE_SCROLL_LOCATION_PARAM)).toBe('3-2. 이용 제한')
   })
 })
 

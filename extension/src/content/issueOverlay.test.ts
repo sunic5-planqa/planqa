@@ -8,10 +8,12 @@ import {
   formatKstTimestamp,
   getActiveDuplicatePageId,
   scrollToLocation,
+  scrollToReferencedLocationFromUrl,
   setActiveSuggestion,
   showQaPassedBadge,
 } from './issueOverlay'
 import type { EditableSuggestionLocation, SuggestionLocation } from './messages'
+import { REFERENCE_SCROLL_LOCATION_PARAM, REFERENCE_SCROLL_TEXT_PARAM } from './referenceScrollParams'
 
 const CURRENT: EditableSuggestionLocation = {
   text: '3사만 지원, 페이코 미지원',
@@ -377,6 +379,36 @@ describe('scrollToLocation', () => {
     const result = scrollToLocation({ text: '문서에 없는 문구', location: '문서에 없는 제목' })
 
     expect(result).toBe(false)
+  })
+})
+
+describe('scrollToReferencedLocationFromUrl', () => {
+  // 참고문서를 새 탭으로 열 때(confluence-extractor.ts) 그 탭 URL에 실어 보낸 위치로, 이 탭이
+  // 로드되자마자 스스로 스크롤한다.
+  it('scrolls to the location encoded in the URL and strips those params from it', () => {
+    const scrollSpy = vi.fn()
+    window.scrollTo = scrollSpy
+    const params = new URLSearchParams({
+      [REFERENCE_SCROLL_TEXT_PARAM]: FIRST_PARAGRAPH_FULL_TEXT,
+      [REFERENCE_SCROLL_LOCATION_PARAM]: '결제 수단',
+    })
+    ;(window as unknown as HappyDomWindow).happyDOM.setURL(
+      `http://localhost:8000/mock-confluence/pages/${ORIGINAL_PAGE_ID}?${params}`,
+    )
+
+    scrollToReferencedLocationFromUrl()
+
+    expect(scrollSpy).toHaveBeenCalled()
+    expect(window.location.search).toBe('')
+  })
+
+  it('does nothing when the URL carries neither scroll param', () => {
+    const scrollSpy = vi.fn()
+    window.scrollTo = scrollSpy
+
+    scrollToReferencedLocationFromUrl()
+
+    expect(scrollSpy).not.toHaveBeenCalled()
   })
 })
 

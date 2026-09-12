@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from sunnic_backend.config import settings
-from sunnic_backend.qa_engine.review_agent.llm.anthropic import AnthropicClient
+from sunnic_backend.qa_engine.review_agent.llm.openai_client import OpenAIClient
 
 router = APIRouter(tags=["issues"])
 
@@ -38,10 +38,11 @@ class SimilarityCheckResponse(BaseModel):
 # 피드백: "기획자들이 신중하게 고치는데도 표현이 다르면 무조건 경고가 뜬다"). 특히 AI 제안이
 # 구체적 대체 문구가 아니라 "~할 것을 고려해보세요" 같은 지시형 안내일 때, 글자 유사도는 사람이
 # 아무리 정확하게 고쳐도 항상 낮게 나와 — 검증기준/검증이유까지 같이 주고 "이 수정이 실제로 그
-# 문제를 해결했는가"를 직접 물어보는 방식으로 바꿨다. 저비용 모델(Haiku)로 저장 1회당 1콜만 추가.
+# 문제를 해결했는가"를 직접 물어보는 방식으로 바꿨다. 저비용 모델(원래 Haiku)로 저장 1회당 1콜만
+# 추가 — ANTHROPIC_API_KEY 무효화(2026-09-12)로 qa_jobs.py와 같은 이유로 OpenAI로 임시 전환.
 @router.post("/issues/similarity-check", response_model=SimilarityCheckResponse)
 async def check_edit_similarity(request: SimilarityCheckRequest) -> SimilarityCheckResponse:
-    llm = AnthropicClient(model=settings.sunnic_haiku_model, api_key=settings.anthropic_api_key)
+    llm = OpenAIClient(model=settings.sunnic_openai_model, api_key=settings.openai_api_key)
     prompt = (
         f"Original flagged text: {request.original_text!r}\n"
         f"Criteria (검증기준): {request.criteria!r}\n"

@@ -18,8 +18,8 @@ from sunnic_backend.models.numbering_issue import NumberingIssue
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
 from sunnic_backend.qa_engine.numbering_validation import validate_numbering
 from sunnic_backend.qa_engine.review_agent.document import parse_document
-from sunnic_backend.qa_engine.review_agent.llm.anthropic import AnthropicClient
 from sunnic_backend.qa_engine.review_agent.llm.gemini import GeminiClient
+from sunnic_backend.qa_engine.review_agent.llm.openai_client import OpenAIClient
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
     RuleBook,
@@ -318,16 +318,18 @@ def _run_review_sync(
     xdc_aliases: dict[str, str] | None,
     extra_absence_check_rule_ids: frozenset[str] = frozenset(),
 ) -> ReviewResult:
-    # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
-    # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
+    # review_agent's LLM clients are blocking/sync (retry backoff uses time.sleep) — this whole
+    # call runs inside asyncio.to_thread so it never blocks the event loop.
     #
     # bundled_screen_hybrid.review_document()이 screen_llm/confirm_llm을 각각 한 번씩 받는
     # 구조라, LLMClient 프로토콜(complete_json)만 만족하면 어느 백엔드든 그대로 끼워 넣을 수
     # 있다 — instrumentation.isolate_client()도 별도 .isolate() 없이 copy.copy() + 새 usage
     # 리스트로 안전하게 격리된다(코드 변경 불필요). 1차 스크리닝(저비용, over-flag 의도) = Gemini
-    # Flash-Lite, 2차 정밀검증(고비용, 정밀) = Sonnet이 정상 경로다.
+    # Flash-Lite. 2차 정밀검증은 원래 Sonnet(AnthropicClient)이 정상 경로였는데, ANTHROPIC_API_KEY가
+    # 무효화돼서(2026-09-12 실사용 확인, 401 invalid) 임시로 OpenAI(gpt-5-mini)로 돌린다 —
+    # OpenAIClient는 이전에도 같은 이유로(Gemini 키 문제) 잠깐 대타로 쓰인 적 있어 이미 구현돼 있다.
     screen_llm = GeminiClient(model=settings.sunnic_gemini_model, api_keys=settings.gemini_api_keys)
-    confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
+    confirm_llm = OpenAIClient(model=settings.sunnic_openai_model, api_key=settings.openai_api_key)
     result = review_document(
         doc_id,
         document_text,

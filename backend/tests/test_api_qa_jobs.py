@@ -80,7 +80,7 @@ class FakeAnthropicClient:
 
 
 async def test_qa_job_runs_pipeline_and_produces_mapped_issues(monkeypatch) -> None:
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
@@ -130,7 +130,7 @@ async def test_qa_job_create_returns_404_for_unknown_document() -> None:
 # team_code 없이 호출하는 기존 경로가 이전(팀 규칙 기능 도입 전)과 동일하게 동작하는지에 대한
 # 회귀 테스트 — CreateQAJobRequest에 기본값이 있어 바디 없이 POST해도 그대로 통과해야 한다.
 async def test_qa_job_create_without_body_still_works(monkeypatch) -> None:
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
@@ -150,7 +150,7 @@ async def test_qa_job_create_without_body_still_works(monkeypatch) -> None:
 # 그대로 반환하는 어댑터 계약(test_team_rule_adapter.py에서 단위 테스트됨)이 실제 API 경로에서도
 # QA 실행을 방해하지 않는지 확인.
 async def test_qa_job_create_with_team_code_but_no_team_rules_still_succeeds(monkeypatch) -> None:
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
@@ -306,11 +306,10 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
         return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(issue,))
 
     monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
-    # TEMP: _run_review_sync currently constructs GeminiClient for both screen_llm/confirm_llm
-    # (see its own TEMP comment) — patch that name instead until ANTHROPIC_API_KEY is ready and
-    # confirm_llm moves to AnthropicClient, or this double never gets used and the test hits the
-    # real Gemini API.
+    # review_document() is faked above, but _run_review_sync still constructs screen_llm/
+    # confirm_llm before calling it — patch both client names so neither hits a real API.
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -369,7 +368,7 @@ async def test_qa_job_with_reference_document_ids_passes_texts_and_maps_xdc_issu
         return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(issue,))
 
     monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
@@ -756,7 +755,7 @@ def test_build_heading_numbers_numbers_sub_headings_within_each_unit() -> None:
 
 
 async def test_qa_job_issues_include_location_number_computed_from_heading_order(monkeypatch) -> None:
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     document = "# 제목\n\n## 배경\n\n간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원.\n"

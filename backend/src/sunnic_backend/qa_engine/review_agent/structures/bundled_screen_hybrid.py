@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import TypeVar
 
 from sunnic_backend.qa_engine.review_agent.dedupe import dedupe_issues
 from sunnic_backend.qa_engine.review_agent.document import (
@@ -30,6 +32,22 @@ from sunnic_backend.qa_engine.review_agent.structures.fewshot_bank import (
 )
 from sunnic_backend.qa_engine.review_agent.tiers import ABSENCE_CHECK_RULE_IDS
 from sunnic_backend.qa_engine.review_agent.verifier import is_reference_excused_by_rule
+
+_T = TypeVar("_T")
+
+
+# Shared by every independent-branch dispatch below (Paragraph/Document passes, MI/AE
+# false-positive re-verification): skips thread-pool setup/teardown entirely when there's
+# only one branch (nothing to run concurrently with anyway), and caps worker count so a
+# document with many branches (e.g. dozens of MI/AE findings) can't spin up one OS thread
+# per branch — that's a thundering-herd risk against the LLM backend, not real parallelism.
+def _run_concurrently(jobs: Sequence[Callable[[], _T]], *, max_workers: int) -> list[_T]:
+    if len(jobs) == 1:
+        return [jobs[0]()]
+    with ThreadPoolExecutor(max_workers=min(len(jobs), max_workers)) as pool:
+        futures = [pool.submit(job) for job in jobs]
+        return [future.result() for future in futures]
+
 
 # bundled_screen_hybrid — bundled_screen(룰텍스트만)과 bundled_screen_fewshot(퓨샷만) 사이의
 # 세 번째 콘텐츠 조합. 콜통합 버전이라 카테고리별로 안 쪼개고 패스당 screen 1콜+confirm
@@ -421,26 +439,63 @@ _FALSE_POSITIVE_VERIFIERS: dict[str, Callable[[str, Issue, LLMClient], bool]] = 
 }
 
 
-def _verify_false_positives(
-    issues: tuple[Issue, ...], document_text: str, rulebook: RuleBook, llm: LLMClient, events: list[CallEvent]
-) -> tuple[Issue, ...]:
-    verified: list[Issue] = []
-    for issue in issues:
-        verify = _FALSE_POSITIVE_VERIFIERS.get(rulebook.category_of(issue.rule_id) or "")
-        if verify is None:
-            verified.append(issue)
-            continue
+# Isolates+merges internally (self-contained, same shape as _run_pass) so every call site —
+# solo or dispatched via _run_concurrently below — goes through the exact same isolate/merge
+# path instead of the dispatcher having to special-case "only one branch, skip isolation".
+def _verify_one_false_positive(
+    index: int, issue: Issue, document_text: str, verify: Callable[[str, Issue, LLMClient], bool], llm: LLMClient
+) -> tuple[bool, list[CallEvent]]:
+    call_events: list[CallEvent] = []
+    isolated = isolate_client(llm, key=index)
+    try:
         kept = record_call(
-            llm,
+            isolated,
             stage="verify_fp",
             tier=None,
             rule_ids=(issue.rule_id,),
-            events=events,
-            call=lambda issue=issue, verify=verify: verify(document_text, issue, llm),
+            events=call_events,
+            call=lambda: verify(document_text, issue, isolated),
         )
-        if kept:
-            verified.append(issue)
-    return tuple(verified)
+        return kept, call_events
+    finally:
+        merge_usage(llm, isolated)
+
+
+# Cap on concurrent MI/AE re-verification calls (see _run_concurrently) — high enough that
+# realistic documents (a handful to a few dozen MI/AE findings) still run fully in parallel,
+# low enough that a document with an unusually large number of findings doesn't fire that
+# many simultaneous LLM requests at once.
+_MAX_FALSE_POSITIVE_VERIFY_WORKERS = 8
+
+
+# Each MI/AE finding's re-verification is a single independent LLM call (§ its own docstring
+# above) — nothing about one finding's verdict depends on another's. Running them one at a
+# time was the single biggest contributor to total QA job wall time on documents with many
+# MI/AE findings (reasoning-model confirm calls of ~10-40s each, purely serial). Dispatched
+# concurrently instead via the same _run_concurrently helper _run_pass's Paragraph/Document
+# dispatch uses below.
+def _verify_false_positives(
+    issues: tuple[Issue, ...], document_text: str, rulebook: RuleBook, llm: LLMClient, events: list[CallEvent]
+) -> tuple[Issue, ...]:
+    plans = [(issue, _FALSE_POSITIVE_VERIFIERS.get(rulebook.category_of(issue.rule_id) or "")) for issue in issues]
+    to_verify = [(i, issue, verify) for i, (issue, verify) in enumerate(plans) if verify is not None]
+    if not to_verify:
+        return issues
+
+    # Preserves the original issues order in the output — a plain passthrough (no verifier
+    # for that category) defaults to kept=True and never touches this list.
+    kept = [True] * len(issues)
+
+    jobs = [
+        functools.partial(_verify_one_false_positive, index, issue, document_text, verify, llm)
+        for index, issue, verify in to_verify
+    ]
+    results = _run_concurrently(jobs, max_workers=_MAX_FALSE_POSITIVE_VERIFY_WORKERS)
+    for (index, _issue, _verify), (result, call_events) in zip(to_verify, results, strict=True):
+        events.extend(call_events)
+        kept[index] = result
+
+    return tuple(issue for issue, keep in zip(issues, kept, strict=True) if keep)
 
 
 # ---- 타문서 정합성(XDC) — 참고문서가 있을 때만 활성화되는 별도 confirm 트랙 ----
@@ -751,43 +806,31 @@ def review_document(
 
     # Paragraph and Document passes only depend on the already-computed global_context, not
     # on each other, so they run concurrently instead of sequentially doubling the wall
-    # time. See _run_pass for why each pass needs its own isolated client copy. When only
-    # one pass is actually active (the other tier's rules/chunks were empty), there's
-    # nothing to run concurrently with, so call it directly — no point paying thread-pool
-    # setup/teardown for a single sequential call.
-    if len(active_passes) == 1:
-        level, rules, chunks = active_passes[0]
-        issues, pass_events, error = _run_pass(
-            level, rules, chunks, doc_id, global_context, document_text, rulebook, screen_llm, confirm_llm, xdc_context
-        )
-        all_issues.extend(issues)
-        events.extend(pass_events)
-        if error:
-            tier_errors.append(error)
-    elif active_passes:
-        with ThreadPoolExecutor(max_workers=len(active_passes)) as pool:
-            futures = {
-                level: pool.submit(
-                    _run_pass,
-                    level,
-                    rules,
-                    chunks,
-                    doc_id,
-                    global_context,
-                    document_text,
-                    rulebook,
-                    screen_llm,
-                    confirm_llm,
-                    xdc_context,
-                )
-                for level, rules, chunks in active_passes
-            }
-            for level, future in futures.items():
-                issues, pass_events, error = future.result()
-                all_issues.extend(issues)
-                events.extend(pass_events)
-                if error:
-                    tier_errors.append(error)
+    # time, via the same _run_concurrently helper _verify_false_positives uses below. See
+    # _run_pass for why each pass isolates+merges its own client copies internally — this
+    # dispatch loop doesn't need to know about that at all.
+    if active_passes:
+        jobs = [
+            functools.partial(
+                _run_pass,
+                level,
+                rules,
+                chunks,
+                doc_id,
+                global_context,
+                document_text,
+                rulebook,
+                screen_llm,
+                confirm_llm,
+                xdc_context,
+            )
+            for level, rules, chunks in active_passes
+        ]
+        for issues, pass_events, error in _run_concurrently(jobs, max_workers=len(active_passes)):
+            all_issues.extend(issues)
+            events.extend(pass_events)
+            if error:
+                tier_errors.append(error)
 
     deduped_issues = tuple(dedupe_issues(all_issues))
     try:

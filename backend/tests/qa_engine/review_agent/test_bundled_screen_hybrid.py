@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import parse_rulebook
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.schema import Issue, Level
+from sunnic_backend.qa_engine.review_agent.structures import bundled_screen_hybrid
 from sunnic_backend.qa_engine.review_agent.structures.bundled_screen_hybrid import (
+    _run_concurrently,
     _verify_ae_finding,
     _verify_mi_finding,
     review_document,
@@ -427,7 +431,7 @@ def test_review_document_drops_an_mi_finding_the_fp_verifier_rejects(rulebook_pa
     # into review_document(), not just unit-tested in isolation above.
     rulebook = parse_rulebook(rulebook_path)
     confirm_llm = ScriptedLLM(
-        [{"summary": ""}, {"actually_missing": False, "reason": "8장에 이미 있음"}],
+        [{"summary": ""}],
         keyed_responses={
             Level.PARAGRAPH: [
                 {
@@ -443,6 +447,10 @@ def test_review_document_drops_an_mi_finding_the_fp_verifier_rejects(rulebook_pa
                     ]
                 }
             ],
+            # _verify_one_false_positive isolates by the deduped issue's position (see
+            # _verify_false_positives) even for a single finding — not a Level, since this is
+            # the verify-stage branch, not the screen/confirm passes above.
+            0: [{"actually_missing": False, "reason": "8장에 이미 있음"}],
         },
     )
     screen_llm = ScriptedLLM(
@@ -458,3 +466,106 @@ def test_review_document_drops_an_mi_finding_the_fp_verifier_rejects(rulebook_pa
 
     assert result.issues == ()
     assert result.tier_errors == ()
+
+
+def test_review_document_verifies_multiple_mi_findings_concurrently_preserving_order(rulebook_path):
+    # Exercises _verify_false_positives' len(to_verify) > 1 branch (ThreadPoolExecutor +
+    # isolate_client/merge_usage) — the single-finding case above only covers the sequential
+    # fallback. Two MI candidates, verified with opposite verdicts, must come back with only
+    # the kept one and in the original relative order — not reordered by whichever thread
+    # happens to finish first.
+    rulebook = parse_rulebook(rulebook_path)
+    confirm_llm = ScriptedLLM(
+        [{"summary": ""}],
+        keyed_responses={
+            Level.PARAGRAPH: [
+                {
+                    "verdicts": [
+                        {
+                            "index": 0,
+                            "violated": True,
+                            "original_text": "간단한 목적 설명입니다.",
+                            "description": "d1",
+                            "fix_direction": "f1",
+                            "excused": False,
+                        },
+                        {
+                            "index": 1,
+                            "violated": True,
+                            "original_text": "두번째 문단입니다.",
+                            "description": "d2",
+                            "fix_direction": "f2",
+                            "excused": False,
+                        },
+                    ]
+                }
+            ],
+            # keyed by the deduped issue's position (see _verify_false_positives'
+            # isolate_client(llm, key=index)) — not a Level, since these two calls are the
+            # verify-stage branches, not the screen/confirm passes above.
+            0: [{"actually_missing": False, "reason": "8장에 이미 있음"}],
+            1: [{"actually_missing": True, "reason": "정말 없음"}],
+        },
+    )
+    screen_llm = ScriptedLLM(
+        keyed_responses={
+            Level.PARAGRAPH: [
+                {
+                    "candidates": [
+                        {"chunk_index": 0, "rule_id": "MI-01", "quoted_text": "간단한 목적 설명입니다.", "reason": "r1"},
+                        {"chunk_index": 1, "rule_id": "MI-01", "quoted_text": "두번째 문단입니다.", "reason": "r2"},
+                    ]
+                }
+            ],
+            Level.DOCUMENT: [_EMPTY_CANDIDATES],
+        }
+    )
+
+    result = review_document("DOC-TEST", _DOC, rulebook, screen_llm, confirm_llm)
+
+    [issue] = result.issues
+    assert issue.original_text == "두번째 문단입니다."
+    assert result.tier_errors == ()
+
+
+def test_run_concurrently_caps_worker_count(monkeypatch):
+    # A document with many MI/AE findings shouldn't fire one thread per finding — that's a
+    # thundering-herd risk against the LLM backend, not real parallelism gain.
+    recorded_max_workers: list[int] = []
+    real_executor = bundled_screen_hybrid.ThreadPoolExecutor
+
+    def spying_executor(*, max_workers):
+        recorded_max_workers.append(max_workers)
+        return real_executor(max_workers=max_workers)
+
+    monkeypatch.setattr(bundled_screen_hybrid, "ThreadPoolExecutor", spying_executor)
+
+    jobs = [(lambda i=i: i) for i in range(10)]
+    results = _run_concurrently(jobs, max_workers=3)
+
+    assert recorded_max_workers == [3]
+    assert results == list(range(10))
+
+
+def test_run_concurrently_runs_every_job_even_when_one_raises():
+    # Each job (e.g. _verify_one_false_positive) isolates and merges its own LLM client
+    # copy internally — that must happen for every job regardless of whether some other
+    # job raises, not just for the ones whose .result() happens to get read before the
+    # first exception surfaces.
+    completed: list[int] = []
+
+    def make_job(i: int):
+        def job() -> int:
+            if i == 1:
+                raise RuntimeError("boom")
+            completed.append(i)
+            return i
+
+        return job
+
+    jobs = [make_job(i) for i in range(4)]
+
+    with pytest.raises(RuntimeError):
+        _run_concurrently(jobs, max_workers=4)
+
+    assert sorted(completed) == [0, 2, 3]

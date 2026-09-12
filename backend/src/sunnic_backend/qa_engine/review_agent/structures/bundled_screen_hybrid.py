@@ -518,6 +518,12 @@ _CONFIRM_XDC_SYSTEM = (
     "excuse_reason) when a documented policy-change approval justifies the difference. When "
     "confirming a conflict, classify difference_type as one of \"value\", \"scope\", "
     "\"condition\", \"outcome\" (whichever axis the two documents actually disagree on).\n"
+    # 같은 이유로 스크리닝/기본 confirm 쪽에 이미 있는 한국어 강제 지시(_SCREEN_HYBRID_BODY/
+    # _CONFIRM_HYBRID_SYSTEM)가 이 XDC confirm 프롬프트엔 없었다 — Gemini/Sonnet/o3-mini는
+    # 한국어 룰 텍스트만으로도 한국어로 답했지만, gpt-4.1-mini로 바꾸면서 그 암묵적 가정이
+    # 깨져 영어로 나오는 게 실사용 중 확인됨.
+    "Write \"description\", \"rationale\", \"fix_direction\", and \"excuse_reason\" in "
+    "Korean, regardless of what language this instruction is written in.\n"
     'Respond with JSON only: {"verdicts": [{"index": <int>, "violated": <bool>, "rule_id": '
     '"<id or null>", "description": "<what conflicts>", "rationale": "<why it conflicts>", '
     '"fix_direction": "<suggested revision>", "excused": <bool>, "excuse_reason": "<string or '

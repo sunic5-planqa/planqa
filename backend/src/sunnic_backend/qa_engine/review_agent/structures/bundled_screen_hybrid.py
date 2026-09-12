@@ -790,8 +790,12 @@ def review_document(
             if cached is not None:
                 reference_indices.append(cached)
                 continue
-            reference_tree = parse_document(reference_doc_id, reference_text)
-            reference_chunks = list(reference_tree.chunks_for(Level.PARAGRAPH))
+            try:
+                reference_tree = parse_document(reference_doc_id, reference_text)
+                reference_chunks = list(reference_tree.chunks_for(Level.PARAGRAPH))
+            except Exception as error:  # noqa: BLE001 - one bad reference doc shouldn't sink the review
+                tier_errors.append(f"참고문서 {reference_doc_id} 인덱싱 실패: {error}")
+                continue
             to_index.append((cache_key, reference_doc_id, reference_chunks))
 
         if to_index:

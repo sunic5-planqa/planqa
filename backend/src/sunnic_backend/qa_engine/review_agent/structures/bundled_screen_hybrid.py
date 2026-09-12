@@ -421,26 +421,62 @@ _FALSE_POSITIVE_VERIFIERS: dict[str, Callable[[str, Issue, LLMClient], bool]] = 
 }
 
 
+def _verify_one_false_positive(
+    issue: Issue, document_text: str, verify: Callable[[str, Issue, LLMClient], bool], llm: LLMClient
+) -> tuple[bool, list[CallEvent]]:
+    call_events: list[CallEvent] = []
+    kept = record_call(
+        llm,
+        stage="verify_fp",
+        tier=None,
+        rule_ids=(issue.rule_id,),
+        events=call_events,
+        call=lambda: verify(document_text, issue, llm),
+    )
+    return kept, call_events
+
+
+# Each MI/AE finding's re-verification is a single independent LLM call (§ its own docstring
+# above) — nothing about one finding's verdict depends on another's. Running them one at a
+# time was the single biggest contributor to total QA job wall time on documents with many
+# MI/AE findings (reasoning-model confirm calls of ~10-40s each, purely serial). Dispatched
+# concurrently instead, same isolate_client/merge_usage pattern _run_pass uses for its
+# Paragraph/Document passes above — each branch gets its own usage-list copy so concurrent
+# record_call()s don't race on the same shared list (see instrumentation.record_call's own
+# docstring on why that's required, not optional).
 def _verify_false_positives(
     issues: tuple[Issue, ...], document_text: str, rulebook: RuleBook, llm: LLMClient, events: list[CallEvent]
 ) -> tuple[Issue, ...]:
-    verified: list[Issue] = []
-    for issue in issues:
-        verify = _FALSE_POSITIVE_VERIFIERS.get(rulebook.category_of(issue.rule_id) or "")
-        if verify is None:
-            verified.append(issue)
-            continue
-        kept = record_call(
-            llm,
-            stage="verify_fp",
-            tier=None,
-            rule_ids=(issue.rule_id,),
-            events=events,
-            call=lambda issue=issue, verify=verify: verify(document_text, issue, llm),
-        )
-        if kept:
-            verified.append(issue)
-    return tuple(verified)
+    plans = [(issue, _FALSE_POSITIVE_VERIFIERS.get(rulebook.category_of(issue.rule_id) or "")) for issue in issues]
+    to_verify = [(i, issue, verify) for i, (issue, verify) in enumerate(plans) if verify is not None]
+    if not to_verify:
+        return issues
+
+    # Preserves the original issues order in the output — a plain passthrough (no verifier
+    # for that category) defaults to kept=True and never touches this list.
+    kept = [True] * len(issues)
+
+    if len(to_verify) == 1:
+        index, issue, verify = to_verify[0]
+        result, call_events = _verify_one_false_positive(issue, document_text, verify, llm)
+        events.extend(call_events)
+        kept[index] = result
+    else:
+        with ThreadPoolExecutor(max_workers=len(to_verify)) as pool:
+            isolated_by_index = {index: isolate_client(llm, key=index) for index, _issue, _verify in to_verify}
+            futures = [
+                (index, pool.submit(_verify_one_false_positive, issue, document_text, verify, isolated_by_index[index]))
+                for index, issue, verify in to_verify
+            ]
+            for index, future in futures:
+                try:
+                    result, call_events = future.result()
+                    events.extend(call_events)
+                    kept[index] = result
+                finally:
+                    merge_usage(llm, isolated_by_index[index])
+
+    return tuple(issue for issue, keep in zip(issues, kept, strict=True) if keep)
 
 
 # ---- 타문서 정합성(XDC) — 참고문서가 있을 때만 활성화되는 별도 confirm 트랙 ----

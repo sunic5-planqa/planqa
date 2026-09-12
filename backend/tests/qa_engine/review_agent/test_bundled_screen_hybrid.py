@@ -458,3 +458,63 @@ def test_review_document_drops_an_mi_finding_the_fp_verifier_rejects(rulebook_pa
 
     assert result.issues == ()
     assert result.tier_errors == ()
+
+
+def test_review_document_verifies_multiple_mi_findings_concurrently_preserving_order(rulebook_path):
+    # Exercises _verify_false_positives' len(to_verify) > 1 branch (ThreadPoolExecutor +
+    # isolate_client/merge_usage) — the single-finding case above only covers the sequential
+    # fallback. Two MI candidates, verified with opposite verdicts, must come back with only
+    # the kept one and in the original relative order — not reordered by whichever thread
+    # happens to finish first.
+    rulebook = parse_rulebook(rulebook_path)
+    confirm_llm = ScriptedLLM(
+        [{"summary": ""}],
+        keyed_responses={
+            Level.PARAGRAPH: [
+                {
+                    "verdicts": [
+                        {
+                            "index": 0,
+                            "violated": True,
+                            "original_text": "간단한 목적 설명입니다.",
+                            "description": "d1",
+                            "fix_direction": "f1",
+                            "excused": False,
+                        },
+                        {
+                            "index": 1,
+                            "violated": True,
+                            "original_text": "두번째 문단입니다.",
+                            "description": "d2",
+                            "fix_direction": "f2",
+                            "excused": False,
+                        },
+                    ]
+                }
+            ],
+            # keyed by the deduped issue's position (see _verify_false_positives'
+            # isolate_client(llm, key=index)) — not a Level, since these two calls are the
+            # verify-stage branches, not the screen/confirm passes above.
+            0: [{"actually_missing": False, "reason": "8장에 이미 있음"}],
+            1: [{"actually_missing": True, "reason": "정말 없음"}],
+        },
+    )
+    screen_llm = ScriptedLLM(
+        keyed_responses={
+            Level.PARAGRAPH: [
+                {
+                    "candidates": [
+                        {"chunk_index": 0, "rule_id": "MI-01", "quoted_text": "간단한 목적 설명입니다.", "reason": "r1"},
+                        {"chunk_index": 1, "rule_id": "MI-01", "quoted_text": "두번째 문단입니다.", "reason": "r2"},
+                    ]
+                }
+            ],
+            Level.DOCUMENT: [_EMPTY_CANDIDATES],
+        }
+    )
+
+    result = review_document("DOC-TEST", _DOC, rulebook, screen_llm, confirm_llm)
+
+    [issue] = result.issues
+    assert issue.original_text == "두번째 문단입니다."
+    assert result.tier_errors == ()

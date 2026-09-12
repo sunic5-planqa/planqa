@@ -702,3 +702,13 @@ def test_review_document_keeps_the_other_reference_index_when_one_fails_to_parse
     assert "REF-BAD" in result.tier_errors[0]
     reference_index_calls = [event for event in result.call_events if event.stage == "xdc_reference_index"]
     assert len(reference_index_calls) == 1
+
+
+def test_confirm_xdc_system_prompt_requires_korean_output():
+    # Regression: Gemini/Sonnet/o3-mini happened to answer in Korean just from the Korean
+    # rule text in the prompt, with no explicit instruction — _SCREEN_HYBRID_BODY/
+    # _CONFIRM_HYBRID_SYSTEM already got an explicit Korean-forcing line for this reason
+    # (2026-08-30), but _CONFIRM_XDC_SYSTEM (added later, for the XDC track) never did.
+    # Switching confirm_llm to gpt-4.1-mini broke that implicit assumption there — XDC
+    # findings started coming back in English (found live, 2026-09-12).
+    assert "Korean" in bundled_screen_hybrid._CONFIRM_XDC_SYSTEM

@@ -284,7 +284,17 @@ def _confirm_pass(
 
     response = llm.complete_json(system=_CONFIRM_HYBRID_SYSTEM, prompt=prompt)
     raw_verdicts = response.get("verdicts", []) if isinstance(response, dict) else []
-    by_index = {item["index"]: item for item in raw_verdicts if isinstance(item, dict) and "index" in item}
+    # "index" comes back as a plain int from Anthropic but some models (seen with OpenAI)
+    # emit it as a numeric string instead — coerce so a lookup by int i below still matches,
+    # rather than silently dropping every verdict (no exception, just an empty issues list).
+    by_index: dict[int, dict] = {}
+    for item in raw_verdicts:
+        if not (isinstance(item, dict) and "index" in item):
+            continue
+        try:
+            by_index[int(item["index"])] = item
+        except (TypeError, ValueError):
+            continue
 
     issues: list[Issue] = []
     for i, candidate in enumerate(candidates):
@@ -495,7 +505,15 @@ def _confirm_xdc_pass(
 
     response = llm.complete_json(system=_CONFIRM_XDC_SYSTEM, prompt=prompt)
     raw_verdicts = response.get("verdicts", []) if isinstance(response, dict) else []
-    by_index = {item["index"]: item for item in raw_verdicts if isinstance(item, dict) and "index" in item}
+    # same int-coercion guard as _confirm_pass above — see its comment.
+    by_index: dict[int, dict] = {}
+    for item in raw_verdicts:
+        if not (isinstance(item, dict) and "index" in item):
+            continue
+        try:
+            by_index[int(item["index"])] = item
+        except (TypeError, ValueError):
+            continue
 
     issues: list[Issue] = []
     for i, pair in enumerate(pairs):

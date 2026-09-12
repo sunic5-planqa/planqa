@@ -366,28 +366,42 @@ def _issue_start(document_text: str, input_text: str, location: str) -> int:
     return len(document_text)
 
 
-# 원문 헤딩 자체에 번호가 있든 없든(작성자마다 제각각이라 신뢰 불가 — 실사용 피드백으로 확인됨)
-# 문서 안에서 소주제(logical unit)/그 하위 소소주제(paragraph 위계 헤딩)가 실제로 등장하는 순서를
-# 우리가 직접 세어 "2", "2-1" 같은 번호를 계산한다. review_agent의 parse_document를 그대로
-# 호출만 하고(벤더링 정책상 그 파일 자체는 안 건드림) 반환된 Chunk.location 문자열을 키로 쓴다 —
-# location은 document.py가 헤딩 텍스트를 그대로 담아 만든 값이라, Issue.location과 정확히 같은
-# 문자열로 다시 나온다.
+# numbering_validation.py의 _NUMBER_RE/extension의 locationLabel.ts LEADING_NUMBER_RE와 동일한
+# 조건: 숫자 뒤에 "."이나 공백이 바로 이어질 때만 "번호"로 인정한다("2024년 정책"의 "2024"를
+# 번호로 오인하지 않기 위함). 세 곳이 각자 자기 목적에 맞게 독립적으로 이 판정을 하므로(이
+# 모듈은 review_agent 파이프라인과, numbering_validation.py는 그와 완전히 분리된 규칙 기반
+# 검사기와 맞물려 있어 공유 헬퍼로 묶기엔 결합도가 더 크다), 여기서도 똑같이 하나 둔다.
+_OWN_HEADING_NUMBER_RE = re.compile(r"^\s*(\d+(?:[-.]\d+)*)[.\s]+")
+
+
+def _own_heading_number(heading_text: str) -> str | None:
+    match = _OWN_HEADING_NUMBER_RE.match(heading_text)
+    return match.group(1) if match else None
+
+
+# 헤딩 자체에 이미 (신뢰할 만한 형태의) 번호가 붙어 있으면 그 번호를 그대로 쓴다 — 원래는 작성자
+# 번호가 제각각이라 항상 등장 순서로 다시 셌었지만(2026-08-11), 그러면 저자가 일관되게 잘 번호를
+# 매긴 문서에서도 "1. 목적" 앞에 저자가 안 세는(또는 번호 없는) 헤딩이 하나라도 더 있으면 그 뒤
+# 전부가 밀려 보이는 문제가 실사용 중 확인됨(예: "4-1"이 "5-1"로 표시) — 원문 번호가 있으면 굳이
+# 다시 셀 필요가 없다. 번호가 없는 헤딩만 여전히 등장 순서로 계산해, 번호가 아예 없는 문서에서의
+# 기존 동작(안전하게 순서대로 매김)은 그대로 유지한다.
 def _build_heading_numbers(document_text: str) -> dict[str, str]:
     tree = parse_document("_numbering", document_text)
     numbers: dict[str, str] = {}
     for index, unit in enumerate(tree.logical_units, start=1):
-        numbers[unit.location] = str(index)
+        numbers[unit.location] = _own_heading_number(unit.location) or str(index)
 
     sub_index_by_unit: dict[str, int] = {}
     for paragraph in tree.paragraphs:
         if " > " not in paragraph.location:
             continue
-        unit_label = paragraph.location.split(" > ", 1)[0]
+        unit_label, sub_label = paragraph.location.split(" > ", 1)
         unit_number = numbers.get(unit_label)
         if unit_number is None:
             continue
         sub_index_by_unit[unit_label] = sub_index_by_unit.get(unit_label, 0) + 1
-        numbers[paragraph.location] = f"{unit_number}-{sub_index_by_unit[unit_label]}"
+        own_number = _own_heading_number(sub_label)
+        numbers[paragraph.location] = own_number or f"{unit_number}-{sub_index_by_unit[unit_label]}"
     return numbers
 
 

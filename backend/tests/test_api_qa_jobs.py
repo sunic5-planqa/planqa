@@ -716,8 +716,7 @@ def test_to_issue_record_leaves_related_location_number_none_when_no_heading_mat
     assert record.related_location_number is None
 
 
-# 원문 헤딩 자체의 번호는 작성자마다 있기도 없기도 해서 신뢰할 수 없다는 게 실사용 피드백으로
-# 확인됨 — 문서 안 등장 순서를 우리가 직접 세어 번호를 매긴다.
+# 헤딩에 번호가 아예 없으면 등장 순서를 우리가 직접 세어 번호를 매긴다.
 def test_build_heading_numbers_numbers_logical_units_in_document_order() -> None:
     document = "# 제목\n\n## 배경\n\n본문1\n\n## 요구사항\n\n본문2\n"
 
@@ -726,15 +725,25 @@ def test_build_heading_numbers_numbers_logical_units_in_document_order() -> None
     assert numbers == {"배경": "1", "요구사항": "2"}
 
 
-def test_build_heading_numbers_ignores_the_authors_own_numbering() -> None:
-    # 작성자가 이미 "1. 배경"처럼 번호를 써놨어도, 그 문자열 자체가 location 값이니 그대로 키가
-    # 되고, 우리가 계산한 번호("1")는 그 문자열과 별개의 값으로 나온다 — 프론트가 원문 텍스트를
-    # 그대로 보여주면서 이 숫자를 덧붙이는 방식이라 코드가 원문 번호를 "무시"할 필요는 없다.
+def test_build_heading_numbers_trusts_the_authors_own_numbering_when_present() -> None:
     document = "# 제목\n\n## 1. 배경\n\n본문1\n\n## 2. 요구사항\n\n본문2\n"
 
     numbers = qa_jobs._build_heading_numbers(document)
 
     assert numbers == {"1. 배경": "1", "2. 요구사항": "2"}
+
+
+def test_build_heading_numbers_keeps_the_authors_number_despite_an_extra_heading_before_it() -> None:
+    # 실사용 중 확인된 버그: 작성자가 번호를 안 매긴(또는 번호를 안 세는) 헤딩이 앞에 하나
+    # 더 있으면, 등장 순서로만 세는 예전 방식은 그 뒤 모든 번호를 하나씩 밀어버렸다
+    # ("4-1. 반품 가능 기한"이 "5-1"로 표시). 작성자 번호가 있으면 등장 순서를 무시하고
+    # 그 번호를 그대로 써서, 이런 밀림이 생기지 않아야 한다.
+    document = "# 제목\n\n## 안내\n\n본문0\n\n## 4. 반품 정책\n\n### 4-1. 반품 가능 기한\n\n본문1\n"
+
+    numbers = qa_jobs._build_heading_numbers(document)
+
+    assert numbers["4. 반품 정책"] == "4"
+    assert numbers["4. 반품 정책 > 4-1. 반품 가능 기한"] == "4-1"
 
 
 def test_build_heading_numbers_numbers_sub_headings_within_each_unit() -> None:

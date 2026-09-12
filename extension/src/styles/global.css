@@ -1921,9 +1921,20 @@ textarea {
 
 .numbering-check-footer {
   display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 
-.numbering-check-footer .btn-cta {
+.numbering-check-update-reminder {
+  margin: 0;
+  text-align: center;
+}
+
+.numbering-check-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.numbering-check-footer-actions .btn-cta {
   flex: 1;
 }

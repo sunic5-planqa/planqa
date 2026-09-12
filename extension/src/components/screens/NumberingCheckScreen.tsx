@@ -236,14 +236,22 @@ export function NumberingCheckScreen() {
       </div>
 
       <div className="screen-footer numbering-check-footer">
-        {numberingIssues.length > 0 && (
-          <Button variant="outline-pill" onClick={() => void applySelected()} disabled={applying}>
-            넘버링 적용
+        {/* 이 확장은 컨플루언스 에디터의 contenteditable만 직접 고치고, 실제 게시(저장)는 건드리지
+            않는다 — 검토종료 직전에 컨플루언스 자체의 "업데이트" 버튼을 직접 눌러야 한다는 걸
+            안 놓치게 마지막 화면에 고정으로 띄워둔다. */}
+        <p className="notice numbering-check-update-reminder">
+          수정을 마쳤다면 컨플루언스의 <strong>업데이트</strong> 버튼을 눌러 저장해주세요.
+        </p>
+        <div className="numbering-check-footer-actions">
+          {numberingIssues.length > 0 && (
+            <Button variant="outline-pill" onClick={() => void applySelected()} disabled={applying}>
+              넘버링 적용
+            </Button>
+          )}
+          <Button className="btn-cta" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'main' })} disabled={applying}>
+            검토종료
           </Button>
-        )}
-        <Button className="btn-cta" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'main' })} disabled={applying}>
-          검토종료
-        </Button>
+        </div>
       </div>
     </div>
   )

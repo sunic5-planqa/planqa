@@ -724,6 +724,37 @@ def _run_pass(
             merge_usage(confirm_llm, isolated_confirm)
 
 
+# Cap on concurrent reference-document indexing calls (see _run_concurrently) — a QA job
+# rarely attaches more than a handful of reference documents, so this is mostly headroom,
+# not a real limiter.
+_MAX_REFERENCE_INDEX_WORKERS = 8
+
+
+# One reference document's indexing is an independent Gemini/OpenAI call (xdc.build_reference_
+# index) — nothing about one reference doc's index depends on another's. Isolates+merges
+# internally, same self-contained shape as _run_pass/_verify_one_false_positive, so this can
+# be dispatched through the same _run_concurrently helper as everything else here.
+def _index_one_reference_document(
+    key: int, reference_doc_id: str, reference_chunks: list[Chunk], llm: LLMClient
+) -> tuple[xdc.ReferenceIndex | None, str | None, list[CallEvent]]:
+    call_events: list[CallEvent] = []
+    isolated = isolate_client(llm, key=key)
+    try:
+        index = record_call(
+            isolated,
+            stage="xdc_reference_index",
+            tier=Level.PARAGRAPH,
+            rule_ids=(),
+            events=call_events,
+            call=lambda: xdc.build_reference_index(reference_doc_id, reference_chunks, isolated),
+        )
+        return index, None, call_events
+    except Exception as error:  # noqa: BLE001 - one bad reference doc shouldn't sink the review
+        return None, f"참고문서 {reference_doc_id} 인덱싱 실패: {error}", call_events
+    finally:
+        merge_usage(llm, isolated)
+
+
 def review_document(
     doc_id: str,
     document_text: str,
@@ -749,28 +780,40 @@ def review_document(
     if reference_documents and xdc_rulebook is not None:
         cache = reference_cache if reference_cache is not None else {}
         reference_indices: list[xdc.ReferenceIndex] = []
+        # 캐시에 이미 있는 참고문서는 이 자리에서 바로 채우고, 새로 인덱싱해야 하는 것만 아래에서
+        # 병렬 디스패치한다 — 여러 참고문서를 붙인 검토에서 이 루프가 순차였을 때(콜당 confirm_llm
+        # 왕복 1회, reasoning 모델이면 콜당 10-40s) 검토 시작 전에 그 합만큼 그대로 대기해야 했다.
+        to_index: list[tuple[str, str, list[Chunk]]] = []
         for reference_doc_id, reference_text in reference_documents:
             cache_key = f"{reference_doc_id}:{xdc.content_hash(reference_text)}"
-            index = cache.get(cache_key)
-            if index is None:
-                try:
-                    reference_tree = parse_document(reference_doc_id, reference_text)
-                    reference_chunks = list(reference_tree.chunks_for(Level.PARAGRAPH))
-                    # 아직 concurrent 패스가 시작되기 전(이 루프는 순차 실행)이라 confirm_llm을
-                    # isolate 없이 바로 써도 안전 — global_context 추출과 같은 이유.
-                    index = record_call(
-                        confirm_llm,
-                        stage="xdc_reference_index",
-                        tier=Level.PARAGRAPH,
-                        rule_ids=(),
-                        events=events,
-                        call=lambda: xdc.build_reference_index(reference_doc_id, reference_chunks, confirm_llm),
-                    )
-                    cache[cache_key] = index
-                except Exception as error:  # noqa: BLE001 - one bad reference doc shouldn't sink the review
-                    tier_errors.append(f"참고문서 {reference_doc_id} 인덱싱 실패: {error}")
+            cached = cache.get(cache_key)
+            if cached is not None:
+                reference_indices.append(cached)
+                continue
+            try:
+                reference_tree = parse_document(reference_doc_id, reference_text)
+                reference_chunks = list(reference_tree.chunks_for(Level.PARAGRAPH))
+            except Exception as error:  # noqa: BLE001 - one bad reference doc shouldn't sink the review
+                tier_errors.append(f"참고문서 {reference_doc_id} 인덱싱 실패: {error}")
+                continue
+            to_index.append((cache_key, reference_doc_id, reference_chunks))
+
+        if to_index:
+            jobs = [
+                functools.partial(_index_one_reference_document, i, reference_doc_id, chunks, confirm_llm)
+                for i, (_cache_key, reference_doc_id, chunks) in enumerate(to_index)
+            ]
+            indexed = _run_concurrently(jobs, max_workers=_MAX_REFERENCE_INDEX_WORKERS)
+            for (cache_key, _reference_doc_id, _chunks), (index, error, call_events) in zip(
+                to_index, indexed, strict=True
+            ):
+                events.extend(call_events)
+                if error:
+                    tier_errors.append(error)
                     continue
-            reference_indices.append(index)
+                cache[cache_key] = index
+                reference_indices.append(index)
+
         if reference_indices:
             xdc_context = _XdcContext(
                 xdc_rulebook=xdc_rulebook,

@@ -569,3 +569,136 @@ def test_run_concurrently_runs_every_job_even_when_one_raises():
         _run_concurrently(jobs, max_workers=4)
 
     assert sorted(completed) == [0, 2, 3]
+
+
+def test_review_document_indexes_multiple_reference_documents_concurrently(rulebook_path):
+    # Exercises the reference-document indexing loop's concurrent dispatch (was a purely
+    # sequential loop — one confirm_llm round-trip per reference doc, all on the critical
+    # path before the review even starts). Two reference docs, each keyed to its own
+    # xdc_reference_index response, must both actually get indexed (not silently dropped or
+    # mixed up by isolate_client(key=...) routing).
+    rulebook = parse_rulebook(rulebook_path)
+    xdc_rulebook = parse_rulebook(rulebook_path.parent / "xdc" / "xdc_rulebook_v1.0.md")
+
+    confirm_llm = ScriptedLLM(
+        [{"summary": ""}],
+        keyed_responses={
+            # keyed by the reference document's position in `reference_documents` (see
+            # _index_one_reference_document) — not a Level, since these are the reference-
+            # indexing branches, not the screen/confirm passes.
+            0: [{"decision_records": []}],
+            1: [{"decision_records": []}],
+        },
+    )
+    screen_llm = ScriptedLLM(
+        keyed_responses={
+            Level.PARAGRAPH: [_EMPTY_CANDIDATES],
+            Level.DOCUMENT: [_EMPTY_CANDIDATES],
+        }
+    )
+
+    result = review_document(
+        "DOC-TEST",
+        _DOC,
+        rulebook,
+        screen_llm,
+        confirm_llm,
+        reference_documents=[
+            ("REF-A", "# 참고문서 A\n\n## 정책\n\n내용입니다.\n"),
+            ("REF-B", "# 참고문서 B\n\n## 정책\n\n내용입니다.\n"),
+        ],
+        xdc_rulebook=xdc_rulebook,
+    )
+
+    assert result.tier_errors == ()
+    reference_index_calls = [event for event in result.call_events if event.stage == "xdc_reference_index"]
+    assert len(reference_index_calls) == 2
+
+
+def test_review_document_keeps_the_other_reference_index_when_one_fails(rulebook_path):
+    # One reference document's indexing call blowing up (e.g. a malformed/empty response
+    # queue) must not prevent the other reference document from being indexed — same
+    # per-branch isolation _verify_false_positives relies on.
+    rulebook = parse_rulebook(rulebook_path)
+    xdc_rulebook = parse_rulebook(rulebook_path.parent / "xdc" / "xdc_rulebook_v1.0.md")
+
+    confirm_llm = ScriptedLLM(
+        [{"summary": ""}],
+        keyed_responses={
+            0: [{"decision_records": []}],
+            # key 1 has no entry — ScriptedLLM.isolate() gives it an empty response queue,
+            # so its complete_json() call raises when the queue is exhausted.
+        },
+    )
+    screen_llm = ScriptedLLM(
+        keyed_responses={
+            Level.PARAGRAPH: [_EMPTY_CANDIDATES],
+            Level.DOCUMENT: [_EMPTY_CANDIDATES],
+        }
+    )
+
+    result = review_document(
+        "DOC-TEST",
+        _DOC,
+        rulebook,
+        screen_llm,
+        confirm_llm,
+        reference_documents=[
+            ("REF-A", "# 참고문서 A\n\n## 정책\n\n내용입니다.\n"),
+            ("REF-B", "# 참고문서 B\n\n## 정책\n\n내용입니다.\n"),
+        ],
+        xdc_rulebook=xdc_rulebook,
+    )
+
+    assert len(result.tier_errors) == 1
+    assert "REF-B" in result.tier_errors[0]
+    reference_index_calls = [event for event in result.call_events if event.stage == "xdc_reference_index"]
+    assert len(reference_index_calls) == 1
+
+
+def test_review_document_keeps_the_other_reference_index_when_one_fails_to_parse(rulebook_path, monkeypatch):
+    # A reference doc that fails to even parse/chunk (not just fails its indexing LLM call)
+    # must not sink the whole review either, and must not block the other reference doc from
+    # being indexed — parse_document/chunks_for run outside _index_one_reference_document's
+    # own try/except (they build the job's arguments before dispatch), so they need their own
+    # guard.
+    rulebook = parse_rulebook(rulebook_path)
+    xdc_rulebook = parse_rulebook(rulebook_path.parent / "xdc" / "xdc_rulebook_v1.0.md")
+
+    real_parse_document = bundled_screen_hybrid.parse_document
+
+    def flaky_parse_document(doc_id: str, text: str):
+        if doc_id == "REF-BAD":
+            raise ValueError("malformed reference document")
+        return real_parse_document(doc_id, text)
+
+    monkeypatch.setattr(bundled_screen_hybrid, "parse_document", flaky_parse_document)
+
+    confirm_llm = ScriptedLLM(
+        [{"summary": ""}],
+        keyed_responses={0: [{"decision_records": []}]},
+    )
+    screen_llm = ScriptedLLM(
+        keyed_responses={
+            Level.PARAGRAPH: [_EMPTY_CANDIDATES],
+            Level.DOCUMENT: [_EMPTY_CANDIDATES],
+        }
+    )
+
+    result = review_document(
+        "DOC-TEST",
+        _DOC,
+        rulebook,
+        screen_llm,
+        confirm_llm,
+        reference_documents=[
+            ("REF-BAD", "# 참고문서 불량\n\n## 정책\n\n내용입니다.\n"),
+            ("REF-A", "# 참고문서 A\n\n## 정책\n\n내용입니다.\n"),
+        ],
+        xdc_rulebook=xdc_rulebook,
+    )
+
+    assert len(result.tier_errors) == 1
+    assert "REF-BAD" in result.tier_errors[0]
+    reference_index_calls = [event for event in result.call_events if event.stage == "xdc_reference_index"]
+    assert len(reference_index_calls) == 1

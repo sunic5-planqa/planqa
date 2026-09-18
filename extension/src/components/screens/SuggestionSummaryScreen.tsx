@@ -6,6 +6,8 @@ import type {
   CommitDocumentEditsResponse,
   FetchPageMarkdownRequest,
   FetchPageMarkdownResponse,
+  FlushPendingEditsRequest,
+  FlushPendingEditsResponse,
   GetActiveDuplicatePageRequest,
   GetActiveDuplicatePageResponse,
   QaPassedBadgeResponse,
@@ -79,6 +81,17 @@ export function SuggestionSummaryScreen() {
     }
     setFinishingQA(true)
     try {
+      // 이슈를 옮겨다니는 동안 저장 버튼을 안 거친 채 편집된 문단이 있으면(스냅샷 참고,
+      // issueOverlay.ts) 넘버링 재검증이 그 편집을 못 보고 지나간다 — 헤딩 번호 동기화보다
+      // 먼저 반영한다.
+      const flushResponse = await sendToDocumentTab<FlushPendingEditsRequest, FlushPendingEditsResponse>(
+        confluenceTabId,
+        { type: 'FLUSH_PENDING_EDITS' },
+      )
+      if (flushResponse && !flushResponse.ok) {
+        console.warn('[SunniC] 미저장 편집 반영 실패 — 넘버링 검증이 최신 상태를 못 볼 수 있음', flushResponse.error)
+      }
+
       const commitResponse = await sendToDocumentTab<CommitDocumentEditsRequest, CommitDocumentEditsResponse>(
         confluenceTabId,
         { type: 'COMMIT_DOCUMENT_EDITS' },

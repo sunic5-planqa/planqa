@@ -83,6 +83,15 @@ export type CommitDocumentEditsResponse =
   | { ok: true; reconciled: number; skippedCountMismatch?: boolean }
   | { ok: false; error: string }
 
+// 사이드패널 → content script: "검토종료"/"마무리" 직전에, 문서 전체에서 스냅샷과 현재 텍스트가
+// 다른 블록만 모아 한 번에 저장해달라는 요청 — 이슈를 옮겨다니는 동안 저장 버튼(handleSaveClick)을
+// 안 거친 편집이 조용히 유실되는 걸 막는다. flushed는 실제로 저장을 시도한 블록 수.
+export interface FlushPendingEditsRequest {
+  type: 'FLUSH_PENDING_EDITS'
+}
+
+export type FlushPendingEditsResponse = { ok: true; flushed: number } | { ok: false; error: string }
+
 // 사이드패널 → content script: 넘버링 확인 화면(NumberingCheckScreen)에서 체크한 항목들을 하나씩
 // 적용해달라는 요청 — 일반 AI 제안 편집(handleSaveClick)과 달리 패널이 직접 트리거해야 한다(그
 // 이슈들은 문서에서 클릭해 들어갈 수 있는 하이라이트가 애초에 없으므로).

@@ -5,6 +5,7 @@ import {
   clearActiveSuggestion,
   clearQaPassedBadge,
   commitDocumentEdits,
+  flushPendingEdits,
   formatKstTimestamp,
   getActiveDuplicatePageId,
   scrollToLocation,
@@ -137,6 +138,22 @@ describe('setActiveSuggestion', () => {
     expect(el.dataset.sunnicOriginalText).toBe(FIRST_PARAGRAPH_FULL_TEXT)
   })
 
+  // 실사용 버그: 이슈 A를 보는 동안 (current가 아닌) 다른 문단을 저장 없이 고친 뒤 이슈 B로
+  // 넘어가면, 예전 코드는 그 문단의 스냅샷을 "지금(=고친) 텍스트"로 다시 찍어버려 수정이 있었다는
+  // 사실 자체가 사라졌다 — 이미 스냅샷이 있는 블록은 다시 찍지 않아야 한다.
+  it('does not re-snapshot a block that already has an unsaved edit when switching to another suggestion', () => {
+    setActiveSuggestion({ current: CURRENT, related: RELATED, doneLocations: [] })
+    const paragraphs = document.querySelectorAll<HTMLElement>('p')
+    // related(paragraphs[1])를 저장 없이 고친다.
+    paragraphs[1].textContent = '결제 실패 시 재시도 버튼 안내'
+
+    // 다른 제안으로 넘어간다(예: 내비게이터/다음 이슈) — related였던 문단은 이번엔 등장하지 않는다.
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+
+    expect(paragraphs[1].dataset.sunnicOriginalText).toBe('결제 실패 시 안내 문구 없음')
+    expect(paragraphs[1].textContent).toBe('결제 실패 시 재시도 버튼 안내')
+  })
+
   // 표시된(틴트된) 위치만 고칠 수 있게 막아둔 게 오히려 불편하다는 실사용 피드백(2026-08-30)으로
   // 문서 전체를 항상 편집 가능하게 열어둔다 — related/done은 물론 dim된 문단까지도 예외 없다.
   it('makes every block in the document editable, not just current — related/done/dim included', () => {
@@ -219,6 +236,20 @@ describe('clearActiveSuggestion', () => {
     // 첫 문단만 current였다(contentEditable이 켜졌었다) — clear 후 다시 꺼졌는지 확인.
     expect(document.querySelectorAll<HTMLElement>('p')[0].contentEditable).toBe('false')
     expect(document.querySelector('.sunnic-edit-actions')).toBeNull()
+  })
+
+  // 실사용 버그: clear 시 스냅샷을 지워버리면, 이슈 화면을 벗어난 뒤(예: 넘버링 확인 화면으로
+  // 이동) flushPendingEdits가 "저장 안 한 수정이 있었다"는 사실 자체를 알 방법이 없어진다.
+  it('keeps the unsaved-edit snapshot (dataset.sunnicOriginalText) intact after clearing', () => {
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+    const el = document.querySelector<HTMLElement>('p')
+    if (!el) throw new Error('paragraph not found')
+    el.textContent = '저장 안 하고 고친 문구'
+
+    clearActiveSuggestion()
+
+    expect(el.dataset.sunnicOriginalText).toBe(FIRST_PARAGRAPH_FULL_TEXT)
+    expect(el.textContent).toBe('저장 안 하고 고친 문구')
   })
 })
 
@@ -843,5 +874,63 @@ describe('commitDocumentEdits', () => {
 
     expect(result.ok).toBe(false)
     expect(putBodies(fetchMock)).toEqual([])
+  })
+})
+
+describe('flushPendingEdits', () => {
+  it('does nothing and skips the network entirely when nothing was edited', async () => {
+    const fetchMock = stubConfluenceFetch()
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+
+    const result = await flushPendingEdits()
+
+    expect(result).toEqual({ ok: true, flushed: 0 })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  // 이슈를 옮겨다니는 동안 저장 버튼 없이 고친 문단들이, 이슈 화면을 벗어난 뒤(clearActiveSuggestion이
+  // editableElements를 비운 뒤)에도 문서 전체를 다시 훑어서 전부 찾아지는지 확인한다.
+  it('collects every block whose text differs from its snapshot, even after leaving the issue screen', async () => {
+    const fetchMock = stubConfluenceFetch()
+    setActiveSuggestion({ current: CURRENT, related: RELATED, doneLocations: [] })
+    const paragraphs = document.querySelectorAll<HTMLElement>('p')
+    paragraphs[0].textContent = '4사만 지원, 페이코 미지원 안내로 변경'
+    paragraphs[1].textContent = '결제 실패 시 재시도 버튼 안내'
+    clearActiveSuggestion()
+
+    const result = await flushPendingEdits()
+
+    expect(result).toEqual({ ok: true, flushed: 2 })
+    const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    const putBody = JSON.parse((putCall?.[1] as RequestInit).body as string) as { body: { storage: { value: string } } }
+    expect(putBody.body.storage.value).toContain('4사만 지원, 페이코 미지원 안내로 변경')
+    expect(putBody.body.storage.value).toContain('결제 실패 시 재시도 버튼 안내')
+  })
+
+  it('updates the snapshot after a successful flush so a second call finds nothing left to save', async () => {
+    stubConfluenceFetch()
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+    const el = document.querySelector<HTMLElement>('p')
+    if (!el) throw new Error('paragraph not found')
+    el.textContent = '4사만 지원, 페이코 미지원'
+
+    const first = await flushPendingEdits()
+    const second = await flushPendingEdits()
+
+    expect(first).toEqual({ ok: true, flushed: 1 })
+    expect(second).toEqual({ ok: true, flushed: 0 })
+  })
+
+  it('propagates the underlying save failure and leaves the snapshot untouched for a retry', async () => {
+    stubConfluenceFetch({ createOk: false })
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+    const el = document.querySelector<HTMLElement>('p')
+    if (!el) throw new Error('paragraph not found')
+    el.textContent = '4사만 지원, 페이코 미지원'
+
+    const result = await flushPendingEdits()
+
+    expect(result.ok).toBe(false)
+    expect(el.dataset.sunnicOriginalText).toBe(FIRST_PARAGRAPH_FULL_TEXT)
   })
 })

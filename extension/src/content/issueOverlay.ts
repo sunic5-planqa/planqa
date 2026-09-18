@@ -11,6 +11,8 @@ import type {
   CommitDocumentEditsRequest,
   CommitDocumentEditsResponse,
   EditableSuggestionLocation,
+  FlushPendingEditsRequest,
+  FlushPendingEditsResponse,
   GetActiveDuplicatePageRequest,
   GetActiveDuplicatePageResponse,
   QaPassedBadgeResponse,
@@ -503,11 +505,14 @@ function showEditActions(current: EditableSuggestionLocation): void {
   saveBtn.addEventListener('click', () => void handleSaveClick())
 }
 
+// 스냅샷(dataset.sunnicOriginalText)은 여기서 지우지 않는다 — 다른 이슈로 넘어가거나 이슈 화면을
+// 벗어날 때마다(내비게이터, 다음 이슈, CLEAR_ACTIVE_SUGGESTION) 이 함수가 불리는데, 지우면 "아직
+// 저장 안 한 수정이 있었다"는 표시 자체가 사라져 flushPendingEdits가 나중에 그 문단을 찾을 방법이
+// 없어진다(실사용 버그로 확인됨) — 실제로 저장됐을 때(handleSaveClick)만 스냅샷을 갱신한다.
 export function clearActiveSuggestion(): void {
   for (const el of editableElements) {
     el.classList.remove(CURRENT_CLASS, RELATED_CLASS, DONE_CLASS, DIM_CLASS)
     el.contentEditable = 'false'
-    delete el.dataset.sunnicOriginalText
   }
   editableElements = []
   editingEl = null
@@ -573,11 +578,15 @@ export function setActiveSuggestion(payload: {
   // 전체로 교체"(주변 문맥이 중복 삽입되는 버그)가 아니라 "문단 전체를 문단 전체로" 치환하게
   // 되어 더 안전하다. 인용구 자체(payload.current.text)는 "그 문제 문구가 아직 남아있는지"
   // 검증(isIssueLikelyResolved)에서만 별도로 쓴다 — handleSaveClick이 closure로 참조.
+  //
+  // 이미 스냅샷이 찍혀 있는 블록은 다시 찍지 않는다 — 이 함수는 이슈를 옮겨다닐 때마다 반복
+  // 호출되는데, 매번 덮어쓰면 다른 이슈를 보는 동안 저장 없이 고친 문단이 "지금 텍스트 = 원본"이
+  // 되어버려 그 수정이 있었다는 사실 자체가 사라진다(실사용 버그로 확인됨).
   for (const el of document.querySelectorAll<HTMLElement>(BLOCK_SELECTOR)) {
     if (isInsideOverlayNode(el)) continue
     if (!highlighted.has(el)) el.classList.add(DIM_CLASS)
     el.contentEditable = 'true'
-    el.dataset.sunnicOriginalText = el.textContent ?? ''
+    if (el.dataset.sunnicOriginalText === undefined) el.dataset.sunnicOriginalText = el.textContent ?? ''
     editableElements.push(el)
   }
 
@@ -962,6 +971,28 @@ export async function applyIssueEdit(_issueId: string, oldText: string, newText:
   return applyIssueEdits([{ oldText, newText }])
 }
 
+// "검토종료"/"마무리" 직전에 호출 — 이슈를 옮겨다니는 동안 handleSaveClick(저장 버튼)을 거치지
+// 않은 채 편집됐지만 스냅샷과 달라진 블록을 문서 전체에서 찾아 한 번에 저장한다. editableElements
+// 배열이 아니라 document를 통째로 다시 훑는다 — 이슈 화면을 벗어나면 CLEAR_ACTIVE_SUGGESTION이
+// editableElements를 비우므로, 이 시점엔 이미 빈 배열일 수 있다(스냅샷 자체는 clearActiveSuggestion이
+// 안 지우므로 여전히 각 엘리먼트의 dataset에 남아있다).
+export async function flushPendingEdits(): Promise<{ ok: true; flushed: number } | { ok: false; error: string }> {
+  const changed: HTMLElement[] = []
+  for (const el of document.querySelectorAll<HTMLElement>(BLOCK_SELECTOR)) {
+    if (isInsideOverlayNode(el)) continue
+    const original = el.dataset.sunnicOriginalText
+    if (original !== undefined && original !== (el.textContent ?? '')) changed.push(el)
+  }
+  if (changed.length === 0) return { ok: true, flushed: 0 }
+
+  const edits = changed.map((el) => ({ oldText: el.dataset.sunnicOriginalText ?? '', newText: el.textContent ?? '' }))
+  const result = await applyIssueEdits(edits)
+  if (!result.ok) return result
+
+  for (const el of changed) el.dataset.sunnicOriginalText = el.textContent ?? ''
+  return { ok: true, flushed: changed.length }
+}
+
 const COMMIT_HEADING_SELECTOR = 'h2, h3, h4, h5, h6'
 
 function readHeadingTexts(root: ParentNode): string[] {
@@ -1064,6 +1095,7 @@ type OverlayRequest =
   | GetActiveDuplicatePageRequest
   | ApplyIssueEditRequest
   | CommitDocumentEditsRequest
+  | FlushPendingEditsRequest
 type OverlayResponse =
   | SetActiveSuggestionResponse
   | ClearActiveSuggestionResponse
@@ -1072,6 +1104,7 @@ type OverlayResponse =
   | GetActiveDuplicatePageResponse
   | ApplyIssueEditResponse
   | CommitDocumentEditsResponse
+  | FlushPendingEditsResponse
 
 chrome.runtime.onMessage.addListener(
   (message: OverlayRequest, _sender, sendResponse: (response: OverlayResponse) => void) => {
@@ -1109,6 +1142,10 @@ chrome.runtime.onMessage.addListener(
     }
     if (message.type === 'COMMIT_DOCUMENT_EDITS') {
       void commitDocumentEdits().then(sendResponse)
+      return true
+    }
+    if (message.type === 'FLUSH_PENDING_EDITS') {
+      void flushPendingEdits().then(sendResponse)
       return true
     }
     return undefined

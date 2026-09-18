@@ -1925,11 +1925,6 @@ textarea {
   gap: 8px;
 }
 
-.numbering-check-update-reminder {
-  margin: 0;
-  text-align: center;
-}
-
 .numbering-check-footer-actions {
   display: flex;
   gap: 8px;

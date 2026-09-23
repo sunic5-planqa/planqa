@@ -8,8 +8,6 @@ import type {
   FetchPageMarkdownResponse,
   FlushPendingEditsRequest,
   FlushPendingEditsResponse,
-  GetActiveDuplicatePageRequest,
-  GetActiveDuplicatePageResponse,
   QaPassedBadgeResponse,
   ShowQaPassedBadgeRequest,
 } from '../../content/messages'
@@ -65,10 +63,9 @@ export function SuggestionSummaryScreen() {
     })
   }, [documentId, confluencePageId])
 
-  // 넘버링 검증은 AI QA와 별개 영역이라 여기서 새로 조회한다. AI QA 리뷰 중 적용한 수정은 원본이
-  // 아니라 별도 "복제본" 페이지에 쌓이므로(원본은 절대 안 건드림), 복제본이 있으면 그 최신 내용을
-  // 가져오고, 아직 복제본이 없으면(= 아무 수정도 적용 안 했으면) 원본 페이지를 다시 가져온다 — 이때
-  // AppState의 기존 confluenceMarkdown을 그대로 재사용하지 않는다: 그건 AI QA용으로 추출된 것이라
+  // 넘버링 검증은 AI QA와 별개 영역이라 여기서 새로 조회한다. AI QA 리뷰 중 적용한 수정은 원본
+  // 페이지에 바로 쌓이므로, 원본을 다시 가져오면 된다 — 이때 AppState의 기존 confluenceMarkdown을
+  // 그대로 재사용하지 않는다: 그건 AI QA용으로 추출된 것이라
   // 본문 h1이 h2와 같은 레벨로 뭉개져 있어서(review_agent 청크 분할용 — confluenceParser.ts 참고),
   // 대주제를 Heading 1로 쓴 실제 문서에서 대주제/소주제가 전부 한 그룹으로 섞여 오탐이 났었다(실사용
   // 확인된 버그). preserveHeadingLevels:true로 다시 받아 h1~h6 원래 레벨을 그대로 보존한다.
@@ -100,12 +97,12 @@ export function SuggestionSummaryScreen() {
         console.warn('[SunniC] 좌측 문서 편집분 동기화 실패 — 넘버링 검증이 최신 상태를 못 볼 수 있음', commitResponse.error)
       }
 
+      // commitResponse.pageId는 content script가 지금 탭에서 직접 뽑은 살아있는 페이지 id다 —
+      // AppState.confluencePageId는 최초 감지 시점 스냅샷이라, 리뷰 중 같은 탭이 다른 컨플루언스
+      // 페이지로 이동했다면 stale할 수 있다. 우선 그 값을 쓰고, commit 자체가 실패했을 때만
+      // AppState 값으로 폴백한다.
+      const targetPageId = commitResponse?.ok ? commitResponse.pageId : confluencePageId
       let freshText = confluenceMarkdown
-      const dupResponse = await sendToDocumentTab<GetActiveDuplicatePageRequest, GetActiveDuplicatePageResponse>(
-        confluenceTabId,
-        { type: 'GET_ACTIVE_DUPLICATE_PAGE' },
-      )
-      const targetPageId = dupResponse?.ok ? (dupResponse.pageId ?? dupResponse.originalPageId) : null
       if (targetPageId) {
         const pageResponse = await sendToDocumentTab<FetchPageMarkdownRequest, FetchPageMarkdownResponse>(
           confluenceTabId,

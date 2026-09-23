@@ -52,8 +52,8 @@ export interface AppState {
   // 조회할 때 이 값을 조회 키로 쓴다("QA 통과 배지 백엔드 영속화" 기능, 2026-08-30).
   confluencePageId: string | null
   // 문서를 처음 감지했을 때의 탭 id — 마커/스크롤 메시지를 문서 쪽으로 보낼 때 매번
-  // chrome.tabs.query({active:true})로 "지금 활성 탭"을 다시 찾으면, 사용자가 다른 탭(복제본
-  // 페이지, DevTools 등)에 가 있는 동안 보낸 메시지가 엉뚱한 탭으로 가서 조용히 실패한다(실사용
+  // chrome.tabs.query({active:true})로 "지금 활성 탭"을 다시 찾으면, 사용자가 다른 탭(참고문서,
+  // DevTools 등)에 가 있는 동안 보낸 메시지가 엉뚱한 탭으로 가서 조용히 실패한다(실사용
   // 보고, 2026-08-30 — 마커가 전혀 안 붙는 원인이었음). 감지 시점 탭에 고정해서 보낸다.
   confluenceTabId: number | null
 

@@ -13,8 +13,6 @@ import type {
   EditableSuggestionLocation,
   FlushPendingEditsRequest,
   FlushPendingEditsResponse,
-  GetActiveDuplicatePageRequest,
-  GetActiveDuplicatePageResponse,
   QaPassedBadgeResponse,
   ScrollToLocationRequest,
   ScrollToLocationResponse,
@@ -818,115 +816,18 @@ async function replaceAllAndSave(pageId: string, edits: EditPair[]): Promise<App
   return { ok: true }
 }
 
-// QA 리뷰 세션당 복제본 1개 — 원본은 절대 쓰지 않고, 첫 적용에서 이 복제본을 만들어 이후 모든 적용을
-// 여기에 누적한다. 페이지를 새로고침하면 초기화되고 다음 적용에서 새 복제본이 다시 만들어진다.
-// originalPageId는 이 복제본이 "어느 원본에서 나왔는지" — Confluence는 SPA라 탭 내 페이지 이동 시
-// content script가 재주입되지 않으므로, 다른 페이지로 옮겨간 뒤엔 이 세션이 스테일해진다. 그때
-// 이전 복제본을 그대로 재사용하면 엉뚱한 페이지에 저장/대조하게 되어 originalPageId로 걸러낸다.
-let duplicateSession: { pageId: string; title: string; originalPageId: string } | null = null
-
-// 테스트 전용 — 모듈이 파일 내 여러 테스트에 걸쳐 싱글턴으로 유지되므로, 세션이 없는 상태(첫 적용)를
-// 매 테스트마다 재현하려면 이걸로 초기화해야 한다.
-export function __resetDuplicateSessionForTests(): void {
-  duplicateSession = null
-}
-
-// 사이드패널이 "지금 리뷰 중 수정이 실제로 쌓이고 있는 페이지"를 알아야 할 때(예: 넘버링 재검증 전
-// 최신 본문을 다시 읽어올 때) 쓴다 — 아직 한 건도 적용 안 했거나, 세션이 다른 원본 페이지 것이면 null.
-export function getActiveDuplicatePageId(originalPageId: string | null): string | null {
-  if (!duplicateSession) return null
-  // originalPageId가 null이면(URL에서 페이지 id를 못 뽑은 경우) 지금 세션이 맞는 페이지 것인지
-  // 확인할 방법이 없다 — 모르면 stale 취급하고 null을 반환한다(있는 세션을 잘못 재사용하는 것보다
-  // 안전).
-  if (duplicateSession.originalPageId !== originalPageId) return null
-  return duplicateSession.pageId
-}
-
-// timeZone: 'Asia/Seoul'을 명시한 toLocaleString도 실제 서비스 환경에서 여전히 몇 시간씩
-// 어긋난다는 보고가 있었다(Intl 구현/브라우저 설정에 따라 달라질 수 있는 여지가 남아있는 듯) —
-// 그래서 Intl에 아예 기대지 않는 방식으로 바꾼다. Date.getTime()의 epoch ms는 시간대와 무관한
-// 절대 시각이므로, 여기에 KST 오프셋(UTC+9, 서머타임이 없어 연중 고정)을 직접 더한 뒤 UTC
-// getter로 값을 읽으면 실행 환경(Intl 지원 수준, 시스템 시간대 설정)에 전혀 의존하지 않는 순수
-// 산술 계산만으로 항상 정확한 한국 시각을 얻는다.
-export function formatKstTimestamp(date: Date): string {
-  const KST_OFFSET_MS = 9 * 60 * 60 * 1000
-  const kst = new Date(date.getTime() + KST_OFFSET_MS)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const hour24 = kst.getUTCHours()
-  const ampm = hour24 < 12 ? '오전' : '오후'
-  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12
-  return (
-    `${kst.getUTCFullYear()}. ${kst.getUTCMonth() + 1}. ${kst.getUTCDate()}. ` +
-    `${ampm} ${hour12}:${pad(kst.getUTCMinutes())}:${pad(kst.getUTCSeconds())}`
-  )
-}
-
-// commitDocumentEdits는 세션이 아직 없을 때 targetPageId로 originalPageId를 그대로 쓰기 때문에
-// 바로 위에서 이미 원본의 body.storage(+space)를 읽어둔 상태다 — prefetchedOriginal을 넘기면 그걸
-// 재사용해서 여기서 또 같은 리소스를 GET하지 않는다.
-async function ensureDuplicateSession(
-  originalPageId: string,
-  prefetchedOriginal?: { title: string; spaceKey: string; html: string },
-): Promise<{ ok: true; pageId: string } | { ok: false; error: string }> {
-  // 현재 보고 있는 원본에서 만든 세션일 때만 재사용한다 — 다른 페이지 것이면 스테일이므로 새로 만든다.
-  if (duplicateSession && duplicateSession.originalPageId === originalPageId) {
-    return { ok: true, pageId: duplicateSession.pageId }
-  }
-
-  let originalTitle: string
-  let spaceKey: string
-  let html: string
-  if (prefetchedOriginal) {
-    ;({ title: originalTitle, spaceKey, html } = prefetchedOriginal)
-  } else {
-    const originalRes = await fetch(
-      `${location.origin}/wiki/rest/api/content/${originalPageId}?expand=body.storage,space`,
-      { credentials: 'include' },
-    )
-    if (!originalRes.ok) return { ok: false, error: `원본을 불러오지 못했습니다 (${originalRes.status})` }
-
-    const original = (await originalRes.json()) as {
-      title: string
-      space?: { key: string }
-      body: { storage: { value: string } }
-    }
-    if (!original.space?.key) return { ok: false, error: '스페이스 정보를 확인하지 못했습니다.' }
-    originalTitle = original.title
-    spaceKey = original.space.key
-    html = original.body.storage.value
-  }
-
-  const title = `${originalTitle} (QA 검토 수정본 ${formatKstTimestamp(new Date())})`
-  const createRes = await fetch(`${location.origin}/wiki/rest/api/content`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json', 'X-Atlassian-Token': 'no-check' },
-    body: JSON.stringify({
-      type: 'page',
-      title,
-      space: { key: spaceKey },
-      ancestors: [{ id: originalPageId }],
-      body: { storage: { value: html, representation: 'storage' } },
-    }),
-  })
-  if (!createRes.ok) return { ok: false, error: `복제본 생성에 실패했습니다 (${createRes.status})` }
-
-  const created = (await createRes.json()) as { id: string }
-  duplicateSession = { pageId: created.id, title, originalPageId }
-  return { ok: true, pageId: created.id }
-}
-
 // 문서 전체가 편집 가능해지면서(2026-08-30) 한 번의 저장이 여러 블록을 동시에 치환해야 할 수
 // 있다 — 실제 치환/저장은 이 복수형이 전담하고, 단일 치환은 그 특수 케이스(길이 1짜리 배열)로
 // 구현한다. 두 함수 모두 이 파일 안에서만 직접 호출되는 일반 함수다(패널 쪽에서 이 메시지를
 // 보내는 코드는 없다 — chrome.runtime 메시지가 아니라 여기 handleSaveClick이 직접 호출).
-// 넘버링 이슈는 (AI 이슈가 아니라 애초에 mark 하이라이트 대상이 아니므로) 저장은 복제본에
-// 성공해도 지금 보고 있는 원본 화면엔 아무 변화가 없어 "반영이 안 됐다"는 오인 보고로 이어졌다
-// (실사용 확인됨). oldText/newText는 헤딩 텍스트 전체지만 실제로 다른 부분은 맨 앞 번호뿐이므로
-// (백엔드 _replace_number와 동일 전제), 헤딩을 통째로 갈아치우지 않고 그 헤딩의 첫 텍스트 노드에서
-// 번호 접두어만 치환한다 — 강조/링크 등 인라인 마크업이 번호 뒤에 있어도(예: "4. 해결
+// 넘버링 이슈는 (AI 이슈가 아니라 애초에 mark 하이라이트 대상이 아니므로) REST PUT이 성공해도
+// 브라우저에 이미 로드된 DOM은 새로고침 전까지 그대로라 "반영이 안 됐다"는 오인 보고로 이어졌다
+// (실사용 확인됨) — 사용자가 직접 타이핑한 게 아니라 프로그램이 계산한 값이라 로컬 DOM에도 따로
+// 반영해줘야 화면에 보인다. oldText/newText는 헤딩 텍스트 전체지만 실제로 다른 부분은 맨 앞
+// 번호뿐이므로(백엔드 _replace_number와 동일 전제), 헤딩을 통째로 갈아치우지 않고 그 헤딩의 첫
+// 텍스트 노드에서 번호 접두어만 치환한다 — 강조/링크 등 인라인 마크업이 번호 뒤에 있어도(예: "4. 해결
 // <strong>방안</strong>") 안전하다. 조건이 안 맞으면(번호를 못 뽑았거나, 헤딩을 못 찾았거나,
-// 첫 텍스트 노드가 그 번호로 시작하지 않으면) 조용히 포기한다 — 실제 저장(복제본)엔 영향 없는
+// 첫 텍스트 노드가 그 번호로 시작하지 않으면) 조용히 포기한다 — 실제 저장(REST PUT)엔 영향 없는
 // 순수 로컬 표시라 실패해도 안전하다.
 function overwriteHeadingTextInDom(oldText: string, newText: string): void {
   const oldNumber = LEADING_NUMBER_RE.exec(oldText)?.[0]
@@ -952,17 +853,14 @@ export async function applyIssueEdits(edits: EditPair[]): Promise<ApplyResult> {
   if (edits.length === 0) return { ok: true }
 
   const originalPageId = extractPageId(location.href)
-  if (!originalPageId) return { ok: false, error: '컨플루언스 문서 URL이 아니라 복제본을 만들 수 없습니다.' }
+  if (!originalPageId) return { ok: false, error: '컨플루언스 문서 URL이 아니라 원본에 저장할 수 없습니다.' }
 
-  const session = await ensureDuplicateSession(originalPageId)
-  if (!session.ok) return session
-
-  const result = await replaceAllAndSave(session.pageId, edits)
+  const result = await replaceAllAndSave(originalPageId, edits)
   if (!result.ok) return result
 
-  // 저장 자체는 원본이 아니라 복제본에 쌓이지만, 넘버링 하모나이징(번호만 바뀌는 편집)은 지금 보고
-  // 있는 원본 화면에도 즉시 반영해야 "반영이 안 됐다"는 오인이 없다 — 위 overwriteHeadingTextInDom
-  // 참고. 번호가 아닌 일반 편집은 이 함수가 조용히 no-op한다.
+  // 넘버링 하모나이징(번호만 바뀌는 편집)은 지금 보고 있는 원본 화면에도 즉시 반영해야 "반영이
+  // 안 됐다"는 오인이 없다 — 위 overwriteHeadingTextInDom 참고. 번호가 아닌 일반 편집은 이미
+  // 사용자가 직접 타이핑한 화면 그대로라 이 함수가 조용히 no-op한다.
   for (const { oldText, newText } of edits) overwriteHeadingTextInDom(oldText, newText)
   return result
 }
@@ -1002,33 +900,22 @@ function readHeadingTexts(root: ParentNode): string[] {
     .filter(Boolean)
 }
 
-// "QA 완료" 직전 호출 — 좌측 문서 뷰(라이브 DOM)의 h2~h6 헤딩을 저장본(복제본 또는 원본)과
-// 위치(순서) 기준으로 대조해, 제안 저장에 딸려가지 못한 인라인 헤딩 편집을 복제본에 반영한다.
-// 그래야 이어지는 넘버링 검증이 옛 저장본이 아니라 지금 화면 상태를 본다. 헤딩 개수가 바뀐 경우
-// (삽입/삭제)는 위치 매칭이 깨지므로 이번엔 건너뛴다.
+// "QA 완료" 직전 호출 — 좌측 문서 뷰(라이브 DOM)의 h2~h6 헤딩을 원본 저장본과 위치(순서) 기준으로
+// 대조해, 제안 저장에 딸려가지 못한 인라인 헤딩 편집을 원본에 반영한다. 그래야 이어지는 넘버링
+// 검증이 옛 저장본이 아니라 지금 화면 상태를 본다. 헤딩 개수가 바뀐 경우(삽입/삭제)는 위치 매칭이
+// 깨지므로 이번엔 건너뛴다.
 export async function commitDocumentEdits(): Promise<CommitDocumentEditsResponse> {
   const originalPageId = extractPageId(location.href)
   if (!originalPageId) return { ok: false, error: '컨플루언스 문서 URL이 아닙니다.' }
 
-  const targetPageId = getActiveDuplicatePageId(originalPageId) ?? originalPageId
-  // 세션이 아직 없으면 targetPageId는 originalPageId 그 자체다 — 어차피 뒤에서 복제본을 만들 때
-  // 원본의 title/space가 또 필요하니, 지금 한 번에 같이 받아서 ensureDuplicateSession이 같은
-  // 페이지를 다시 GET하지 않게 한다.
-  const needsOriginalMeta = targetPageId === originalPageId
-
   let storageHtml: string
-  let originalMeta: { title: string; spaceKey: string; html: string } | undefined
   try {
-    const expand = needsOriginalMeta ? 'body.storage,space' : 'body.storage'
-    const res = await fetch(`${location.origin}/wiki/rest/api/content/${targetPageId}?expand=${expand}`, {
+    const res = await fetch(`${location.origin}/wiki/rest/api/content/${originalPageId}?expand=body.storage`, {
       credentials: 'include',
     })
     if (!res.ok) return { ok: false, error: `저장본을 불러오지 못했습니다 (${res.status})` }
-    const data = (await res.json()) as { title: string; space?: { key: string }; body: { storage: { value: string } } }
+    const data = (await res.json()) as { body: { storage: { value: string } } }
     storageHtml = data.body.storage.value
-    if (needsOriginalMeta && data.space?.key) {
-      originalMeta = { title: data.title, spaceKey: data.space.key, html: storageHtml }
-    }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
@@ -1078,10 +965,7 @@ export async function commitDocumentEdits(): Promise<CommitDocumentEditsResponse
 
   if (edits.length === 0) return { ok: true, reconciled: 0 }
 
-  const session = await ensureDuplicateSession(originalPageId, originalMeta)
-  if (!session.ok) return session
-
-  const result = await replaceAllAndSave(session.pageId, edits)
+  const result = await replaceAllAndSave(originalPageId, edits)
   if (!result.ok) return result
   return { ok: true, reconciled: edits.length }
 }
@@ -1092,7 +976,6 @@ type OverlayRequest =
   | ScrollToLocationRequest
   | ShowQaPassedBadgeRequest
   | ClearQaPassedBadgeRequest
-  | GetActiveDuplicatePageRequest
   | ApplyIssueEditRequest
   | CommitDocumentEditsRequest
   | FlushPendingEditsRequest
@@ -1101,7 +984,6 @@ type OverlayResponse =
   | ClearActiveSuggestionResponse
   | ScrollToLocationResponse
   | QaPassedBadgeResponse
-  | GetActiveDuplicatePageResponse
   | ApplyIssueEditResponse
   | CommitDocumentEditsResponse
   | FlushPendingEditsResponse
@@ -1133,11 +1015,6 @@ chrome.runtime.onMessage.addListener(
     }
     if (message.type === 'APPLY_ISSUE_EDIT') {
       void applyIssueEdit(message.issueId, message.oldText, message.newText).then(sendResponse)
-      return true
-    }
-    if (message.type === 'GET_ACTIVE_DUPLICATE_PAGE') {
-      const originalPageId = extractPageId(location.href)
-      sendResponse({ ok: true, pageId: getActiveDuplicatePageId(originalPageId), originalPageId })
       return true
     }
     if (message.type === 'COMMIT_DOCUMENT_EDITS') {

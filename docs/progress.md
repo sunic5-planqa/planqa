@@ -3083,3 +3083,50 @@ git commit 없이 워킹 디렉토리에 uncommitted 상태로만 남아있었�
 - `getNextOpenIssueId`/`getOpenIssues`는 이제 호출부가 없음(테스트만 유지) — 위저드 부활 계획이
   확실히 없으면 다음 정리 때 제거 후보.
 - PR: 직접 push 불가 → PR 열고 혜서/가영님께 merge 요청.
+
+## 2026-09-23 — 복제본(하위 문서) 생성 없이 원본에 직접 저장
+
+실사용 검증 중 "원본에 수정이 적용되고 하위 문서(복제본)엔 원문이 남아있다"는 신고. 조사 결과
+근본 원인은 복제본 설계 자체의 취약점(리뷰 도중 사용자가 방금 만든 복제본 페이지 쪽으로 이동한
+뒤 저장하면, 그 복제본을 "원본"으로 오인해 복제본의 복제본이 새로 생기고 원래 복제본은 더 이상
+갱신되지 않음)으로 보였다. 가영님이 이 취약점을 우회하는 방어 로직 대신, **복제본 생성 자체를
+없애고 원본 페이지에 직접 저장**하는 쪽으로 확정("원본이 그냥 사람이 수정하는 거잖아, 하위 문서
+복제본이 생길 필요가 없어").
+
+이 결정은 2026-08-06에 있었던 정반대 방향("원본 직접 수정 → 복제본에 저장")의 명시적 전환을
+다시 뒤집는 것 — 그때는 "적용이 원본을 직접 덮어쓰지 않았으면" 해서 복제본 방식으로 바꿨었다.
+이제부터는 모든 저장이 실제 라이브 문서를 즉시 바꾸고, 되돌림은 컨플루언스 자체 버전 히스토리에
+의존한다.
+
+### 수정 내용
+
+[issueOverlay.ts](../extension/src/content/issueOverlay.ts):
+
+1. `duplicateSession`/`ensureDuplicateSession`/`getActiveDuplicatePageId`/
+   `__resetDuplicateSessionForTests`/`formatKstTimestamp`(복제본 제목 타임스탬프 전용) 전부 삭제.
+2. `applyIssueEdits`/`commitDocumentEdits` 모두 `extractPageId(location.href)`로 뽑은
+   `originalPageId`에 바로 `replaceAllAndSave`한다 — 복제본 생성/재사용 분기 없음.
+3. `overwriteHeadingTextInDom`(넘버링 수정을 로컬 DOM에도 반영하는 워크어라운드)은 그대로 유지 —
+   존재 이유가 "복제본이라 원본 화면엔 안 보임"이 아니라 "REST PUT 성공해도 이미 로드된 브라우저
+   DOM은 새로고침 전까지 안 바뀌는데, 넘버링 수정은 사용자가 직접 타이핑한 게 아니라 프로그램이
+   계산한 값이라 로컬에도 따로 반영해줘야 화면에 보인다"는 것이라 원본 직접 저장으로 바꿔도 여전히
+   필요함.
+4. `GET_ACTIVE_DUPLICATE_PAGE` 메시지/타입 삭제(`messages.ts`).
+
+[SuggestionSummaryScreen.tsx](../extension/src/components/screens/SuggestionSummaryScreen.tsx)의
+`finishQA`: `GET_ACTIVE_DUPLICATE_PAGE` 왕복을 없애고, 이미 `AppState`에 있는 `confluencePageId`로
+바로 넘버링 재검증용 최신 마크다운을 가져온다.
+
+`docs/manual-tests/{qa-review-flow,numbering}/README.md`의 "복제본" 언급을 "원본"으로 정정.
+
+### 검증
+
+- `issueOverlay.test.ts`의 복제본 생성/재사용/제목 타임스탬프 관련 테스트를 전부 원본-직접-저장
+  기준으로 재작성(예: "PUT이 원본 페이지 id로 간다", "POST가 전혀 안 나간다").
+- typecheck/lint/`vitest` 157개(복제본 관련 테스트 9개 삭제) 통과.
+
+### Next
+
+- 오늘 병합되면, 이 변경이 별도로 보고됐던 "수정 전 내용이 업데이트 필요 사항으로 뜬다"(넘버링
+  재검증이 엉뚱한 페이지를 봐서 생기던 증상으로 추정) 증상도 같이 해소되는지 실사용 재확인 필요.
+- PR: 직접 push 불가 → PR 열고 혜서/가영님께 merge 요청.

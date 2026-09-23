@@ -924,7 +924,7 @@ export async function commitDocumentEdits(): Promise<CommitDocumentEditsResponse
   const live = readHeadingTexts(document)
 
   // 헤딩 개수가 다르면 stored[i] ↔ live[i] 대응 자체가 성립하지 않는다 — 위치 매칭 금지.
-  if (stored.length !== live.length) return { ok: true, reconciled: 0, skippedCountMismatch: true }
+  if (stored.length !== live.length) return { ok: true, reconciled: 0, pageId: originalPageId, skippedCountMismatch: true }
 
   // 위치(순서)만으로 stored[i] ↔ live[i]를 짝짓기 때문에, "번호를 뗀 제목"이 문서 안에 두 번 이상
   // 나오면 그중 두 헤딩이 재정렬된 건지 그냥 같은 자리에 있는 건지 구분할 수 없다 — 그 상태로
@@ -963,11 +963,11 @@ export async function commitDocumentEdits(): Promise<CommitDocumentEditsResponse
     edits.push({ oldText: stored[i], newText: live[i] })
   }
 
-  if (edits.length === 0) return { ok: true, reconciled: 0 }
+  if (edits.length === 0) return { ok: true, reconciled: 0, pageId: originalPageId }
 
   const result = await replaceAllAndSave(originalPageId, edits)
   if (!result.ok) return result
-  return { ok: true, reconciled: edits.length }
+  return { ok: true, reconciled: edits.length, pageId: originalPageId }
 }
 
 type OverlayRequest =

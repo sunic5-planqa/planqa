@@ -64,13 +64,16 @@ export interface SetActiveSuggestionResponse {
 // 원본 저장본과 대조해, 사용자가 제안 저장 없이 직접 고친 헤딩 번호를 원본에 반영해달라는 요청 —
 // 이래야 이어지는 넘버링 검증이 옛 저장본이 아니라 지금 화면 상태를 본다. reconciled는 실제로
 // 원본에 반영한 헤딩 수, skippedCountMismatch는 헤딩 개수가 달라 위치 기반 대조를 건너뛴 경우
-// (삽입/삭제 — 이번 범위 밖).
+// (삽입/삭제 — 이번 범위 밖). pageId는 content script가 지금 탭의 location.href에서 직접 뽑은
+// 원본 페이지 id — 패널의 AppState.confluencePageId는 최초 감지 시점 스냅샷이라 그 사이 탭이 다른
+// 컨플루언스 페이지로 이동했으면 stale할 수 있다(2026-09-23 리뷰에서 지적). 이어지는 넘버링
+// 재검증은 반드시 이 값으로 조회해야 방금 반영한 페이지와 같은 곳을 본다.
 export interface CommitDocumentEditsRequest {
   type: 'COMMIT_DOCUMENT_EDITS'
 }
 
 export type CommitDocumentEditsResponse =
-  | { ok: true; reconciled: number; skippedCountMismatch?: boolean }
+  | { ok: true; reconciled: number; pageId: string; skippedCountMismatch?: boolean }
   | { ok: false; error: string }
 
 // 사이드패널 → content script: "검토종료"/"마무리" 직전에, 문서 전체에서 스냅샷과 현재 텍스트가

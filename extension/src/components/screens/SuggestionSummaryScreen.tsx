@@ -97,11 +97,16 @@ export function SuggestionSummaryScreen() {
         console.warn('[SunniC] 좌측 문서 편집분 동기화 실패 — 넘버링 검증이 최신 상태를 못 볼 수 있음', commitResponse.error)
       }
 
+      // commitResponse.pageId는 content script가 지금 탭에서 직접 뽑은 살아있는 페이지 id다 —
+      // AppState.confluencePageId는 최초 감지 시점 스냅샷이라, 리뷰 중 같은 탭이 다른 컨플루언스
+      // 페이지로 이동했다면 stale할 수 있다. 우선 그 값을 쓰고, commit 자체가 실패했을 때만
+      // AppState 값으로 폴백한다.
+      const targetPageId = commitResponse?.ok ? commitResponse.pageId : confluencePageId
       let freshText = confluenceMarkdown
-      if (confluencePageId) {
+      if (targetPageId) {
         const pageResponse = await sendToDocumentTab<FetchPageMarkdownRequest, FetchPageMarkdownResponse>(
           confluenceTabId,
-          { type: 'FETCH_PAGE_MARKDOWN', pageId: confluencePageId, preserveHeadingLevels: true },
+          { type: 'FETCH_PAGE_MARKDOWN', pageId: targetPageId, preserveHeadingLevels: true },
         )
         if (pageResponse?.ok) freshText = pageResponse.markdown
       }

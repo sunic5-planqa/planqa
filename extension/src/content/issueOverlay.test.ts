@@ -687,7 +687,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 1 })
+    expect(result).toEqual({ ok: true, reconciled: 1, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual(['<h2>1. 개요</h2><h2>3. 문제 정의</h2>'])
     // 헤딩 대조용으로 commitDocumentEdits 자신이 원본을 한 번 읽고, 실제 치환/저장을 맡는
     // replaceAllAndSave가 저장 직전에 다시 한 번 독립적으로 읽는다 — 총 2번.
@@ -700,7 +700,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 1 })
+    expect(result).toEqual({ ok: true, reconciled: 1, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual(['<h2>1. 개요</h2><h2>2. 해결 방안(안건 A)</h2>'])
   })
 
@@ -710,7 +710,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 0, skippedCountMismatch: true })
+    expect(result).toEqual({ ok: true, reconciled: 0, pageId: ORIGINAL_PAGE_ID, skippedCountMismatch: true })
     expect(putBodies(fetchMock)).toEqual([])
   })
 
@@ -723,7 +723,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 0 })
+    expect(result).toEqual({ ok: true, reconciled: 0, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual([])
   })
 
@@ -733,7 +733,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 0 })
+    expect(result).toEqual({ ok: true, reconciled: 0, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual([])
   })
 
@@ -748,7 +748,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 2 })
+    expect(result).toEqual({ ok: true, reconciled: 2, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual([
       '<h2>1. 개요</h2><h3>1-1. 목적</h3><h3>1-2. 적용 범위</h3>' +
         '<h2>2. 문제 정의</h2><h3>2-2. 배경</h3><h3>2-3. 문제점</h3>',
@@ -761,7 +761,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 0 })
+    expect(result).toEqual({ ok: true, reconciled: 0, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual([])
   })
 
@@ -771,7 +771,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 0 })
+    expect(result).toEqual({ ok: true, reconciled: 0, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual([])
   })
 

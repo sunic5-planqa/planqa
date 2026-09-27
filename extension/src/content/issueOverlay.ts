@@ -717,17 +717,17 @@ function decodeStorageHtmlText(html: string): { fullText: string; rawRanges: Arr
 
 // 매치 구간 안에서 태그가 아닌 것으로 취급한 원본 바이트 중, 실사용 storage HTML엔 있지만 이
 // 함수가 "태그"로 인식 못 하는 구조(예: 엔티티가 아닌 다른 이스케이프, 예상 못 한 매크로 마크업)가
-// 섞여 있으면 middle 디코딩 결과가 newText와 달라진다 — "4-2"→"4-3" 치환이 "4-33"으로 저장되는
-// 실사용 버그가 바로 이런 조용한 불일치였다(정확한 원인은 재현 데이터 없이는 특정 못 함).
-// replaceInStorageHtml/logReplaceMismatch가 그 불일치를 실패로 바꿔 저장을 막고, 다음 재현 때
-// 진짜 원인을 알 수 있게 실제 매치 구간의 원본 HTML을 콘솔에 남긴다.
-function logReplaceMismatch(html: string, oldText: string, newText: string, rawStart: number, rawEnd: number, middle: string, middleDecoded: string): void {
+// 섞여 있으면 middle에 newText 삽입 구간 밖의 낯선 텍스트가 남는다 — "4-2"→"4-3" 치환이
+// "4-33"으로 저장되는 실사용 버그가 바로 이런 조용한 불일치였다(정확한 원인은 재현 데이터 없이는
+// 특정 못 함). replaceInStorageHtml/logReplaceMismatch가 그 불일치를 실패로 바꿔 저장을 막고,
+// 다음 재현 때 진짜 원인을 알 수 있게 실제 매치 구간의 원본 HTML을 콘솔에 남긴다.
+function logReplaceMismatch(html: string, oldText: string, newText: string, rawStart: number, rawEnd: number, middle: string, strayText: string): void {
   console.warn('[SunniC] 치환 결과가 예상과 달라 저장을 중단합니다 — 아래 정보로 원인을 조사해주세요.', {
     oldText,
     newText,
     matchedRawHtml: html.slice(rawStart, rawEnd),
     producedMiddle: middle,
-    middleDecoded,
+    strayText,
   })
 }
 
@@ -747,7 +747,9 @@ function replaceInStorageHtml(html: string, oldText: string, newText: string): s
   const rawEnd = rawRanges[matchEnd - 1][1]
 
   let middle = ''
-  let inserted = false
+  // newText가 middle 안에서 실제로 삽입된 [insertedAt, insertedAt + newText.length) 구간 —
+  // 아래 불변식 검증이 이 구간 자체는 절대 다시 디코딩하지 않도록 위치를 기억해둔다.
+  let insertedAt: number | null = null
   let i = rawStart
   while (i < rawEnd) {
     if (html[i] === '<') {
@@ -757,20 +759,28 @@ function replaceInStorageHtml(html: string, oldText: string, newText: string): s
       i = tagEnd
       continue
     }
-    if (!inserted) {
+    if (insertedAt === null) {
+      insertedAt = middle.length
       middle += newText
-      inserted = true
     }
     i += 1
   }
-  if (!inserted) middle += newText
+  if (insertedAt === null) {
+    insertedAt = middle.length
+    middle += newText
+  }
 
-  // 안전장치: middle을 디코딩한 실제 텍스트가 newText와 정확히 같아야 한다(위 루프가 태그 이외의
-  // 원본 문자를 전부 걷어내고 newText 하나만 남기도록 설계됐으므로 항상 성립해야 하는 불변식) —
-  // 어긋나면 원인 불명의 손상된 값을 조용히 저장하는 대신 실패로 처리한다.
-  const { fullText: middleDecoded } = decodeStorageHtmlText(middle)
-  if (middleDecoded !== newText) {
-    logReplaceMismatch(html, oldText, newText, rawStart, rawEnd, middle, middleDecoded)
+  // 안전장치: newText가 삽입된 구간을 뺀 나머지(=보존된 태그들만 있어야 하는 부분)를 디코딩하면
+  // 아무 텍스트도 남지 않아야 한다(태그 이외의 원본 문자는 전부 newText 삽입 시점에 걷어내도록
+  // 설계됐으므로 항상 성립해야 하는 불변식) — 어긋나면 원인 불명의 손상된 값을 조용히 저장하는
+  // 대신 실패로 처리한다. newText 자체는 절대 이 디코더에 통과시키지 않는다 — newText에 리터럴
+  // '<'나 '&...;' 모양 문자열이 있으면 진짜 태그/엔티티로 오인해 불변식이 깨진 것처럼 보이는
+  // 오탐이 생기기 때문(코드 리뷰로 확인된 버그).
+  const before = middle.slice(0, insertedAt)
+  const after = middle.slice(insertedAt + newText.length)
+  const strayText = decodeStorageHtmlText(before).fullText + decodeStorageHtmlText(after).fullText
+  if (strayText !== '') {
+    logReplaceMismatch(html, oldText, newText, rawStart, rawEnd, middle, strayText)
     return null
   }
 

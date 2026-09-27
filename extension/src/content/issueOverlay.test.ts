@@ -621,6 +621,38 @@ describe('applyIssueEdit', () => {
     )
   })
 
+  // 실사용 버그: 저장 결과 불변식 검증이 newText 자체를 디코더에 통과시키던 시절엔, newText에
+  // 리터럴 '<'가 있으면 그걸 진짜 태그 시작으로 오인해(다음 '>'를 못 찾으면 나머지 전체를 태그로
+  // 취급) 정상적인 수정을 오탐으로 거부했다(코드 리뷰로 확인된 버그) — newText는 절대 다시
+  // 디코딩하지 않아야 한다.
+  it('saves an edit whose new text contains a literal "<" without a false invariant-mismatch rejection', async () => {
+    const oldText = '가격은 3원 이상일 때만 적용'
+    const newText = '가격은 3 < 5 조건에서만 적용'
+    const fetchMock = stubConfluenceFetch({ storageBody: `<p>${oldText}</p>` })
+
+    const result = await applyIssueEdit('issue-literal-lt', oldText, newText)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    expect(putBody.body.storage.value).toBe(`<p>${newText}</p>`)
+  })
+
+  // 위와 같은 이유의 또 다른 경로: newText에 &nbsp;처럼 실제로 디코딩되는 HTML 엔티티 문자열이
+  // 리터럴로 들어있으면, 디코딩 후 글자 수가 원문과 달라져 똑같이 오탐 거부됐다.
+  it('saves an edit whose new text contains a literal HTML entity like "&nbsp;" without a false invariant-mismatch rejection', async () => {
+    const oldText = '간격은 넓힌다'
+    const newText = '간격은 &nbsp;를 사용해 넓힌다'
+    const fetchMock = stubConfluenceFetch({ storageBody: `<p>${oldText}</p>` })
+
+    const result = await applyIssueEdit('issue-literal-entity', oldText, newText)
+
+    expect(result).toEqual({ ok: true })
+    const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
+    const putBody = JSON.parse(putCall?.[1]?.body as string)
+    expect(putBody.body.storage.value).toBe(`<p>${newText}</p>`)
+  })
+
   it('overwrites the heading text directly in the live DOM when the edit targets a heading (numbering fixes have no highlight mark)', async () => {
     // 넘버링 이슈는 applyIssueOverlay로 하이라이트된 적이 없어(overwriteMarkText가 못 찾음),
     // REST PUT이 성공해도 브라우저에 이미 로드된 DOM은 새로고침 전까지 그대로라 "반영 안 됐다"는

@@ -10,6 +10,7 @@ import type {
 } from '../content/messages'
 import { useAppState } from '../state/hooks'
 import type { IssueEdit } from '../state/types'
+import { isReferenceLocation } from '../utils/locationLabel'
 
 // 매번 chrome.tabs.query({active:true})로 "지금 활성 탭"을 다시 찾으면, 사용자가 패널을 열어둔
 // 채 다른 탭(참고문서, DevTools 등)에 가 있는 동안 메시지가 엉뚱한 탭으로 가서 조용히
@@ -37,6 +38,45 @@ function resolvedText(issue: IssueResponse, edit: IssueEdit | undefined, target:
   return edit?.editedText ?? issue.input_text
 }
 
+// activeIssue/activeLocationIndex로부터 문서에 보낼 current(편집 가능)/related(읽기전용 틴트)를
+// 계산하는 순수 함수로 분리 — 훅 렌더링 없이 단위테스트할 수 있게 한다.
+export function computeOverlayTargets(
+  activeIssue: IssueResponse,
+  edit: IssueEdit | undefined,
+  activeLocationIndex: number,
+): { current: EditableSuggestionLocation; related: SuggestionLocation | null } {
+  const hasRelated = !!activeIssue.related_original_text
+  const primaryLoc: SuggestionLocation = {
+    text: resolvedText(activeIssue, edit, 'primary'),
+    location: activeIssue.location,
+  }
+  const relatedLoc: SuggestionLocation | null = hasRelated
+    ? { text: resolvedText(activeIssue, edit, 'related'), location: activeIssue.related_location ?? activeIssue.location }
+    : null
+
+  // XDC(타문서 정합성)의 related는 같은 문서 안의 두 번째 위치가 아니라 참고문서 쪽 원문이다 —
+  // 지금 열려있는 문서 안에는 그 텍스트/헤딩이 존재할 이유가 없다. 그런데도 문서 쪽에 그 텍스트를
+  // 보내면 findAnchorElement가 못 찾고 헤딩-폴백으로 넘어가는데, 참고문서 쪽 라벨("[문서명]
+  // 섹션")의 leaf 제목이 우연히 지금 문서의 어떤 헤딩과 같으면 그 엉뚱한 헤딩이 편집 가능하게
+  // 열려버린다 — SuggestionDirectionCard가 "수정 대상이 아니에요"라고 보여준 바로 뒤에 정작
+  // 편집은 열리는 모순이 생긴다(코드 리뷰로 확인된 버그). current/related 어느 쪽으로도 문서에
+  // 보내지 않는다.
+  const isXdcReference = isReferenceLocation(activeIssue.related_location)
+
+  // activeLocationIndex===1(내비게이터로 관련 위치를 보는 중)이면 current/related를 뒤바꿔서
+  // 보낸다 — content script 입장에서 "current"는 편집 가능한 실선 틴트가 붙는 쪽이다. related
+  // 위치를 편집 중일 땐 비교 기준이 될 "AI 제안"이 없어서 suggestion을 null로 보낸다(저장 전
+  // AI 유사도 체크를 건너뛰라는 신호 — 패널의 기존 편집 로직과 동일한 규칙). XDC 참고문서 쪽일
+  // 땐 위 이유로 절대 뒤바꾸지 않는다 — primary(이 문서 안의 실제 편집 대상)를 계속 current로 둔다.
+  const viewingRelated = activeLocationIndex === 1 && hasRelated && !isXdcReference
+  const current: EditableSuggestionLocation = viewingRelated
+    ? { ...(relatedLoc as SuggestionLocation), criteria: activeIssue.criteria, reason: activeIssue.reason, suggestion: null }
+    : { ...primaryLoc, criteria: activeIssue.criteria, reason: activeIssue.reason, suggestion: activeIssue.suggestion }
+  const related = viewingRelated ? primaryLoc : isXdcReference ? null : relatedLoc
+
+  return { current, related }
+}
+
 // 3b/3c(상세) 화면에서 지금 작업 중인 제안(activeIssueId)이 바뀌거나 위치 내비게이터로
 // primary/related를 오갈 때마다, 문서 본문에 그 위치(current)만 편집 가능하게 틴트하고 나머지는
 // 흐리게 만든다. 3a(목록, activeIssueId===null)로 돌아가거나 다른 화면으로 넘어가면 오버레이를
@@ -57,24 +97,7 @@ export function useSuggestionOverlaySync(): void {
     if (!activeIssue) return
 
     const edit = issueEdits[activeIssueId]
-    const hasRelated = !!activeIssue.related_original_text
-    const primaryLoc: SuggestionLocation = {
-      text: resolvedText(activeIssue, edit, 'primary'),
-      location: activeIssue.location,
-    }
-    const relatedLoc: SuggestionLocation | null = hasRelated
-      ? { text: resolvedText(activeIssue, edit, 'related'), location: activeIssue.related_location ?? activeIssue.location }
-      : null
-
-    // activeLocationIndex===1(내비게이터로 관련 위치를 보는 중)이면 current/related를 뒤바꿔서
-    // 보낸다 — content script 입장에서 "current"는 편집 가능한 실선 틴트가 붙는 쪽이다. related
-    // 위치를 편집 중일 땐 비교 기준이 될 "AI 제안"이 없어서 suggestion을 null로 보낸다(저장 전
-    // AI 유사도 체크를 건너뛰라는 신호 — 패널의 기존 편집 로직과 동일한 규칙).
-    const viewingRelated = activeLocationIndex === 1 && hasRelated
-    const current: EditableSuggestionLocation = viewingRelated
-      ? { ...(relatedLoc as SuggestionLocation), criteria: activeIssue.criteria, reason: activeIssue.reason, suggestion: null }
-      : { ...primaryLoc, criteria: activeIssue.criteria, reason: activeIssue.reason, suggestion: activeIssue.suggestion }
-    const related = viewingRelated ? primaryLoc : relatedLoc
+    const { current, related } = computeOverlayTargets(activeIssue, edit, activeLocationIndex)
 
     const doneLocations: SuggestionLocation[] = issues
       .filter((issue) => issue.id !== activeIssueId && issueEdits[issue.id] !== undefined)

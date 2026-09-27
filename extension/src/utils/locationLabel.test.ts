@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatLocationLabel } from './locationLabel'
+import { formatLocationLabel, isReferenceLocation } from './locationLabel'
 
 describe('formatLocationLabel', () => {
   it('returns the raw location unchanged when there is no computed number', () => {
@@ -36,5 +36,23 @@ describe('formatLocationLabel', () => {
 
   it('strips the author\'s own number on the leaf segment of a chain', () => {
     expect(formatLocationLabel('2. 발송 정책 > 2-3. 대상 제외 기준', '2-3')).toBe('2-3. 대상 제외 기준')
+  })
+})
+
+describe('isReferenceLocation', () => {
+  it('recognizes the "[문서ID] 섹션" label XDC related_location is synthesized as', () => {
+    expect(isReferenceLocation('[DOC-005] §2-1')).toBe(true)
+  })
+
+  it('returns false for a plain heading label', () => {
+    expect(isReferenceLocation('5-2. 환불 정책')).toBe(false)
+  })
+
+  it('returns false for a " > " chain label', () => {
+    expect(isReferenceLocation('발송 정책 > 발송 채널')).toBe(false)
+  })
+
+  it('returns false for null', () => {
+    expect(isReferenceLocation(null)).toBe(false)
   })
 })

@@ -1,5 +1,6 @@
 import type { IssueResponse } from '../../api/types'
 import { useAppState } from '../../state/hooks'
+import { isReferenceLocation } from '../../utils/locationLabel'
 import { QuoteHighlightedText } from '../common/QuoteHighlightedText'
 
 type Target = 'primary' | 'related'
@@ -19,6 +20,10 @@ export function SuggestionDirectionCard({ issue }: { issue: IssueResponse }) {
 
   const target: Target = activeLocationIndex === 1 && issue.related_original_text ? 'related' : 'primary'
   const isInsertRangeIssue = issue.frame_type === 'insert_range'
+  // XDC(타문서 정합성)의 related는 같은 문서 안의 두 번째 위치(LG/LF/GA)가 아니라 참고문서 쪽
+  // 원문이다 — 이 문서는 검토·수정 대상이 아니므로 "수정 방향성 제안"이 아니라 원문 그대로임을
+  // 밝히고, 왼쪽 문서를 고치라는 안내도 보여주지 않는다.
+  const isReferenceTarget = target === 'related' && isReferenceLocation(issue.related_location)
 
   const edit = issueEdits[issue.id]
   const savedText = target === 'related' ? edit?.relatedEditedText : edit?.editedText
@@ -29,19 +34,25 @@ export function SuggestionDirectionCard({ issue }: { issue: IssueResponse }) {
   return (
     <div className="suggestion-direction-card">
       <div className="suggestion-direction-header">
-        <span className="issue-detail-label">수정 방향성 제안</span>
-        {!isInsertRangeIssue && resolved && <span className="resolved-badge">✓ 수정완료</span>}
+        <span className="issue-detail-label">{isReferenceTarget ? '참고 내용' : '수정 방향성 제안'}</span>
+        {!isInsertRangeIssue && !isReferenceTarget && resolved && (
+          <span className="resolved-badge">✓ 수정완료</span>
+        )}
       </div>
 
       <p className="suggestion-direction-text">
         <QuoteHighlightedText text={displayText} quoteClassName="gradient-quote" />
       </p>
 
-      {!isInsertRangeIssue && !resolved && (
+      {isReferenceTarget && (
+        <p className="issue-suggestion-hint">참고문서의 원문이에요 — 이 문서 자체는 수정 대상이 아니에요.</p>
+      )}
+
+      {!isInsertRangeIssue && !isReferenceTarget && !resolved && (
         <p className="issue-suggestion-hint">왼쪽 문서에서 해당 문단을 클릭하면 바로 고칠 수 있어요.</p>
       )}
 
-      {isInsertRangeIssue && (
+      {isInsertRangeIssue && !isReferenceTarget && (
         <p className="issue-suggestion-hint">
           문서에 없는 내용을 추가하라는 안내라, 자동으로 반영할 수 없어요. 문서에서 표시된 위치를 직접
           확인하고 반영해주세요.

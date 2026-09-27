@@ -706,6 +706,22 @@ function decodeStorageHtmlText(html: string): { fullText: string; rawRanges: Arr
   return { fullText, rawRanges }
 }
 
+// 매치 구간 안에서 태그가 아닌 것으로 취급한 원본 바이트 중, 실사용 storage HTML엔 있지만 이
+// 함수가 "태그"로 인식 못 하는 구조(예: 엔티티가 아닌 다른 이스케이프, 예상 못 한 매크로 마크업)가
+// 섞여 있으면 middle 디코딩 결과가 newText와 달라진다 — "4-2"→"4-3" 치환이 "4-33"으로 저장되는
+// 실사용 버그가 바로 이런 조용한 불일치였다(정확한 원인은 재현 데이터 없이는 특정 못 함).
+// replaceInStorageHtml/logReplaceMismatch가 그 불일치를 실패로 바꿔 저장을 막고, 다음 재현 때
+// 진짜 원인을 알 수 있게 실제 매치 구간의 원본 HTML을 콘솔에 남긴다.
+function logReplaceMismatch(html: string, oldText: string, newText: string, rawStart: number, rawEnd: number, middle: string, middleDecoded: string): void {
+  console.warn('[SunniC] 치환 결과가 예상과 달라 저장을 중단합니다 — 아래 정보로 원인을 조사해주세요.', {
+    oldText,
+    newText,
+    matchedRawHtml: html.slice(rawStart, rawEnd),
+    producedMiddle: middle,
+    middleDecoded,
+  })
+}
+
 // storage HTML에서 oldText(공백은 느슨하게)를 찾아 newText로 치환한다. 매치 구간을 raw 오프셋으로
 // 역산한 뒤, 그 구간 [rawStart, rawEnd) 안을 다시 한번 훑어서 태그(<strong>, </li> 등)는 전부 그대로
 // 보존하고 실제 매치된 텍스트만 한 곳에 newText로 몰아 넣는다 — [rawStart, rawEnd)를 통째로 잘라내고
@@ -739,6 +755,15 @@ function replaceInStorageHtml(html: string, oldText: string, newText: string): s
     i += 1
   }
   if (!inserted) middle += newText
+
+  // 안전장치: middle을 디코딩한 실제 텍스트가 newText와 정확히 같아야 한다(위 루프가 태그 이외의
+  // 원본 문자를 전부 걷어내고 newText 하나만 남기도록 설계됐으므로 항상 성립해야 하는 불변식) —
+  // 어긋나면 원인 불명의 손상된 값을 조용히 저장하는 대신 실패로 처리한다.
+  const { fullText: middleDecoded } = decodeStorageHtmlText(middle)
+  if (middleDecoded !== newText) {
+    logReplaceMismatch(html, oldText, newText, rawStart, rawEnd, middle, middleDecoded)
+    return null
+  }
 
   return html.slice(0, rawStart) + middle + html.slice(rawEnd)
 }
@@ -854,6 +879,18 @@ async function ensureDuplicateSession(originalPageId: string): Promise<{ ok: tru
   // 현재 보고 있는 원본에서 만든 세션일 때만 재사용한다 — 다른 페이지 것이면 스테일이므로 새로 만든다.
   if (duplicateSession && duplicateSession.originalPageId === originalPageId) {
     return { ok: true, pageId: duplicateSession.pageId }
+  }
+
+  // 이미 이 originalPageId로 만들어둔 복제본이 있었는데(=duplicateSession이 모듈 메모리에만
+  // 살아있다가 content script 재주입 등으로 유실됐는데) 여기서 새 복제본을 또 만들면, 새
+  // 복제본은 "지금 원본"의 내용을 복사하므로 이전 복제본에만 쌓여있던 수정들이 조용히 안 보이게
+  // 된다("하모나이징을 적용했더니 이전 수정이 롤백됐다"는 실사용 보고와 일치) — 실제로 이 분기를
+  // 타면 원인 조사를 위해 무엇을 새로 만드는지 남긴다.
+  if (duplicateSession) {
+    console.warn('[SunniC] 복제본 세션이 유실되어 새로 만듭니다 — 이전 복제본의 수정 내역이 새 복제본에 없을 수 있습니다.', {
+      staleSession: duplicateSession,
+      requestedOriginalPageId: originalPageId,
+    })
   }
 
   const originalRes = await fetch(`${location.origin}/wiki/rest/api/content/${originalPageId}?expand=body.storage,space`, {

@@ -19,3 +19,11 @@ export function formatLocationLabel(location: string, locationNumber: string | n
   if (!locationNumber) return leaf
   return `${locationNumber}. ${leaf.replace(LEADING_NUMBER_RE, '')}`
 }
+
+// qa_jobs.py의 _to_issue_record가 XDC(타문서 정합성)의 related_location을 "[문서ID] 섹션"
+// 형태로 합성한다(관계형 LG/LF/GA 표시 경로를 재사용하면서 어느 문서 소속인지 구분하기 위함) —
+// 그 라벨만으로 "이 related는 같은 문서 안의 두 번째 위치가 아니라 참고문서 쪽"임을 판별한다.
+const REFERENCE_LOCATION_RE = /^\[.+\]/
+export function isReferenceLocation(location: string | null): boolean {
+  return location !== null && REFERENCE_LOCATION_RE.test(location)
+}

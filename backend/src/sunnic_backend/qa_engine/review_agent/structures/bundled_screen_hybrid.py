@@ -447,9 +447,23 @@ _CONFIRM_XDC_SYSTEM = (
     "excuse_reason) when a documented policy-change approval justifies the difference. When "
     "confirming a conflict, classify difference_type as one of \"value\", \"scope\", "
     "\"condition\", \"outcome\" (whichever axis the two documents actually disagree on).\n"
+    "The reference document is always the fixed baseline of this comparison — never written "
+    "by this pipeline, never the thing being fixed. fix_direction is always an instruction to "
+    "edit the CURRENT document, never the reference document. Write it by naming the current "
+    "document's exact wrong value/term and the reference document's exact correct value/term, "
+    "in the form \"'<current value>'를 '<reference value>'로 수정할 것을 권장합니다\" (or the "
+    "closest equivalent when the difference isn't a single quotable value, e.g. for a scope or "
+    "condition mismatch, name the specific scope/condition each document states). Never fall "
+    "back to a vague instruction that doesn't name either document's actual content, such as "
+    "\"두 문서 중 하나로 일치시키도록 수정 필요\" or \"내용을 통일해야 함\" — that kind of "
+    "restated-conflict non-instruction is a failure to produce fix_direction correctly. "
+    "Example: current says \"신청 기한은 7일 이내\", reference says \"신청 기한은 14일 "
+    "이내\" — fix_direction should be \"'7일'을 참고문서 기준인 '14일'로 수정할 것을 "
+    "권장합니다\", not \"신청 기한을 참고문서와 일치시킬 것\".\n"
     'Respond with JSON only: {"verdicts": [{"index": <int>, "violated": <bool>, "rule_id": '
     '"<id or null>", "description": "<what conflicts>", "rationale": "<why it conflicts>", '
-    '"fix_direction": "<suggested revision>", "excused": <bool>, "excuse_reason": "<string or '
+    '"fix_direction": "<instruction to edit the current document, naming both documents\' '
+    'actual values as described above>", "excused": <bool>, "excuse_reason": "<string or '
     'null>", "difference_type": "<value|scope|condition|outcome, or null>"}, ...]}'
 )
 

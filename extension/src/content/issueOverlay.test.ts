@@ -1,17 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  __resetDuplicateSessionForTests,
   applyIssueEdit,
   clearActiveSuggestion,
   clearQaPassedBadge,
   commitDocumentEdits,
-  formatKstTimestamp,
-  getActiveDuplicatePageId,
+  flushPendingEdits,
   scrollToLocation,
+  scrollToReferencedLocationFromUrl,
   setActiveSuggestion,
   showQaPassedBadge,
 } from './issueOverlay'
 import type { EditableSuggestionLocation, SuggestionLocation } from './messages'
+import { REFERENCE_SCROLL_LOCATION_PARAM, REFERENCE_SCROLL_TEXT_PARAM } from './referenceScrollParams'
 
 const CURRENT: EditableSuggestionLocation = {
   text: '3사만 지원, 페이코 미지원',
@@ -35,23 +35,21 @@ function clickInto(el: HTMLElement): void {
 }
 
 const ORIGINAL_PAGE_ID = '482910'
-const DUPLICATE_PAGE_ID = '900001'
 // CURRENT.text("3사만 지원, 페이코 미지원")는 이 문단 전체가 아니라 AI가 지목한 한 구절이다 —
 // dataset.sunnicOriginalText는 이제 문단 전체 스냅샷을 담으므로(2026-08-30), 그걸 검증하는
 // 테스트는 CURRENT.text가 아니라 이 상수와 비교해야 한다.
 const FIRST_PARAGRAPH_FULL_TEXT = '간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원 안내.'
 const PAGE_HTML = `<p>${FIRST_PARAGRAPH_FULL_TEXT}</p><p>결제 실패 시 안내 문구 없음</p>`
 
+// 원본 페이지 하나만 GET/PUT하는 스텁 — 복제본 생성 없이 항상 원본에 직접 저장한다(2026-09-23).
 function stubConfluenceFetch(overrides?: {
-  duplicateBody?: string
-  createOk?: boolean
+  storageBody?: string
   putOk?: boolean
   similarityOk?: boolean
   similarityReason?: string
 }): ReturnType<typeof vi.fn> {
-  const createOk = overrides?.createOk ?? true
   const putOk = overrides?.putOk ?? true
-  const duplicateBody = overrides?.duplicateBody ?? PAGE_HTML
+  const storageBody = overrides?.storageBody ?? PAGE_HTML
   const similarityOk = overrides?.similarityOk ?? true
   const similarityReason = overrides?.similarityReason ?? ''
 
@@ -62,17 +60,8 @@ function stubConfluenceFetch(overrides?: {
     if (init?.method === 'PUT') {
       return new Response(JSON.stringify({ ok: true }), { status: putOk ? 200 : 500 })
     }
-    if (init?.method === 'POST') {
-      return new Response(JSON.stringify({ id: DUPLICATE_PAGE_ID, title: 'duplicate' }), { status: createOk ? 200 : 500 })
-    }
-    if (url.includes(`/wiki/rest/api/content/${ORIGINAL_PAGE_ID}`)) {
-      return new Response(
-        JSON.stringify({ title: 'PRD', space: { key: 'MFS' }, body: { storage: { value: PAGE_HTML } } }),
-        { status: 200 },
-      )
-    }
     return new Response(
-      JSON.stringify({ title: 'duplicate', version: { number: 1 }, body: { storage: { value: duplicateBody } } }),
+      JSON.stringify({ title: 'PRD', version: { number: 1 }, body: { storage: { value: storageBody } } }),
       { status: 200 },
     )
   })
@@ -89,7 +78,6 @@ interface HappyDomWindow {
 beforeEach(() => {
   document.body.innerHTML = `<main>${PAGE_HTML}</main>`
   ;(window as unknown as HappyDomWindow).happyDOM.setURL(`http://localhost:8000/mock-confluence/pages/${ORIGINAL_PAGE_ID}`)
-  __resetDuplicateSessionForTests()
   clearActiveSuggestion()
   clearQaPassedBadge()
   // test-setup.ts 전역 chrome 스텁엔 sendMessage가 없어 이 테스트에서만 보강한다.
@@ -133,6 +121,22 @@ describe('setActiveSuggestion', () => {
 
     expect(el.contentEditable).toBe('true')
     expect(el.dataset.sunnicOriginalText).toBe(FIRST_PARAGRAPH_FULL_TEXT)
+  })
+
+  // 실사용 버그: 이슈 A를 보는 동안 (current가 아닌) 다른 문단을 저장 없이 고친 뒤 이슈 B로
+  // 넘어가면, 예전 코드는 그 문단의 스냅샷을 "지금(=고친) 텍스트"로 다시 찍어버려 수정이 있었다는
+  // 사실 자체가 사라졌다 — 이미 스냅샷이 있는 블록은 다시 찍지 않아야 한다.
+  it('does not re-snapshot a block that already has an unsaved edit when switching to another suggestion', () => {
+    setActiveSuggestion({ current: CURRENT, related: RELATED, doneLocations: [] })
+    const paragraphs = document.querySelectorAll<HTMLElement>('p')
+    // related(paragraphs[1])를 저장 없이 고친다.
+    paragraphs[1].textContent = '결제 실패 시 재시도 버튼 안내'
+
+    // 다른 제안으로 넘어간다(예: 내비게이터/다음 이슈) — related였던 문단은 이번엔 등장하지 않는다.
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+
+    expect(paragraphs[1].dataset.sunnicOriginalText).toBe('결제 실패 시 안내 문구 없음')
+    expect(paragraphs[1].textContent).toBe('결제 실패 시 재시도 버튼 안내')
   })
 
   // 표시된(틴트된) 위치만 고칠 수 있게 막아둔 게 오히려 불편하다는 실사용 피드백(2026-08-30)으로
@@ -217,6 +221,20 @@ describe('clearActiveSuggestion', () => {
     // 첫 문단만 current였다(contentEditable이 켜졌었다) — clear 후 다시 꺼졌는지 확인.
     expect(document.querySelectorAll<HTMLElement>('p')[0].contentEditable).toBe('false')
     expect(document.querySelector('.sunnic-edit-actions')).toBeNull()
+  })
+
+  // 실사용 버그: clear 시 스냅샷을 지워버리면, 이슈 화면을 벗어난 뒤(예: 넘버링 확인 화면으로
+  // 이동) flushPendingEdits가 "저장 안 한 수정이 있었다"는 사실 자체를 알 방법이 없어진다.
+  it('keeps the unsaved-edit snapshot (dataset.sunnicOriginalText) intact after clearing', () => {
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+    const el = document.querySelector<HTMLElement>('p')
+    if (!el) throw new Error('paragraph not found')
+    el.textContent = '저장 안 하고 고친 문구'
+
+    clearActiveSuggestion()
+
+    expect(el.dataset.sunnicOriginalText).toBe(FIRST_PARAGRAPH_FULL_TEXT)
+    expect(el.textContent).toBe('저장 안 하고 고친 문구')
   })
 })
 
@@ -380,6 +398,36 @@ describe('scrollToLocation', () => {
   })
 })
 
+describe('scrollToReferencedLocationFromUrl', () => {
+  // 참고문서를 새 탭으로 열 때(confluence-extractor.ts) 그 탭 URL에 실어 보낸 위치로, 이 탭이
+  // 로드되자마자 스스로 스크롤한다.
+  it('scrolls to the location encoded in the URL and strips those params from it', () => {
+    const scrollSpy = vi.fn()
+    window.scrollTo = scrollSpy
+    const params = new URLSearchParams({
+      [REFERENCE_SCROLL_TEXT_PARAM]: FIRST_PARAGRAPH_FULL_TEXT,
+      [REFERENCE_SCROLL_LOCATION_PARAM]: '결제 수단',
+    })
+    ;(window as unknown as HappyDomWindow).happyDOM.setURL(
+      `http://localhost:8000/mock-confluence/pages/${ORIGINAL_PAGE_ID}?${params}`,
+    )
+
+    scrollToReferencedLocationFromUrl()
+
+    expect(scrollSpy).toHaveBeenCalled()
+    expect(window.location.search).toBe('')
+  })
+
+  it('does nothing when the URL carries neither scroll param', () => {
+    const scrollSpy = vi.fn()
+    window.scrollTo = scrollSpy
+
+    scrollToReferencedLocationFromUrl()
+
+    expect(scrollSpy).not.toHaveBeenCalled()
+  })
+})
+
 describe('showQaPassedBadge / clearQaPassedBadge', () => {
   it('injects a badge next to the document title and removes it on clear', () => {
     document.body.innerHTML = '<h1>PRD 문서</h1>'
@@ -463,22 +511,8 @@ describe('showQaPassedBadge / clearQaPassedBadge', () => {
   })
 })
 
-describe('formatKstTimestamp', () => {
-  it('formats a KST noon (UTC 03:00) correctly', () => {
-    expect(formatKstTimestamp(new Date('2026-08-10T03:00:00Z'))).toBe('2026. 8. 10. 오후 12:00:00')
-  })
-
-  it('formats a KST midnight (crossing into the next day) correctly', () => {
-    expect(formatKstTimestamp(new Date('2026-08-09T15:30:00Z'))).toBe('2026. 8. 10. 오전 12:30:00')
-  })
-
-  it('formats a regular afternoon time correctly', () => {
-    expect(formatKstTimestamp(new Date('2026-08-10T06:15:05Z'))).toBe('2026. 8. 10. 오후 3:15:05')
-  })
-})
-
 describe('applyIssueEdit', () => {
-  it('the first call creates a duplicate page instead of touching the original', async () => {
+  it('PUTs the edit directly to the original page — no duplicate page is created', async () => {
     const fetchMock = stubConfluenceFetch()
 
     const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
@@ -486,14 +520,10 @@ describe('applyIssueEdit', () => {
     expect(result).toEqual({ ok: true })
 
     const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
-    expect((putCall?.[0] as string)).toContain(DUPLICATE_PAGE_ID)
-    const originalPut = fetchMock.mock.calls.find(
-      ([url, init]) => (init as RequestInit | undefined)?.method === 'PUT' && (url as string).includes(ORIGINAL_PAGE_ID),
-    )
-    expect(originalPut).toBeUndefined()
+    expect((putCall?.[0] as string)).toContain(ORIGINAL_PAGE_ID)
 
     const postCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
-    expect(postCall).toBeDefined()
+    expect(postCall).toBeUndefined()
 
     const putBody = JSON.parse((putCall?.[1] as RequestInit).body as string) as {
       body: { storage: { value: string } }
@@ -514,28 +544,9 @@ describe('applyIssueEdit', () => {
     expect(originalGet).toBeDefined()
   })
 
-  it('stamps the duplicate title with Korea time computed by pure arithmetic, not Intl', async () => {
-    vi.stubEnv('TZ', 'UTC')
-    const fixedNow = new Date('2026-08-10T03:00:00Z')
-    vi.useFakeTimers()
-    vi.setSystemTime(fixedNow)
-    try {
-      const fetchMock = stubConfluenceFetch()
-
-      await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
-
-      const postCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
-      const body = JSON.parse((postCall?.[1] as RequestInit).body as string) as { title: string }
-      expect(body.title).toContain('2026. 8. 10. 오후 12:00:00')
-    } finally {
-      vi.useRealTimers()
-      vi.unstubAllEnvs()
-    }
-  })
-
-  it('a second call reuses the same duplicate page instead of creating another one', async () => {
+  it('each call PUTs independently to the original — no session/duplicate reuse needed', async () => {
     const fetchMock = stubConfluenceFetch({
-      duplicateBody: `${PAGE_HTML}<p>결제 실패 원인에 대한 안내가 필요하다.</p>`,
+      storageBody: `${PAGE_HTML}<p>결제 실패 원인에 대한 안내가 필요하다.</p>`,
     })
 
     await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
@@ -544,28 +555,21 @@ describe('applyIssueEdit', () => {
     const puts = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
     const posts = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
     expect(puts).toHaveLength(2)
-    expect(posts).toHaveLength(1)
+    expect(posts).toHaveLength(0)
   })
 
-  it('fails without creating a duplicate when not on a Confluence page URL', async () => {
+  it('fails without a PUT when not on a Confluence page URL', async () => {
     ;(window as unknown as HappyDomWindow).happyDOM.setURL('http://localhost:8000/not-a-confluence-page')
-    stubConfluenceFetch()
+    const fetchMock = stubConfluenceFetch()
 
     const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
     expect(result.ok).toBe(false)
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')).toBe(false)
   })
 
-  it('returns an error when the duplicate cannot be created', async () => {
-    stubConfluenceFetch({ createOk: false })
-
-    const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
-
-    expect(result.ok).toBe(false)
-  })
-
-  it('returns an error when the original text is missing from the duplicate', async () => {
-    stubConfluenceFetch({ duplicateBody: '<p>완전히 다른 본문</p>' })
+  it('returns an error when the original text is missing from the page', async () => {
+    stubConfluenceFetch({ storageBody: '<p>완전히 다른 본문</p>' })
 
     const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
@@ -573,7 +577,7 @@ describe('applyIssueEdit', () => {
   })
 
   it('still finds the text in storage HTML when its whitespace differs from the live DOM', async () => {
-    const fetchMock = stubConfluenceFetch({ duplicateBody: '<p>3사만  지원,\n페이코 미지원</p>' })
+    const fetchMock = stubConfluenceFetch({ storageBody: '<p>3사만  지원,\n페이코 미지원</p>' })
 
     const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
@@ -587,7 +591,7 @@ describe('applyIssueEdit', () => {
     const oldText = '- 신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음'
     const newText = '신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 25% 낮음'
     const fetchMock = stubConfluenceFetch({
-      duplicateBody: '<ul><li>신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음</li></ul>',
+      storageBody: '<ul><li>신규 입고 상품 섹션의 체류 시간이 타 섹션 대비 낮음</li></ul>',
     })
 
     const result = await applyIssueEdit('issue-bullet-prefix', oldText, newText)
@@ -605,7 +609,7 @@ describe('applyIssueEdit', () => {
     const fragment =
       '<li><p><strong>홈 UV (Unique Visitor) 월 2만명 달성</strong><br />근거: 구매 전환율 1.5% 목표 달성을 위해 ' +
       '장바구니 유입 최소 1,000명 필요. 홈&rarr;장바구니 이탈율 95% 가정 시 월 2만명 유입 필요.</p></li>'
-    const fetchMock = stubConfluenceFetch({ duplicateBody: fragment })
+    const fetchMock = stubConfluenceFetch({ storageBody: fragment })
 
     const result = await applyIssueEdit('issue-entity', oldText, newText)
 
@@ -619,10 +623,10 @@ describe('applyIssueEdit', () => {
 
   it('overwrites the heading text directly in the live DOM when the edit targets a heading (numbering fixes have no highlight mark)', async () => {
     // 넘버링 이슈는 applyIssueOverlay로 하이라이트된 적이 없어(overwriteMarkText가 못 찾음),
-    // 저장이 복제본에 성공해도 지금 보고 있는 화면엔 아무 변화가 없어 "반영 안 됐다"는 오인으로
-    // 이어졌다(실사용 확인) — 헤딩 텍스트를 직접 찾아 로컬로 덮어써야 한다.
+    // REST PUT이 성공해도 브라우저에 이미 로드된 DOM은 새로고침 전까지 그대로라 "반영 안 됐다"는
+    // 오인으로 이어졌다(실사용 확인) — 헤딩 텍스트를 직접 찾아 로컬로 덮어써야 한다.
     document.body.innerHTML = '<main><h2>4. 해결 방안</h2><p>본문</p></main>'
-    const fetchMock = stubConfluenceFetch({ duplicateBody: '<h2>4. 해결 방안</h2><p>본문</p>' })
+    const fetchMock = stubConfluenceFetch({ storageBody: '<h2>4. 해결 방안</h2><p>본문</p>' })
 
     const result = await applyIssueEdit('numbering-issue-1', '4. 해결 방안', '3. 해결 방안')
 
@@ -635,7 +639,7 @@ describe('applyIssueEdit', () => {
 
   it('preserves inline markup inside the heading when only the number segment differs', async () => {
     document.body.innerHTML = '<main><h2>4. 해결 <strong>방안</strong></h2></main>'
-    stubConfluenceFetch({ duplicateBody: '<h2>4. 해결 <strong>방안</strong></h2>' })
+    stubConfluenceFetch({ storageBody: '<h2>4. 해결 <strong>방안</strong></h2>' })
 
     const result = await applyIssueEdit('numbering-issue-2', '4. 해결 방안', '3. 해결 방안')
 
@@ -646,7 +650,7 @@ describe('applyIssueEdit', () => {
 
   it('does not throw and leaves the DOM untouched when no heading matches oldText', async () => {
     document.body.innerHTML = '<main><h2>다른 제목</h2></main>'
-    stubConfluenceFetch({ duplicateBody: '<p>4. 해결 방안</p>' })
+    stubConfluenceFetch({ storageBody: '<p>4. 해결 방안</p>' })
 
     const result = await applyIssueEdit('numbering-issue-3', '4. 해결 방안', '3. 해결 방안')
 
@@ -655,45 +659,13 @@ describe('applyIssueEdit', () => {
   })
 })
 
-describe('getActiveDuplicatePageId', () => {
-  it('returns null before any edit has been applied (no duplicate created yet)', () => {
-    expect(getActiveDuplicatePageId(ORIGINAL_PAGE_ID)).toBeNull()
-  })
-
-  it('returns the duplicate page id once an edit has been applied', async () => {
-    stubConfluenceFetch()
-
-    await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
-
-    expect(getActiveDuplicatePageId(ORIGINAL_PAGE_ID)).toBe(DUPLICATE_PAGE_ID)
-  })
-
-  it('returns null when asked about a different original page (stale SPA session)', async () => {
-    stubConfluenceFetch()
-
-    await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
-
-    expect(getActiveDuplicatePageId('999999')).toBeNull()
-  })
-
-  it('returns null when the caller could not determine the current page id', async () => {
-    stubConfluenceFetch()
-
-    await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
-
-    expect(getActiveDuplicatePageId(null)).toBeNull()
-  })
-})
-
 describe('commitDocumentEdits', () => {
-  // 복제본 세션이 없는 상태에서: STEP 3는 원본을 읽고, 실제 반영 시 원본을 복제해 저장한다.
-  function stubFetchForCommit(storedHtml: string, dupHtml?: string): ReturnType<typeof vi.fn> {
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+  // 원본 페이지 하나만 GET/PUT한다 — 복제본이 없으니 항상 원본을 읽고 원본에 그대로 반영한다.
+  function stubFetchForCommit(storedHtml: string): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === 'PUT') return new Response(JSON.stringify({ ok: true }), { status: 200 })
-      if (init?.method === 'POST') return new Response(JSON.stringify({ id: DUPLICATE_PAGE_ID }), { status: 200 })
-      const value = url.includes(DUPLICATE_PAGE_ID) ? (dupHtml ?? storedHtml) : storedHtml
       return new Response(
-        JSON.stringify({ title: 'PRD', space: { key: 'MFS' }, version: { number: 1 }, body: { storage: { value } } }),
+        JSON.stringify({ title: 'PRD', version: { number: 1 }, body: { storage: { value: storedHtml } } }),
         { status: 200 },
       )
     })
@@ -706,14 +678,20 @@ describe('commitDocumentEdits', () => {
       .filter(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
       .map(([, init]) => JSON.parse((init as RequestInit).body as string).body.storage.value as string)
 
+  const getCalls = (fetchMock: ReturnType<typeof vi.fn>): number =>
+    fetchMock.mock.calls.filter(([, init]) => !(init as RequestInit | undefined)?.method).length
+
   it('reconciles only the heading whose number changed in the live DOM', async () => {
     document.body.innerHTML = '<main><h2>1. 개요</h2><h2>3. 문제 정의</h2></main>'
     const fetchMock = stubFetchForCommit('<h2>1. 개요</h2><h2>2. 문제 정의</h2>')
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 1 })
+    expect(result).toEqual({ ok: true, reconciled: 1, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual(['<h2>1. 개요</h2><h2>3. 문제 정의</h2>'])
+    // 헤딩 대조용으로 commitDocumentEdits 자신이 원본을 한 번 읽고, 실제 치환/저장을 맡는
+    // replaceAllAndSave가 저장 직전에 다시 한 번 독립적으로 읽는다 — 총 2번.
+    expect(getCalls(fetchMock)).toBe(2)
   })
 
   it('changes only the number segment, preserving the rest of the title verbatim', async () => {
@@ -722,7 +700,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 1 })
+    expect(result).toEqual({ ok: true, reconciled: 1, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual(['<h2>1. 개요</h2><h2>2. 해결 방안(안건 A)</h2>'])
   })
 
@@ -732,7 +710,20 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 0, skippedCountMismatch: true })
+    expect(result).toEqual({ ok: true, reconciled: 0, pageId: ORIGINAL_PAGE_ID, skippedCountMismatch: true })
+    expect(putBodies(fetchMock)).toEqual([])
+  })
+
+  it('skips headings whose stripped title repeats, even when count matches (ambiguous position match)', async () => {
+    // "배경"이 두 섹션에 각각 있고(스토어드), 사용자가 그 둘을 화면에서 맞바꿔 놓은 상태 — 개수는
+    // 그대로라 count-mismatch 가드로는 못 걸러낸다. 위치만으로 매칭하면 번호를 서로 바꿔치기하게
+    // 되므로, "배경"이 중복인 이상 아예 건드리지 않아야 한다.
+    document.body.innerHTML = '<main><h2>2-1. 배경</h2><h2>1-1. 배경</h2></main>'
+    const fetchMock = stubFetchForCommit('<h2>1-1. 배경</h2><h2>2-1. 배경</h2>')
+
+    const result = await commitDocumentEdits()
+
+    expect(result).toEqual({ ok: true, reconciled: 0, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual([])
   })
 
@@ -742,7 +733,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 0 })
+    expect(result).toEqual({ ok: true, reconciled: 0, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual([])
   })
 
@@ -757,7 +748,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 2 })
+    expect(result).toEqual({ ok: true, reconciled: 2, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual([
       '<h2>1. 개요</h2><h3>1-1. 목적</h3><h3>1-2. 적용 범위</h3>' +
         '<h2>2. 문제 정의</h2><h3>2-2. 배경</h3><h3>2-3. 문제점</h3>',
@@ -770,7 +761,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 0 })
+    expect(result).toEqual({ ok: true, reconciled: 0, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual([])
   })
 
@@ -780,7 +771,7 @@ describe('commitDocumentEdits', () => {
 
     const result = await commitDocumentEdits()
 
-    expect(result).toEqual({ ok: true, reconciled: 0 })
+    expect(result).toEqual({ ok: true, reconciled: 0, pageId: ORIGINAL_PAGE_ID })
     expect(putBodies(fetchMock)).toEqual([])
   })
 
@@ -792,5 +783,63 @@ describe('commitDocumentEdits', () => {
 
     expect(result.ok).toBe(false)
     expect(putBodies(fetchMock)).toEqual([])
+  })
+})
+
+describe('flushPendingEdits', () => {
+  it('does nothing and skips the network entirely when nothing was edited', async () => {
+    const fetchMock = stubConfluenceFetch()
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+
+    const result = await flushPendingEdits()
+
+    expect(result).toEqual({ ok: true, flushed: 0 })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  // 이슈를 옮겨다니는 동안 저장 버튼 없이 고친 문단들이, 이슈 화면을 벗어난 뒤(clearActiveSuggestion이
+  // editableElements를 비운 뒤)에도 문서 전체를 다시 훑어서 전부 찾아지는지 확인한다.
+  it('collects every block whose text differs from its snapshot, even after leaving the issue screen', async () => {
+    const fetchMock = stubConfluenceFetch()
+    setActiveSuggestion({ current: CURRENT, related: RELATED, doneLocations: [] })
+    const paragraphs = document.querySelectorAll<HTMLElement>('p')
+    paragraphs[0].textContent = '4사만 지원, 페이코 미지원 안내로 변경'
+    paragraphs[1].textContent = '결제 실패 시 재시도 버튼 안내'
+    clearActiveSuggestion()
+
+    const result = await flushPendingEdits()
+
+    expect(result).toEqual({ ok: true, flushed: 2 })
+    const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
+    const putBody = JSON.parse((putCall?.[1] as RequestInit).body as string) as { body: { storage: { value: string } } }
+    expect(putBody.body.storage.value).toContain('4사만 지원, 페이코 미지원 안내로 변경')
+    expect(putBody.body.storage.value).toContain('결제 실패 시 재시도 버튼 안내')
+  })
+
+  it('updates the snapshot after a successful flush so a second call finds nothing left to save', async () => {
+    stubConfluenceFetch()
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+    const el = document.querySelector<HTMLElement>('p')
+    if (!el) throw new Error('paragraph not found')
+    el.textContent = '4사만 지원, 페이코 미지원'
+
+    const first = await flushPendingEdits()
+    const second = await flushPendingEdits()
+
+    expect(first).toEqual({ ok: true, flushed: 1 })
+    expect(second).toEqual({ ok: true, flushed: 0 })
+  })
+
+  it('propagates the underlying save failure and leaves the snapshot untouched for a retry', async () => {
+    stubConfluenceFetch({ putOk: false })
+    setActiveSuggestion({ current: CURRENT, related: null, doneLocations: [] })
+    const el = document.querySelector<HTMLElement>('p')
+    if (!el) throw new Error('paragraph not found')
+    el.textContent = '4사만 지원, 페이코 미지원'
+
+    const result = await flushPendingEdits()
+
+    expect(result.ok).toBe(false)
+    expect(el.dataset.sunnicOriginalText).toBe(FIRST_PARAGRAPH_FULL_TEXT)
   })
 })

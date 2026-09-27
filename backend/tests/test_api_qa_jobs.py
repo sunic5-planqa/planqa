@@ -80,7 +80,7 @@ class FakeAnthropicClient:
 
 
 async def test_qa_job_runs_pipeline_and_produces_mapped_issues(monkeypatch) -> None:
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
@@ -130,7 +130,7 @@ async def test_qa_job_create_returns_404_for_unknown_document() -> None:
 # team_code 없이 호출하는 기존 경로가 이전(팀 규칙 기능 도입 전)과 동일하게 동작하는지에 대한
 # 회귀 테스트 — CreateQAJobRequest에 기본값이 있어 바디 없이 POST해도 그대로 통과해야 한다.
 async def test_qa_job_create_without_body_still_works(monkeypatch) -> None:
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
@@ -150,7 +150,7 @@ async def test_qa_job_create_without_body_still_works(monkeypatch) -> None:
 # 그대로 반환하는 어댑터 계약(test_team_rule_adapter.py에서 단위 테스트됨)이 실제 API 경로에서도
 # QA 실행을 방해하지 않는지 확인.
 async def test_qa_job_create_with_team_code_but_no_team_rules_still_succeeds(monkeypatch) -> None:
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
@@ -306,11 +306,10 @@ async def test_qa_job_always_runs_a_fresh_review_even_for_identical_document_tex
         return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(issue,))
 
     monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
-    # TEMP: _run_review_sync currently constructs GeminiClient for both screen_llm/confirm_llm
-    # (see its own TEMP comment) — patch that name instead until ANTHROPIC_API_KEY is ready and
-    # confirm_llm moves to AnthropicClient, or this double never gets used and the test hits the
-    # real Gemini API.
+    # review_document() is faked above, but _run_review_sync still constructs screen_llm/
+    # confirm_llm before calling it — patch both client names so neither hits a real API.
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -369,7 +368,7 @@ async def test_qa_job_with_reference_document_ids_passes_texts_and_maps_xdc_issu
         return qa_jobs.ReviewResult(doc_id=doc_id, global_context="", issues=(issue,))
 
     monkeypatch.setattr(qa_jobs, "review_document", fake_review_document)
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     transport = ASGITransport(app=app)
@@ -621,11 +620,58 @@ def test_to_issue_record_maps_xdc_reference_into_related_location_fields() -> No
     record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, {})
 
     assert record.criteria == "타 문서 정합성"
+    # reference_document_titles를 안 주면(호출부가 제목을 못 찾은 경우) id 그대로 폴백한다.
     assert record.related_location == "[DOC-005] §2-1"
     assert record.related_original_text == "신청 기한: 상품 수령일로부터 14일 이내"
     assert record.frame_type == qa_jobs.FrameType.RANGE
     # XDC의 두 번째 위치는 다른 문서라 이 문서의 heading_numbers에 없다 — 번호 없이 라벨로만.
     assert record.related_location_number is None
+
+
+def test_to_issue_record_shows_reference_document_title_instead_of_its_id() -> None:
+    rulebook = _xdc_lookup_rulebook()
+    issue = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="4-1",
+        description="신청 기한이 다름",
+        original_text="단순 변심 | 상품 수령일로부터 7일 이내",
+        rationale="현재 문서는 7일, 참고문서는 14일",
+        reference_document="doc-uuid-005",
+        reference_section="§2-1",
+        reference_quote="신청 기한: 상품 수령일로부터 14일 이내",
+        difference_type="value",
+    )
+
+    record = qa_jobs._to_issue_record(
+        "job-1", "문서 본문", rulebook, issue, {}, {"doc-uuid-005": "NxEF 반품/교환 정책서"}
+    )
+
+    assert record.related_location == "[NxEF 반품/교환 정책서] §2-1"
+
+
+def test_to_issue_record_trims_reference_section_to_its_leaf_heading() -> None:
+    rulebook = _xdc_lookup_rulebook()
+    issue = qa_jobs.ReviewIssue(
+        doc_id="DOC-TEST",
+        level="Paragraph",
+        rule_id="XDC-01",
+        location="4-1",
+        description="신청 기한이 다름",
+        original_text="단순 변심 | 상품 수령일로부터 7일 이내",
+        rationale="현재 문서는 7일, 참고문서는 14일",
+        reference_document="DOC-005",
+        reference_section="2. 반품 가능 조건 및 기한 > 2-1. 단순 변심 반품",
+        reference_quote="신청 기한: 상품 수령일로부터 14일 이내",
+        difference_type="value",
+    )
+
+    record = qa_jobs._to_issue_record("job-1", "문서 본문", rulebook, issue, {})
+
+    # 전체 위계 체인이 아니라 가장 안쪽 제목만 남는다 — 안 그러면 프론트의 locationLeaf가
+    # "[DOC-005]" 쪽을 통째로 버려버린다.
+    assert record.related_location == "[DOC-005] 2-1. 단순 변심 반품"
 
 
 # 관계형(LG/LF/GA) 이슈의 두 번째 위치도 첫 번째와 같은 방식으로 문서 등장 순서 기반 넘버를
@@ -670,8 +716,7 @@ def test_to_issue_record_leaves_related_location_number_none_when_no_heading_mat
     assert record.related_location_number is None
 
 
-# 원문 헤딩 자체의 번호는 작성자마다 있기도 없기도 해서 신뢰할 수 없다는 게 실사용 피드백으로
-# 확인됨 — 문서 안 등장 순서를 우리가 직접 세어 번호를 매긴다.
+# 헤딩에 번호가 아예 없으면 등장 순서를 우리가 직접 세어 번호를 매긴다.
 def test_build_heading_numbers_numbers_logical_units_in_document_order() -> None:
     document = "# 제목\n\n## 배경\n\n본문1\n\n## 요구사항\n\n본문2\n"
 
@@ -680,15 +725,25 @@ def test_build_heading_numbers_numbers_logical_units_in_document_order() -> None
     assert numbers == {"배경": "1", "요구사항": "2"}
 
 
-def test_build_heading_numbers_ignores_the_authors_own_numbering() -> None:
-    # 작성자가 이미 "1. 배경"처럼 번호를 써놨어도, 그 문자열 자체가 location 값이니 그대로 키가
-    # 되고, 우리가 계산한 번호("1")는 그 문자열과 별개의 값으로 나온다 — 프론트가 원문 텍스트를
-    # 그대로 보여주면서 이 숫자를 덧붙이는 방식이라 코드가 원문 번호를 "무시"할 필요는 없다.
+def test_build_heading_numbers_trusts_the_authors_own_numbering_when_present() -> None:
     document = "# 제목\n\n## 1. 배경\n\n본문1\n\n## 2. 요구사항\n\n본문2\n"
 
     numbers = qa_jobs._build_heading_numbers(document)
 
     assert numbers == {"1. 배경": "1", "2. 요구사항": "2"}
+
+
+def test_build_heading_numbers_keeps_the_authors_number_despite_an_extra_heading_before_it() -> None:
+    # 실사용 중 확인된 버그: 작성자가 번호를 안 매긴(또는 번호를 안 세는) 헤딩이 앞에 하나
+    # 더 있으면, 등장 순서로만 세는 예전 방식은 그 뒤 모든 번호를 하나씩 밀어버렸다
+    # ("4-1. 반품 가능 기한"이 "5-1"로 표시). 작성자 번호가 있으면 등장 순서를 무시하고
+    # 그 번호를 그대로 써서, 이런 밀림이 생기지 않아야 한다.
+    document = "# 제목\n\n## 안내\n\n본문0\n\n## 4. 반품 정책\n\n### 4-1. 반품 가능 기한\n\n본문1\n"
+
+    numbers = qa_jobs._build_heading_numbers(document)
+
+    assert numbers["4. 반품 정책"] == "4"
+    assert numbers["4. 반품 정책 > 4-1. 반품 가능 기한"] == "4-1"
 
 
 def test_build_heading_numbers_numbers_sub_headings_within_each_unit() -> None:
@@ -709,7 +764,7 @@ def test_build_heading_numbers_numbers_sub_headings_within_each_unit() -> None:
 
 
 async def test_qa_job_issues_include_location_number_computed_from_heading_order(monkeypatch) -> None:
-    monkeypatch.setattr(qa_jobs, "AnthropicClient", FakeAnthropicClient)
+    monkeypatch.setattr(qa_jobs, "OpenAIClient", FakeAnthropicClient)
     monkeypatch.setattr(qa_jobs, "GeminiClient", FakeAnthropicClient)
 
     document = "# 제목\n\n## 배경\n\n간편결제(카카오페이, 네이버페이, 토스) 3사만 지원, 페이코 미지원.\n"

@@ -127,3 +127,32 @@ def parse_json_response(text: str) -> Any:
         return json.loads(cleaned)
     except json.JSONDecodeError:
         return json.loads(_repair_json(cleaned))
+
+
+# Every response schema below that echoes back a caller-supplied position (chunk_index,
+# candidate index, ...) is used to look that position back up in a list/dict keyed by a
+# plain Python int. Anthropic always echoed these as JSON numbers, but OpenAI has been seen
+# emitting the same field as a numeric string (e.g. "0", or "3.0" for a value that started
+# as an int) — a strict `isinstance(value, int)` check then fails for every single item in
+# that response, silently dropping the whole batch with no exception raised. This is the
+# one place that mismatch gets normalized, so every caller (bundled_screen_hybrid.py,
+# xdc.py) gets the same tolerance instead of reimplementing/forgetting it individually.
+def coerce_json_index(value: object) -> int | None:
+    if isinstance(value, bool):  # bool is an int subclass — never a valid index
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str):
+        stripped = value.strip()
+        try:
+            return int(stripped)
+        except ValueError:
+            pass
+        try:
+            as_float = float(stripped)
+        except ValueError:
+            return None
+        return int(as_float) if as_float.is_integer() else None
+    return None

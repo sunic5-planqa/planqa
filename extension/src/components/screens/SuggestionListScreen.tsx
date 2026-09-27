@@ -15,7 +15,8 @@ import { SuggestionExpandPanel } from '../suggestions/SuggestionExpandPanel'
 // 않는다). 처리(적용/건너뜀)는 카드마다 독립적으로 하고, 하단 "수정완료/다시검사"는 남은 이슈
 // 유무와 무관하게 항상 누를 수 있다.
 export function SuggestionListScreen() {
-  const { issues, issueEdits, activeIssueId, activeLocationIndex } = useAppState()
+  const { issues, issueEdits, activeIssueId, activeLocationIndex, jobStatus } = useAppState()
+  const tierErrors = jobStatus?.tier_errors ?? []
   const dispatch = useAppDispatch()
   const [confirmingRecheck, setConfirmingRecheck] = useState(false)
 
@@ -104,6 +105,20 @@ export function SuggestionListScreen() {
         <p className="suggestion-list-progress-label">
           {processedCount} / {progress.total} 처리
         </p>
+
+        {/* review_agent가 한 위계나 참고문서 인덱싱에서 조용히 실패해도 다른 결과는 그대로
+            보여준다 — 대신 "이슈 0건"이 진짜 문제 없음인지, 일부가 실패해서 못 본 건지 구분할 수
+            있게 실패 내역을 같이 띄운다(2026-09-12 실사용 확인: 이거 없이는 알 방법이 없었음). */}
+        {tierErrors.length > 0 && (
+          <div className="suggestion-list-tier-errors">
+            <p className="hint">일부 검토 단계가 실패해서 결과에 빠졌을 수 있어요:</p>
+            <ul>
+              {tierErrors.map((error) => (
+                <li key={error}>{error}</li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {issues.length === 0 ? (
           <p className="hint">발견된 이슈가 없습니다.</p>

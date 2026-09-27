@@ -5,6 +5,8 @@ import type {
   ApplyIssueEditRequest,
   ApplyIssueEditResponse,
   ClearQaPassedBadgeRequest,
+  FlushPendingEditsRequest,
+  FlushPendingEditsResponse,
   QaPassedBadgeResponse,
   ScrollToLocationRequest,
   ScrollToLocationResponse,
@@ -51,6 +53,7 @@ export function NumberingCheckScreen() {
   const [appliedNotice, setAppliedNotice] = useState<string | null>(null)
   const [applying, setApplying] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [finishingReview, setFinishingReview] = useState(false)
 
   // 마지막 확인 화면에서도 문서 제목 옆 "✓ QA 통과" 배지가 보이도록, 요약 화면과 같은 방식으로
   // 이 화면이 떠 있는 동안 배지를 켜둔다.
@@ -163,6 +166,33 @@ export function NumberingCheckScreen() {
     }
   }
 
+  // "검토종료" — 이슈를 옮겨다니는 동안 저장 버튼을 안 거친 채 편집된 문단이 있으면(스냅샷 참고,
+  // issueOverlay.ts) 화면을 넘어가기 전에 한 번 더 모아서 저장한다. 실패하면 화면 전환을 막아,
+  // 실패한 수정이 조용히 사라지지 않게 한다.
+  const finishReview = async () => {
+    if (confluenceTabId === null) {
+      dispatch({ type: 'NAVIGATE', screen: 'main' })
+      return
+    }
+    setFinishingReview(true)
+    setTopError(null)
+    try {
+      const response = await chrome.tabs.sendMessage<FlushPendingEditsRequest, FlushPendingEditsResponse>(
+        confluenceTabId,
+        { type: 'FLUSH_PENDING_EDITS' },
+      )
+      if (!response.ok) {
+        setTopError(`저장하지 못한 수정이 있어요: ${response.error}`)
+        return
+      }
+      dispatch({ type: 'NAVIGATE', screen: 'main' })
+    } catch (err) {
+      setTopError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setFinishingReview(false)
+    }
+  }
+
   return (
     <div className="screen numbering-check-screen">
       <div className="screen-scroll">
@@ -190,7 +220,7 @@ export function NumberingCheckScreen() {
                 type="checkbox"
                 className="numbering-check-checkbox"
                 checked={checkedIds.has(item.id)}
-                disabled={applying}
+                disabled={applying || finishingReview}
                 onChange={() => toggle(item.id)}
                 aria-label={`${item.location} 수정 선택`}
               />
@@ -236,14 +266,16 @@ export function NumberingCheckScreen() {
       </div>
 
       <div className="screen-footer numbering-check-footer">
-        {numberingIssues.length > 0 && (
-          <Button variant="outline-pill" onClick={() => void applySelected()} disabled={applying}>
-            넘버링 적용
+        <div className="numbering-check-footer-actions">
+          {numberingIssues.length > 0 && (
+            <Button variant="outline-pill" onClick={() => void applySelected()} disabled={applying || finishingReview}>
+              넘버링 적용
+            </Button>
+          )}
+          <Button className="btn-cta" onClick={() => void finishReview()} disabled={applying || finishingReview}>
+            {finishingReview ? '저장 확인 중...' : '검토종료'}
           </Button>
-        )}
-        <Button className="btn-cta" onClick={() => dispatch({ type: 'NAVIGATE', screen: 'main' })} disabled={applying}>
-          검토종료
-        </Button>
+        </div>
       </div>
     </div>
   )

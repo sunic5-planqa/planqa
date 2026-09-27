@@ -4,7 +4,6 @@ import type {
   NumberingIssueResponse,
   ParsedStructure,
   QAJobStatusResponse,
-  RulebookCategoryResponse,
   TeamResponse,
   TeamRuleResponse,
 } from '../api/types'
@@ -44,7 +43,6 @@ export type Action =
   | { type: 'CONFLUENCE_SIBLINGS_DETECT_FAILED'; detail: string }
   | { type: 'REFERENCE_FILES_ADDED'; files: ReferenceFile[] }
   | { type: 'REMOVE_REFERENCE_FILE'; fileId: string }
-  | { type: 'RULE_CATEGORIES_LOADED'; categories: RulebookCategoryResponse[] }
   | { type: 'TEAM_CONNECTED'; team: TeamResponse }
   | { type: 'TEAM_RULES_LOADED'; rules: TeamRuleResponse[] }
   | { type: 'TEAM_RULE_ADDED'; rule: TeamRuleResponse }
@@ -215,9 +213,6 @@ export function appReducer(state: AppState, action: Action): AppState {
         referenceFiles: state.referenceFiles.filter((f) => f.id !== action.fileId),
         selectedReferenceFileIds: state.selectedReferenceFileIds.filter((id) => id !== action.fileId),
       }
-
-    case 'RULE_CATEGORIES_LOADED':
-      return { ...state, ruleCategories: action.categories }
 
     case 'TEAM_CONNECTED':
       return {

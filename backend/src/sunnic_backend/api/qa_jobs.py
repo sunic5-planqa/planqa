@@ -18,8 +18,8 @@ from sunnic_backend.models.numbering_issue import NumberingIssue
 from sunnic_backend.models.qa_job import QAJob, QAJobStatus
 from sunnic_backend.qa_engine.numbering_validation import validate_numbering
 from sunnic_backend.qa_engine.review_agent.document import parse_document
-from sunnic_backend.qa_engine.review_agent.llm.anthropic import AnthropicClient
 from sunnic_backend.qa_engine.review_agent.llm.gemini import GeminiClient
+from sunnic_backend.qa_engine.review_agent.llm.openai_client import OpenAIClient
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
     RuleBook,
@@ -221,6 +221,7 @@ class QAJobStatusResponse(BaseModel):
     current_category: str | None
     elapsed_seconds: float
     categories: list[ProgressCategoryOut] | None = None
+    tier_errors: list[str] = []
 
 
 class IssueResponse(BaseModel):
@@ -317,16 +318,18 @@ def _run_review_sync(
     xdc_aliases: dict[str, str] | None,
     extra_absence_check_rule_ids: frozenset[str] = frozenset(),
 ) -> ReviewResult:
-    # review_agent's AnthropicClient is a blocking/sync client (retry backoff uses time.sleep)
-    # — this whole call runs inside asyncio.to_thread so it never blocks the event loop.
+    # review_agent's LLM clients are blocking/sync (retry backoff uses time.sleep) — this whole
+    # call runs inside asyncio.to_thread so it never blocks the event loop.
     #
     # bundled_screen_hybrid.review_document()이 screen_llm/confirm_llm을 각각 한 번씩 받는
     # 구조라, LLMClient 프로토콜(complete_json)만 만족하면 어느 백엔드든 그대로 끼워 넣을 수
     # 있다 — instrumentation.isolate_client()도 별도 .isolate() 없이 copy.copy() + 새 usage
     # 리스트로 안전하게 격리된다(코드 변경 불필요). 1차 스크리닝(저비용, over-flag 의도) = Gemini
-    # Flash-Lite, 2차 정밀검증(고비용, 정밀) = Sonnet이 정상 경로다.
+    # Flash-Lite. 2차 정밀검증은 원래 Sonnet(AnthropicClient)이 정상 경로였는데, ANTHROPIC_API_KEY가
+    # 무효화돼서(2026-09-12 실사용 확인, 401 invalid) 임시로 OpenAI(gpt-5-mini)로 돌린다 —
+    # OpenAIClient는 이전에도 같은 이유로(Gemini 키 문제) 잠깐 대타로 쓰인 적 있어 이미 구현돼 있다.
     screen_llm = GeminiClient(model=settings.sunnic_gemini_model, api_keys=settings.gemini_api_keys)
-    confirm_llm = AnthropicClient(model=settings.sunnic_sonnet_model, api_key=settings.anthropic_api_key)
+    confirm_llm = OpenAIClient(model=settings.sunnic_openai_model, api_key=settings.openai_api_key)
     result = review_document(
         doc_id,
         document_text,
@@ -363,33 +366,52 @@ def _issue_start(document_text: str, input_text: str, location: str) -> int:
     return len(document_text)
 
 
-# 원문 헤딩 자체에 번호가 있든 없든(작성자마다 제각각이라 신뢰 불가 — 실사용 피드백으로 확인됨)
-# 문서 안에서 소주제(logical unit)/그 하위 소소주제(paragraph 위계 헤딩)가 실제로 등장하는 순서를
-# 우리가 직접 세어 "2", "2-1" 같은 번호를 계산한다. review_agent의 parse_document를 그대로
-# 호출만 하고(벤더링 정책상 그 파일 자체는 안 건드림) 반환된 Chunk.location 문자열을 키로 쓴다 —
-# location은 document.py가 헤딩 텍스트를 그대로 담아 만든 값이라, Issue.location과 정확히 같은
-# 문자열로 다시 나온다.
+# numbering_validation.py의 _NUMBER_RE/extension의 locationLabel.ts LEADING_NUMBER_RE와 동일한
+# 조건: 숫자 뒤에 "."이나 공백이 바로 이어질 때만 "번호"로 인정한다("2024년 정책"의 "2024"를
+# 번호로 오인하지 않기 위함). 세 곳이 각자 자기 목적에 맞게 독립적으로 이 판정을 하므로(이
+# 모듈은 review_agent 파이프라인과, numbering_validation.py는 그와 완전히 분리된 규칙 기반
+# 검사기와 맞물려 있어 공유 헬퍼로 묶기엔 결합도가 더 크다), 여기서도 똑같이 하나 둔다.
+_OWN_HEADING_NUMBER_RE = re.compile(r"^\s*(\d+(?:[-.]\d+)*)[.\s]+")
+
+
+def _own_heading_number(heading_text: str) -> str | None:
+    match = _OWN_HEADING_NUMBER_RE.match(heading_text)
+    return match.group(1) if match else None
+
+
+# 헤딩 자체에 이미 (신뢰할 만한 형태의) 번호가 붙어 있으면 그 번호를 그대로 쓴다 — 원래는 작성자
+# 번호가 제각각이라 항상 등장 순서로 다시 셌었지만(2026-08-11), 그러면 저자가 일관되게 잘 번호를
+# 매긴 문서에서도 "1. 목적" 앞에 저자가 안 세는(또는 번호 없는) 헤딩이 하나라도 더 있으면 그 뒤
+# 전부가 밀려 보이는 문제가 실사용 중 확인됨(예: "4-1"이 "5-1"로 표시) — 원문 번호가 있으면 굳이
+# 다시 셀 필요가 없다. 번호가 없는 헤딩만 여전히 등장 순서로 계산해, 번호가 아예 없는 문서에서의
+# 기존 동작(안전하게 순서대로 매김)은 그대로 유지한다.
 def _build_heading_numbers(document_text: str) -> dict[str, str]:
     tree = parse_document("_numbering", document_text)
     numbers: dict[str, str] = {}
     for index, unit in enumerate(tree.logical_units, start=1):
-        numbers[unit.location] = str(index)
+        numbers[unit.location] = _own_heading_number(unit.location) or str(index)
 
     sub_index_by_unit: dict[str, int] = {}
     for paragraph in tree.paragraphs:
         if " > " not in paragraph.location:
             continue
-        unit_label = paragraph.location.split(" > ", 1)[0]
+        unit_label, sub_label = paragraph.location.split(" > ", 1)
         unit_number = numbers.get(unit_label)
         if unit_number is None:
             continue
         sub_index_by_unit[unit_label] = sub_index_by_unit.get(unit_label, 0) + 1
-        numbers[paragraph.location] = f"{unit_number}-{sub_index_by_unit[unit_label]}"
+        own_number = _own_heading_number(sub_label)
+        numbers[paragraph.location] = own_number or f"{unit_number}-{sub_index_by_unit[unit_label]}"
     return numbers
 
 
 def _to_issue_record(
-    job_id: str, document_text: str, rulebook: RuleBook, issue: ReviewIssue, heading_numbers: dict[str, str]
+    job_id: str,
+    document_text: str,
+    rulebook: RuleBook,
+    issue: ReviewIssue,
+    heading_numbers: dict[str, str],
+    reference_document_titles: dict[str, str] | None = None,
 ) -> IssueRecord:
     rule = rulebook.rule(issue.rule_id)
     # _korean_label()은 rulebook_v1.0.md의 "<한글> <English Title Case>" 헤더에서 영어 절반을
@@ -406,9 +428,16 @@ def _to_issue_record(
     # XDC의 "두 번째 위치"는 같은 문서 안이 아니라 참고문서 쪽이라 별도 필드
     # (reference_document/reference_section/reference_quote)로 담겨 온다 — 새 스키마 필드를
     # 프론트까지 뚫는 대신, 관계형(LG/LF/GA)이 이미 쓰는 related_location/related_original_text
-    # 표시 경로를 그대로 재사용한다(어느 문서 소속인지 알 수 있게 라벨에 doc_id를 붙임).
+    # 표시 경로를 그대로 재사용한다(어느 문서 소속인지 알 수 있게 라벨에 문서 제목을 붙임 —
+    # document_id는 사람이 못 읽으니 reference_document_titles로 바꿔치기하고, 못 찾으면 id 그대로).
     if issue.reference_document:
-        related_location = f"[{issue.reference_document}] {issue.reference_section}"
+        reference_label = (reference_document_titles or {}).get(issue.reference_document, issue.reference_document)
+        # reference_section도 "상위 위계 > 하위 위계" 전체 체인으로 온다 — 프론트의 locationLeaf와
+        # 똑같이 가장 안쪽 제목만 남긴다. 안 그러면 [제목] 뒤에 전체 경로가 그대로 붙어 카드가
+        # 너무 길어지고, "[제목] A > B"를 프론트가 ">" 기준으로 다시 쪼개면 [제목] 쪽이 통째로
+        # 버려진다(locationLeaf가 마지막 세그먼트만 남기므로).
+        reference_leaf = issue.reference_section.rsplit(">", 1)[-1].strip()
+        related_location = f"[{reference_label}] {reference_leaf}"
         related_original_text = issue.reference_quote
     frame_type = _frame_type(rule.category, related_location) if rule else FrameType.OBJECT
     input_text = issue.original_text or ""
@@ -486,10 +515,15 @@ async def _execute_qa_job(
         rulebook, absence_check_rule_ids = merge_team_rules(rulebook, [rule for rule in team_rules if rule.enabled])
 
     reference_documents: list[tuple[str, str]] = []
+    # XDC 이슈의 reference_document는 document_id(UUID)라 사람이 읽을 수 없다 — 여기서 같이
+    # 모아둔 제목으로 _to_issue_record가 라벨을 바꿔치기한다.
+    reference_document_titles: dict[str, str] = {}
     for reference_document_id in reference_document_ids or []:
         reference_document = await store.get_document(reference_document_id)
         if reference_document is not None:
             reference_documents.append((reference_document_id, reference_document.raw_text))
+            if reference_document.parsed_structure.title:
+                reference_document_titles[reference_document_id] = reference_document.parsed_structure.title
     xdc_rulebook = _load_xdc_rulebook() if reference_documents else None
     lookup_rulebook = _rulebook_for_lookup(rulebook, xdc_rulebook)
 
@@ -508,8 +542,17 @@ async def _execute_qa_job(
         )
         heading_numbers = _build_heading_numbers(document_text)
         for issue in result.issues:
-            await store.save_issue(_to_issue_record(job_id, document_text, lookup_rulebook, issue, heading_numbers))
-        await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.DONE, "progress": 100}))
+            record = _to_issue_record(
+                job_id, document_text, lookup_rulebook, issue, heading_numbers, reference_document_titles
+            )
+            await store.save_issue(record)
+        if result.tier_errors:
+            logger.warning("QA job %s completed with tier errors: %s", job_id, list(result.tier_errors))
+        await store.save_qa_job(
+            job.model_copy(
+                update={"status": QAJobStatus.DONE, "progress": 100, "tier_errors": list(result.tier_errors)}
+            )
+        )
     except Exception:
         logger.exception("QA job %s failed for document %s", job_id, document_id)
         await store.save_qa_job(job.model_copy(update={"status": QAJobStatus.FAILED, "progress": 100}))
@@ -561,6 +604,7 @@ async def get_qa_job_status(job_id: str) -> QAJobStatusResponse:
         current_category=current_category,
         elapsed_seconds=elapsed,
         categories=categories,
+        tier_errors=job.tier_errors,
     )
 
 

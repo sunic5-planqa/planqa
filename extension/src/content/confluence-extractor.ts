@@ -7,7 +7,13 @@ import type {
   FetchPageMarkdownResponse,
   ListSiblingPagesRequest,
   ListSiblingPagesResponse,
+  NavigateToEditModeRequest,
+  NavigateToEditModeResponse,
+  OpenReferenceDocumentRequest,
+  OpenReferenceDocumentResponse,
+  SuggestionLocation,
 } from './messages'
+import { REFERENCE_SCROLL_LOCATION_PARAM, REFERENCE_SCROLL_TEXT_PARAM } from './referenceScrollParams'
 
 export function extractPageId(url: string): string | null {
   // "/pages/" 바로 뒤에 숫자가 오는 형태(보기 모드) 외에, 새 편집기의 초안 URL은
@@ -113,8 +119,53 @@ async function handleFetchPageMarkdown(pageId: string, preserveHeadingLevels?: b
   }
 }
 
-type ContentScriptRequest = ExtractConfluenceContentRequest | ListSiblingPagesRequest | FetchPageMarkdownRequest
-type ContentScriptResponse = ExtractConfluenceContentResponse | ListSiblingPagesResponse | FetchPageMarkdownResponse
+// 새 편집기 URL은 "/wiki/pages/edit-v2/{id}"가 아니라 "/wiki/spaces/{스페이스키}/pages/edit-v2/{id}"
+// 다(스페이스 키가 없으면 404 — 실사용 확인됨). extractPageId는 pageId만 뽑고 스페이스 키는
+// 모르니, 이동 전에 그 페이지의 스페이스 키를 REST로 한 번 조회해야 한다.
+export async function navigateToEditMode(): Promise<NavigateToEditModeResponse> {
+  const pageId = extractPageId(location.href)
+  if (!pageId) return { ok: false, error: 'NOT_A_CONFLUENCE_PAGE' }
+  try {
+    const res = await fetch(`${location.origin}/wiki/rest/api/content/${pageId}?expand=space`, {
+      credentials: 'include',
+    })
+    if (!res.ok) return { ok: false, error: 'FETCH_FAILED', detail: `${res.status}` }
+    const data = (await res.json()) as { space?: { key: string } }
+    if (!data.space?.key) return { ok: false, error: 'FETCH_FAILED', detail: 'no space key' }
+    location.href = `${location.origin}/wiki/spaces/${data.space.key}/pages/edit-v2/${pageId}`
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, error: 'FETCH_FAILED', detail: String(err) }
+  }
+}
+
+// 참고문서는 지금 문서와 다른 페이지라 이 탭 안에서 스크롤해 찾을 방법이 없다 — 새 탭으로 연다.
+// 스페이스 키/제목 경로 없이 페이지 id만으로 열리는 레거시 URL이라 항상 유효하다. 어느 위치를
+// 봐야 하는지는(target) 새로 열리는 그 탭 자신의 content script가 로드 후 알아야 하므로, 여기서
+// 직접 스크롤하는 대신 URL 쿼리 파라미터에 실어 보낸다 — issueOverlay.ts가 페이지 로드 시 이
+// 파라미터를 읽어 scrollToLocation을 호출한다.
+export function openReferenceDocument(pageId: string, target: SuggestionLocation): OpenReferenceDocumentResponse {
+  const params = new URLSearchParams({
+    pageId,
+    [REFERENCE_SCROLL_TEXT_PARAM]: target.text,
+    [REFERENCE_SCROLL_LOCATION_PARAM]: target.location,
+  })
+  window.open(`${location.origin}/wiki/pages/viewpage.action?${params}`, '_blank', 'noopener')
+  return { ok: true }
+}
+
+type ContentScriptRequest =
+  | ExtractConfluenceContentRequest
+  | ListSiblingPagesRequest
+  | FetchPageMarkdownRequest
+  | NavigateToEditModeRequest
+  | OpenReferenceDocumentRequest
+type ContentScriptResponse =
+  | ExtractConfluenceContentResponse
+  | ListSiblingPagesResponse
+  | FetchPageMarkdownResponse
+  | NavigateToEditModeResponse
+  | OpenReferenceDocumentResponse
 
 chrome.runtime.onMessage.addListener(
   (message: ContentScriptRequest, _sender, sendResponse: (response: ContentScriptResponse) => void) => {
@@ -128,6 +179,14 @@ chrome.runtime.onMessage.addListener(
     }
     if (message.type === 'FETCH_PAGE_MARKDOWN') {
       void handleFetchPageMarkdown(message.pageId, message.preserveHeadingLevels).then(sendResponse)
+      return true
+    }
+    if (message.type === 'NAVIGATE_TO_EDIT_MODE') {
+      void navigateToEditMode().then(sendResponse)
+      return true
+    }
+    if (message.type === 'OPEN_REFERENCE_DOCUMENT') {
+      sendResponse(openReferenceDocument(message.pageId, message.location))
       return true
     }
     return undefined

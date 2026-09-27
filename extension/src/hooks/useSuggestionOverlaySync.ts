@@ -12,7 +12,7 @@ import { useAppState } from '../state/hooks'
 import type { IssueEdit } from '../state/types'
 
 // 매번 chrome.tabs.query({active:true})로 "지금 활성 탭"을 다시 찾으면, 사용자가 패널을 열어둔
-// 채 다른 탭(복제본 페이지, DevTools 등)에 가 있는 동안 메시지가 엉뚱한 탭으로 가서 조용히
+// 채 다른 탭(참고문서, DevTools 등)에 가 있는 동안 메시지가 엉뚱한 탭으로 가서 조용히
 // 실패한다 — 문서를 처음 감지했을 때의 탭 id(confluenceTabId)에 고정해서 보낸다(실사용 중 마커가
 // 전혀 안 뜨는 문제로 확인됨, 2026-08-30).
 async function sendToDocumentTab<Req, Res>(tabId: number | null, message: Req): Promise<Res | null> {

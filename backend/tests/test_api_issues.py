@@ -28,7 +28,7 @@ class _StubClient:
 
 
 async def test_similarity_check_passes_when_llm_confirms_edit_addresses_the_issue(monkeypatch) -> None:
-    monkeypatch.setattr(issues, "AnthropicClient", _StubClient({"addresses_issue": True, "reason": "일치시킴"}))
+    monkeypatch.setattr(issues, "OpenAIClient", _StubClient({"addresses_issue": True, "reason": "일치시킴"}))
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -42,7 +42,7 @@ async def test_similarity_check_passes_when_llm_confirms_edit_addresses_the_issu
 
 async def test_similarity_check_flags_edit_that_does_not_address_the_issue(monkeypatch) -> None:
     monkeypatch.setattr(
-        issues, "AnthropicClient", _StubClient({"addresses_issue": False, "reason": "여전히 3사로만 되어 있음"})
+        issues, "OpenAIClient", _StubClient({"addresses_issue": False, "reason": "여전히 3사로만 되어 있음"})
     )
 
     transport = ASGITransport(app=app)
@@ -65,7 +65,7 @@ async def test_similarity_check_sends_criteria_and_reason_to_the_llm(monkeypatch
             captured["prompt"] = prompt
             return {"addresses_issue": True, "reason": "ok"}
 
-    monkeypatch.setattr(issues, "AnthropicClient", _CapturingClient({"addresses_issue": True, "reason": "ok"}))
+    monkeypatch.setattr(issues, "OpenAIClient", _CapturingClient({"addresses_issue": True, "reason": "ok"}))
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -78,7 +78,7 @@ async def test_similarity_check_sends_criteria_and_reason_to_the_llm(monkeypatch
 
 
 async def test_similarity_check_fails_open_by_allowing_the_save_on_llm_error(monkeypatch) -> None:
-    monkeypatch.setattr(issues, "AnthropicClient", _StubClient(None))
+    monkeypatch.setattr(issues, "OpenAIClient", _StubClient(None))
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -89,7 +89,7 @@ async def test_similarity_check_fails_open_by_allowing_the_save_on_llm_error(mon
 
 
 async def test_similarity_check_fails_open_on_malformed_response(monkeypatch) -> None:
-    monkeypatch.setattr(issues, "AnthropicClient", _StubClient("not a dict"))
+    monkeypatch.setattr(issues, "OpenAIClient", _StubClient("not a dict"))
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

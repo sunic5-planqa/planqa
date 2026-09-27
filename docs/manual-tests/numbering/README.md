@@ -1,7 +1,7 @@
 # 넘버링 체크 수동 테스트 문서
 
 `numbering_validation.py`는 단위 테스트(`backend/tests/qa_engine/test_numbering_validation.py`)로
-로직 자체는 검증되지만, 실제 Confluence 페이지 → 복제본 생성 → APPLY_ISSUE_EDIT → 재검증까지
+로직 자체는 검증되지만, 실제 Confluence 페이지 → APPLY_ISSUE_EDIT → 재검증까지
 이어지는 전체 흐름은 실제 브라우저에서 확인해야 한다. 이 폴더의 각 파일을 Confluence 테스트
 페이지 본문으로 붙여넣고, QA 완료 → 넘버링 체크 화면에서 기대 결과(각 파일 맨 위 인용구)와
 비교한다.

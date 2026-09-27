@@ -365,6 +365,20 @@ textarea {
   font-size: 0.85rem;
 }
 
+/* 일부 위계/참고문서 인덱싱만 실패했을 때(전체 실패는 아님) — error-banner보다 덜 알람성으로,
+   실패한 항목들을 목록으로 같이 보여준다. */
+.suggestion-list-tier-errors {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  font-size: 0.78rem;
+}
+
+.suggestion-list-tier-errors ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
 .issue-detail-card {
   display: flex;
   flex-direction: column;
@@ -1197,6 +1211,19 @@ textarea {
   color: #a09dab;
 }
 
+/* 타문서 정합성(XDC) 참고문서 위치 — 지금 문서와 다른 페이지라 클릭하면 새 탭으로 연다는 걸
+   알 수 있게 밑줄 + 강조색만 얹는다(글자 크기/두께는 rule-evidence-location-value와 동일). */
+.rule-evidence-reference-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .rule-evidence-text {
   margin: 0;
   font-size: 0.69rem;
@@ -1894,9 +1921,15 @@ textarea {
 
 .numbering-check-footer {
   display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 
-.numbering-check-footer .btn-cta {
+.numbering-check-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.numbering-check-footer-actions .btn-cta {
   flex: 1;
 }

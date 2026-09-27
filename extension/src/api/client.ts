@@ -11,7 +11,6 @@ import type {
   NumberingIssueResponse,
   QAJobStatusResponse,
   QaStatusResponse,
-  RulebookCategoryResponse,
   SimilarityCheckResponse,
   TeamResponse,
   TeamRuleInput,
@@ -44,8 +43,8 @@ export const api = {
       body: JSON.stringify({ raw_text: rawText }),
     }),
 
-  createQAJob: (documentId: string, teamCode?: string | null) => {
-    const body: CreateQAJobRequest = { team_code: teamCode ?? null }
+  createQAJob: (documentId: string, teamCode?: string | null, referenceDocumentIds?: string[]) => {
+    const body: CreateQAJobRequest = { team_code: teamCode ?? null, reference_document_ids: referenceDocumentIds ?? [] }
     return request<CreateQAJobResponse>(`/documents/${documentId}/qa-jobs`, {
       method: 'POST',
       body: JSON.stringify(body),
@@ -107,8 +106,6 @@ export const api = {
 
   getQaStatusByPage: (confluencePageId: string) =>
     request<QaStatusResponse>(`/documents/by-page/${confluencePageId}/qa-status`),
-
-  getRulebookCategories: () => request<RulebookCategoryResponse[]>('/rulebook/categories'),
 
   createTeam: (body: CreateTeamRequest) =>
     request<TeamResponse>('/teams', { method: 'POST', body: JSON.stringify(body) }),

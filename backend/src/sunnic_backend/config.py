@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     sunnic_gemini_model: str = "gemini-flash-lite-latest"
     gemini_api_keys: Annotated[list[str], NoDecode] = []
     openai_api_key: str = ""
-    sunnic_openai_model: str = "gpt-5-mini"
+    sunnic_openai_model: str = "gpt-4.1-mini"
     allowed_origins: Annotated[list[str], NoDecode] = []
     # Postgres connection string (Neon/Supabase/etc.) — set this so documents/teams/team_rules
     # survive a redeploy (Render's free plan has an ephemeral filesystem). Unset by default: the

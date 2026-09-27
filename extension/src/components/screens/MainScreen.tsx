@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
 import { NotImplementedError } from '../../api/errors'
+import type { NavigateToEditModeRequest, NavigateToEditModeResponse } from '../../content/messages'
 import { useConfluenceAutoDetect } from '../../hooks/useConfluenceAutoDetect'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { Button } from '../common/Button'
@@ -9,7 +10,15 @@ import { ReferencesSection } from '../main/ReferencesSection'
 import { RuleSection } from '../main/RuleSection'
 
 export function MainScreen() {
-  const { confluenceStatus, confluenceMarkdown, error, teamCode } = useAppState()
+  const {
+    confluenceStatus,
+    confluenceMarkdown,
+    confluenceTabId,
+    error,
+    teamCode,
+    referenceFiles,
+    selectedReferenceFileIds,
+  } = useAppState()
   const dispatch = useAppDispatch()
   const { detect } = useConfluenceAutoDetect()
   const [submitting, setSubmitting] = useState(false)
@@ -24,9 +33,6 @@ export function MainScreen() {
       })
   }, [])
 
-  // TODO(qa-engine): selectedReferenceFileIds (state/types.ts) is collected but not yet sent to
-  // the backend — there's no consumer until the QA engine (feature/qa-engine-llm-client) lands
-  // and the Document/QAJob models grow a field for it.
   const handleStart = async () => {
     if (!confluenceMarkdown) return
 
@@ -34,12 +40,34 @@ export function MainScreen() {
     dispatch({ type: 'SET_ERROR', error: null })
     dispatch({ type: 'NAVIGATE', screen: 'loading' })
 
+    // QA를 시작하는 순간 문서 탭을 컨플루언스 자체 편집 모드로 넘긴다 — 사용자가 이슈를 보면서
+    // 그 자리에서 직접 고칠 수 있게. confluenceMarkdown은 이미 위에서 캡처해뒀으니(문서 생성에
+    // markdown 자체를 다시 읽어올 필요 없음) 탭이 편집 화면으로 넘어가도 QA 진행엔 영향 없다.
+    // 실패해도(권한 없음 등) QA 자체는 그대로 진행되어야 하므로 결과를 기다리지 않는다.
+    if (confluenceTabId !== null) {
+      void chrome.tabs
+        .sendMessage<NavigateToEditModeRequest, NavigateToEditModeResponse>(confluenceTabId, {
+          type: 'NAVIGATE_TO_EDIT_MODE',
+        })
+        .catch(() => {})
+    }
+
     try {
       const doc = await api.createDocument(confluenceMarkdown)
       dispatch({ type: 'DOCUMENT_CREATED', documentId: doc.document_id, parsedStructure: doc.parsed_structure })
 
       try {
-        const job = await api.createQAJob(doc.document_id, teamCode)
+        // 선택된 레퍼런스 문서(References 섹션에서 체크한 형제 문서)는 이미 markdown 내용까지
+        // referenceFiles에 받아와 있다 — 타문서 정합성(XDC) 검토가 참고할 수 있으려면 이것도
+        // 현재 문서와 똑같이 백엔드에 Document로 먼저 올려서 document_id를 받아야 한다(백엔드
+        // reference_document_ids는 store에 이미 있는 문서 id만 인식함).
+        const selectedReferenceFiles = referenceFiles.filter((file) => selectedReferenceFileIds.includes(file.id))
+        const referenceDocs = await Promise.all(
+          selectedReferenceFiles.map((file) => api.createDocument(file.content)),
+        )
+        const referenceDocumentIds = referenceDocs.map((referenceDoc) => referenceDoc.document_id)
+
+        const job = await api.createQAJob(doc.document_id, teamCode, referenceDocumentIds)
         dispatch({ type: 'JOB_STARTED', jobId: job.job_id })
       } catch (jobError) {
         if (!(jobError instanceof NotImplementedError)) throw jobError

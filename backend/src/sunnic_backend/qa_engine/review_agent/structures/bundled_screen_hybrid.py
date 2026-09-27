@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from typing import TypeVar
 
 from sunnic_backend.qa_engine.review_agent.dedupe import dedupe_issues
 from sunnic_backend.qa_engine.review_agent.document import (
@@ -16,7 +18,7 @@ from sunnic_backend.qa_engine.review_agent.instrumentation import (
     merge_usage,
     record_call,
 )
-from sunnic_backend.qa_engine.review_agent.llm.base import LLMClient
+from sunnic_backend.qa_engine.review_agent.llm.base import LLMClient, coerce_json_index
 from sunnic_backend.qa_engine.review_agent.pipeline import ReviewResult
 from sunnic_backend.qa_engine.review_agent.planqa_schemas.rulebook import (
     RuleBook,
@@ -30,6 +32,22 @@ from sunnic_backend.qa_engine.review_agent.structures.fewshot_bank import (
 )
 from sunnic_backend.qa_engine.review_agent.tiers import ABSENCE_CHECK_RULE_IDS
 from sunnic_backend.qa_engine.review_agent.verifier import is_reference_excused_by_rule
+
+_T = TypeVar("_T")
+
+
+# Shared by every independent-branch dispatch below (Paragraph/Document passes, MI/AE
+# false-positive re-verification): skips thread-pool setup/teardown entirely when there's
+# only one branch (nothing to run concurrently with anyway), and caps worker count so a
+# document with many branches (e.g. dozens of MI/AE findings) can't spin up one OS thread
+# per branch — that's a thundering-herd risk against the LLM backend, not real parallelism.
+def _run_concurrently(jobs: Sequence[Callable[[], _T]], *, max_workers: int) -> list[_T]:
+    if len(jobs) == 1:
+        return [jobs[0]()]
+    with ThreadPoolExecutor(max_workers=min(len(jobs), max_workers)) as pool:
+        futures = [pool.submit(job) for job in jobs]
+        return [future.result() for future in futures]
+
 
 # bundled_screen_hybrid — bundled_screen(룰텍스트만)과 bundled_screen_fewshot(퓨샷만) 사이의
 # 세 번째 콘텐츠 조합. 콜통합 버전이라 카테고리별로 안 쪼개고 패스당 screen 1콜+confirm
@@ -239,8 +257,8 @@ def _screen_pass(
     for item in raw:
         if not isinstance(item, dict):
             continue
-        chunk_index, rule_id = item.get("chunk_index"), item.get("rule_id")
-        if not (isinstance(chunk_index, int) and 0 <= chunk_index < len(chunks)) or rule_id not in valid_rule_ids:
+        chunk_index, rule_id = coerce_json_index(item.get("chunk_index")), item.get("rule_id")
+        if chunk_index is None or not (0 <= chunk_index < len(chunks)) or rule_id not in valid_rule_ids:
             continue
         candidates.append(
             _Candidate(
@@ -256,6 +274,22 @@ def _screen_pass(
         raw_decisions = response.get("decision_records", []) if isinstance(response, dict) else []
         decision_records = xdc.parse_decision_records(raw_decisions, doc_id, chunks)
     return candidates, decision_records
+
+
+# Shared by _confirm_pass and _confirm_xdc_pass below — see coerce_json_index's own comment
+# for why "index" needs coercing at all rather than a plain isinstance check.
+def _index_verdicts(raw_verdicts: object) -> dict[int, dict]:
+    if not isinstance(raw_verdicts, list):
+        return {}
+    by_index: dict[int, dict] = {}
+    for item in raw_verdicts:
+        if not isinstance(item, dict):
+            continue
+        index = coerce_json_index(item.get("index"))
+        if index is None:
+            continue
+        by_index[index] = item
+    return by_index
 
 
 def _confirm_pass(
@@ -284,7 +318,7 @@ def _confirm_pass(
 
     response = llm.complete_json(system=_CONFIRM_HYBRID_SYSTEM, prompt=prompt)
     raw_verdicts = response.get("verdicts", []) if isinstance(response, dict) else []
-    by_index = {item["index"]: item for item in raw_verdicts if isinstance(item, dict) and "index" in item}
+    by_index = _index_verdicts(raw_verdicts)
 
     issues: list[Issue] = []
     for i, candidate in enumerate(candidates):
@@ -405,26 +439,63 @@ _FALSE_POSITIVE_VERIFIERS: dict[str, Callable[[str, Issue, LLMClient], bool]] = 
 }
 
 
-def _verify_false_positives(
-    issues: tuple[Issue, ...], document_text: str, rulebook: RuleBook, llm: LLMClient, events: list[CallEvent]
-) -> tuple[Issue, ...]:
-    verified: list[Issue] = []
-    for issue in issues:
-        verify = _FALSE_POSITIVE_VERIFIERS.get(rulebook.category_of(issue.rule_id) or "")
-        if verify is None:
-            verified.append(issue)
-            continue
+# Isolates+merges internally (self-contained, same shape as _run_pass) so every call site —
+# solo or dispatched via _run_concurrently below — goes through the exact same isolate/merge
+# path instead of the dispatcher having to special-case "only one branch, skip isolation".
+def _verify_one_false_positive(
+    index: int, issue: Issue, document_text: str, verify: Callable[[str, Issue, LLMClient], bool], llm: LLMClient
+) -> tuple[bool, list[CallEvent]]:
+    call_events: list[CallEvent] = []
+    isolated = isolate_client(llm, key=index)
+    try:
         kept = record_call(
-            llm,
+            isolated,
             stage="verify_fp",
             tier=None,
             rule_ids=(issue.rule_id,),
-            events=events,
-            call=lambda issue=issue, verify=verify: verify(document_text, issue, llm),
+            events=call_events,
+            call=lambda: verify(document_text, issue, isolated),
         )
-        if kept:
-            verified.append(issue)
-    return tuple(verified)
+        return kept, call_events
+    finally:
+        merge_usage(llm, isolated)
+
+
+# Cap on concurrent MI/AE re-verification calls (see _run_concurrently) — high enough that
+# realistic documents (a handful to a few dozen MI/AE findings) still run fully in parallel,
+# low enough that a document with an unusually large number of findings doesn't fire that
+# many simultaneous LLM requests at once.
+_MAX_FALSE_POSITIVE_VERIFY_WORKERS = 8
+
+
+# Each MI/AE finding's re-verification is a single independent LLM call (§ its own docstring
+# above) — nothing about one finding's verdict depends on another's. Running them one at a
+# time was the single biggest contributor to total QA job wall time on documents with many
+# MI/AE findings (reasoning-model confirm calls of ~10-40s each, purely serial). Dispatched
+# concurrently instead via the same _run_concurrently helper _run_pass's Paragraph/Document
+# dispatch uses below.
+def _verify_false_positives(
+    issues: tuple[Issue, ...], document_text: str, rulebook: RuleBook, llm: LLMClient, events: list[CallEvent]
+) -> tuple[Issue, ...]:
+    plans = [(issue, _FALSE_POSITIVE_VERIFIERS.get(rulebook.category_of(issue.rule_id) or "")) for issue in issues]
+    to_verify = [(i, issue, verify) for i, (issue, verify) in enumerate(plans) if verify is not None]
+    if not to_verify:
+        return issues
+
+    # Preserves the original issues order in the output — a plain passthrough (no verifier
+    # for that category) defaults to kept=True and never touches this list.
+    kept = [True] * len(issues)
+
+    jobs = [
+        functools.partial(_verify_one_false_positive, index, issue, document_text, verify, llm)
+        for index, issue, verify in to_verify
+    ]
+    results = _run_concurrently(jobs, max_workers=_MAX_FALSE_POSITIVE_VERIFY_WORKERS)
+    for (index, _issue, _verify), (result, call_events) in zip(to_verify, results, strict=True):
+        events.extend(call_events)
+        kept[index] = result
+
+    return tuple(issue for issue, keep in zip(issues, kept, strict=True) if keep)
 
 
 # ---- 타문서 정합성(XDC) — 참고문서가 있을 때만 활성화되는 별도 confirm 트랙 ----
@@ -460,6 +531,12 @@ _CONFIRM_XDC_SYSTEM = (
     "Example: current says \"신청 기한은 7일 이내\", reference says \"신청 기한은 14일 "
     "이내\" — fix_direction should be \"'7일'을 참고문서 기준인 '14일'로 수정할 것을 "
     "권장합니다\", not \"신청 기한을 참고문서와 일치시킬 것\".\n"
+    # 같은 이유로 스크리닝/기본 confirm 쪽에 이미 있는 한국어 강제 지시(_SCREEN_HYBRID_BODY/
+    # _CONFIRM_HYBRID_SYSTEM)가 이 XDC confirm 프롬프트엔 없었다 — Gemini/Sonnet/o3-mini는
+    # 한국어 룰 텍스트만으로도 한국어로 답했지만, gpt-4.1-mini로 바꾸면서 그 암묵적 가정이
+    # 깨져 영어로 나오는 게 실사용 중 확인됨.
+    "Write \"description\", \"rationale\", \"fix_direction\", and \"excuse_reason\" in "
+    "Korean, regardless of what language this instruction is written in.\n"
     'Respond with JSON only: {"verdicts": [{"index": <int>, "violated": <bool>, "rule_id": '
     '"<id or null>", "description": "<what conflicts>", "rationale": "<why it conflicts>", '
     '"fix_direction": "<instruction to edit the current document, naming both documents\' '
@@ -509,7 +586,7 @@ def _confirm_xdc_pass(
 
     response = llm.complete_json(system=_CONFIRM_XDC_SYSTEM, prompt=prompt)
     raw_verdicts = response.get("verdicts", []) if isinstance(response, dict) else []
-    by_index = {item["index"]: item for item in raw_verdicts if isinstance(item, dict) and "index" in item}
+    by_index = _index_verdicts(raw_verdicts)
 
     issues: list[Issue] = []
     for i, pair in enumerate(pairs):
@@ -667,6 +744,37 @@ def _run_pass(
             merge_usage(confirm_llm, isolated_confirm)
 
 
+# Cap on concurrent reference-document indexing calls (see _run_concurrently) — a QA job
+# rarely attaches more than a handful of reference documents, so this is mostly headroom,
+# not a real limiter.
+_MAX_REFERENCE_INDEX_WORKERS = 8
+
+
+# One reference document's indexing is an independent Gemini/OpenAI call (xdc.build_reference_
+# index) — nothing about one reference doc's index depends on another's. Isolates+merges
+# internally, same self-contained shape as _run_pass/_verify_one_false_positive, so this can
+# be dispatched through the same _run_concurrently helper as everything else here.
+def _index_one_reference_document(
+    key: int, reference_doc_id: str, reference_chunks: list[Chunk], llm: LLMClient
+) -> tuple[xdc.ReferenceIndex | None, str | None, list[CallEvent]]:
+    call_events: list[CallEvent] = []
+    isolated = isolate_client(llm, key=key)
+    try:
+        index = record_call(
+            isolated,
+            stage="xdc_reference_index",
+            tier=Level.PARAGRAPH,
+            rule_ids=(),
+            events=call_events,
+            call=lambda: xdc.build_reference_index(reference_doc_id, reference_chunks, isolated),
+        )
+        return index, None, call_events
+    except Exception as error:  # noqa: BLE001 - one bad reference doc shouldn't sink the review
+        return None, f"참고문서 {reference_doc_id} 인덱싱 실패: {error}", call_events
+    finally:
+        merge_usage(llm, isolated)
+
+
 def review_document(
     doc_id: str,
     document_text: str,
@@ -692,28 +800,40 @@ def review_document(
     if reference_documents and xdc_rulebook is not None:
         cache = reference_cache if reference_cache is not None else {}
         reference_indices: list[xdc.ReferenceIndex] = []
+        # 캐시에 이미 있는 참고문서는 이 자리에서 바로 채우고, 새로 인덱싱해야 하는 것만 아래에서
+        # 병렬 디스패치한다 — 여러 참고문서를 붙인 검토에서 이 루프가 순차였을 때(콜당 confirm_llm
+        # 왕복 1회, reasoning 모델이면 콜당 10-40s) 검토 시작 전에 그 합만큼 그대로 대기해야 했다.
+        to_index: list[tuple[str, str, list[Chunk]]] = []
         for reference_doc_id, reference_text in reference_documents:
             cache_key = f"{reference_doc_id}:{xdc.content_hash(reference_text)}"
-            index = cache.get(cache_key)
-            if index is None:
-                try:
-                    reference_tree = parse_document(reference_doc_id, reference_text)
-                    reference_chunks = list(reference_tree.chunks_for(Level.PARAGRAPH))
-                    # 아직 concurrent 패스가 시작되기 전(이 루프는 순차 실행)이라 confirm_llm을
-                    # isolate 없이 바로 써도 안전 — global_context 추출과 같은 이유.
-                    index = record_call(
-                        confirm_llm,
-                        stage="xdc_reference_index",
-                        tier=Level.PARAGRAPH,
-                        rule_ids=(),
-                        events=events,
-                        call=lambda: xdc.build_reference_index(reference_doc_id, reference_chunks, confirm_llm),
-                    )
-                    cache[cache_key] = index
-                except Exception as error:  # noqa: BLE001 - one bad reference doc shouldn't sink the review
-                    tier_errors.append(f"참고문서 {reference_doc_id} 인덱싱 실패: {error}")
+            cached = cache.get(cache_key)
+            if cached is not None:
+                reference_indices.append(cached)
+                continue
+            try:
+                reference_tree = parse_document(reference_doc_id, reference_text)
+                reference_chunks = list(reference_tree.chunks_for(Level.PARAGRAPH))
+            except Exception as error:  # noqa: BLE001 - one bad reference doc shouldn't sink the review
+                tier_errors.append(f"참고문서 {reference_doc_id} 인덱싱 실패: {error}")
+                continue
+            to_index.append((cache_key, reference_doc_id, reference_chunks))
+
+        if to_index:
+            jobs = [
+                functools.partial(_index_one_reference_document, i, reference_doc_id, chunks, confirm_llm)
+                for i, (_cache_key, reference_doc_id, chunks) in enumerate(to_index)
+            ]
+            indexed = _run_concurrently(jobs, max_workers=_MAX_REFERENCE_INDEX_WORKERS)
+            for (cache_key, _reference_doc_id, _chunks), (index, error, call_events) in zip(
+                to_index, indexed, strict=True
+            ):
+                events.extend(call_events)
+                if error:
+                    tier_errors.append(error)
                     continue
-            reference_indices.append(index)
+                cache[cache_key] = index
+                reference_indices.append(index)
+
         if reference_indices:
             xdc_context = _XdcContext(
                 xdc_rulebook=xdc_rulebook,
@@ -749,43 +869,31 @@ def review_document(
 
     # Paragraph and Document passes only depend on the already-computed global_context, not
     # on each other, so they run concurrently instead of sequentially doubling the wall
-    # time. See _run_pass for why each pass needs its own isolated client copy. When only
-    # one pass is actually active (the other tier's rules/chunks were empty), there's
-    # nothing to run concurrently with, so call it directly — no point paying thread-pool
-    # setup/teardown for a single sequential call.
-    if len(active_passes) == 1:
-        level, rules, chunks = active_passes[0]
-        issues, pass_events, error = _run_pass(
-            level, rules, chunks, doc_id, global_context, document_text, rulebook, screen_llm, confirm_llm, xdc_context
-        )
-        all_issues.extend(issues)
-        events.extend(pass_events)
-        if error:
-            tier_errors.append(error)
-    elif active_passes:
-        with ThreadPoolExecutor(max_workers=len(active_passes)) as pool:
-            futures = {
-                level: pool.submit(
-                    _run_pass,
-                    level,
-                    rules,
-                    chunks,
-                    doc_id,
-                    global_context,
-                    document_text,
-                    rulebook,
-                    screen_llm,
-                    confirm_llm,
-                    xdc_context,
-                )
-                for level, rules, chunks in active_passes
-            }
-            for level, future in futures.items():
-                issues, pass_events, error = future.result()
-                all_issues.extend(issues)
-                events.extend(pass_events)
-                if error:
-                    tier_errors.append(error)
+    # time, via the same _run_concurrently helper _verify_false_positives uses below. See
+    # _run_pass for why each pass isolates+merges its own client copies internally — this
+    # dispatch loop doesn't need to know about that at all.
+    if active_passes:
+        jobs = [
+            functools.partial(
+                _run_pass,
+                level,
+                rules,
+                chunks,
+                doc_id,
+                global_context,
+                document_text,
+                rulebook,
+                screen_llm,
+                confirm_llm,
+                xdc_context,
+            )
+            for level, rules, chunks in active_passes
+        ]
+        for issues, pass_events, error in _run_concurrently(jobs, max_workers=len(active_passes)):
+            all_issues.extend(issues)
+            events.extend(pass_events)
+            if error:
+                tier_errors.append(error)
 
     deduped_issues = tuple(dedupe_issues(all_issues))
     try:

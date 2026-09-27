@@ -317,15 +317,6 @@ describe('appReducer', () => {
     expect(backToPrimary.activeLocationIndex).toBe(0)
   })
 
-  it('RULE_CATEGORIES_LOADED stores the categories', () => {
-    const state = appReducer(initialAppState, {
-      type: 'RULE_CATEGORIES_LOADED',
-      categories: [{ category: 'LG', label: '논리비약' }],
-    })
-
-    expect(state.ruleCategories).toEqual([{ category: 'LG', label: '논리비약' }])
-  })
-
   it('TEAM_CONNECTED stores the team code, name, and description', () => {
     const state = appReducer(initialAppState, {
       type: 'TEAM_CONNECTED',

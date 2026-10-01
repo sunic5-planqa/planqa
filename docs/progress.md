@@ -3214,3 +3214,50 @@ git commit 없이 워킹 디렉토리에 uncommitted 상태로만 남아있었�
   가능성 — 이 경우 실제 컨플루언스 문서는 "4-3"으로 정상 저장돼 있는데, 넘버링 재검증에 쓰는
   `freshText`만 "4-33"으로 잘못 변환돼 보이는 것일 수 있다. 이 경로는 이번 세션에서 코드까지
   확인했지만 digit 손상을 일으킬 만한 지점을 찾지 못했다.
+
+## 2026-10-01 — "넘버링 적용"을 두 번째부터 누르면 이전 수정이 롤백되는 버그 수정
+
+실사용 보고: "애초에 오류인 넘버링은 하모나이징을 해도 수정사항이 롤백 안 되는데, 수정 과정에서
+새로 생긴 넘버링 오류는 하모나이징하면 수정사항이 롤백된다"는 신고 — 정확히는 "넘버링 적용"을
+같은 화면에서 두 번째 이상 누를 때, 그 직전까지 올바르게 고쳤던 내용이 엉뚱하게 덮어써지는
+증상이었다.
+
+### 원인
+
+`NumberingCheckScreen.tsx`의 "넘버링 적용"은 체크한 항목을 `APPLY_ISSUE_EDIT`로 라이브
+컨플루언스 페이지에 정확히 반영한 뒤(매번 라이브를 새로 GET+PUT하므로 이 부분은 항상 정확),
+"남은 오류" 목록을 갱신하려고 `api.applyNumberingFixes(jobId, appliedFixes)`를 불렀다. 이
+백엔드 엔드포인트(`qa_jobs.py`의 `apply_numbering_fixes`)는 **라이브 페이지를 다시 읽지 않고**,
+자기가 들고 있던 `document.raw_text` 사본에 파이썬 `str.replace(before_text, after_text, 1)`로
+로컬 패치만 한 뒤 그 사본을 기준으로 재검증했다.
+
+1회차 검증(`finishQA`)은 항상 라이브 페이지를 새로 fetch해서 정확했지만, "넘버링 적용"을 누른
+뒤에 뜨는 2회차 이후 "남은 오류" 목록은 이 로컬 사본 기준이라 실제 저장된 내용과 조금만 어긋나도
+(마크다운 추출 방식과 storage HTML 매칭 방식이 서로 다른 경로라서 생기는 차이, 같은 문구가 본문에
+또 있는 경우 등) 둘이 다른 걸 가리키게 됐다. 그 어긋난 목록에서 나온 다음 "넘버링 적용"을 누르면
+`before_text`가 라이브 페이지의 진짜 내용과 안 맞아, 이미 올바르게 고쳐둔 다른 부분을 잘못
+덮어써 "방금 고친 게 롤백된 것처럼" 보였다 — 지난 세션의 "4-2 → 4-33" 손상 조사에서 근본 원인을
+못 찾았던 것도 같은 메커니즘이었을 가능성이 높다.
+
+### 수정 내용
+
+- **백엔드**: `apply_numbering_fixes` 엔드포인트(`/qa-jobs/{job_id}/numbering-issues/apply`)와
+  `AppliedNumberingFix`/`ApplyNumberingFixesRequest` 모델을 통째로 삭제 — 로컬 패치-후-재검증이라는
+  설계 자체를 없앴다. `get_numbering_issues`(`/numbering-issues`)는 원래도 "주어진 raw_text를
+  그대로 검증"만 하므로 그대로 둔다.
+- **프론트**: `NumberingCheckScreen.tsx`의 `applySelected()`가 "넘버링 적용" 후, 백엔드 로컬
+  패치 대신 `FETCH_PAGE_MARKDOWN`으로 **라이브 페이지를 다시 읽어서** `api.getNumberingIssues`로
+  재검증한다 — 1회차와 완전히 동일한 경로. `api.applyNumberingFixes`/`AppliedNumberingFix`
+  (프론트 타입)도 같이 삭제.
+
+### 검증
+
+- 백엔드: 삭제된 엔드포인트 전용 테스트(`test_apply_fixes_updates_document_and_reverifies`) 삭제,
+  나머지 `pytest` 240개 통과, `ruff check` 통과.
+- 프론트: `typecheck`/`lint`/`vitest` 168개/`build` 전부 통과(이 화면 자체는 React Context 의존이라
+  기존 컨벤션대로 컴포넌트 단위 테스트는 추가하지 않음).
+
+### Next
+
+- 실제 컨플루언스에서 "넘버링 적용"을 두 번 이상 연속으로 눌러 재현 경로가 완전히 사라졌는지
+  실사용 재확인 필요.

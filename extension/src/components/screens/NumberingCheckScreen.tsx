@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api } from '../../api/client'
-import type { AppliedNumberingFix, NumberingIssueResponse } from '../../api/types'
+import type { NumberingIssueResponse } from '../../api/types'
 import type {
   ApplyIssueEditRequest,
   ApplyIssueEditResponse,
@@ -14,6 +13,7 @@ import type {
 } from '../../content/messages'
 import { deriveDefaultChecked } from '../../state/numberingChecklist'
 import { useAppDispatch, useAppState } from '../../state/hooks'
+import { fetchLiveNumberingIssues } from '../../utils/numberingReverify'
 import { numberingIssueToScrollLocation } from '../../utils/numberingLocation'
 import { Button } from '../common/Button'
 
@@ -117,7 +117,11 @@ export function NumberingCheckScreen() {
     setApplying(true)
 
     const newRowErrors: Record<string, string> = {}
-    const appliedFixes: AppliedNumberingFix[] = []
+    let appliedCount = 0
+    // 재검증은 이 중 마지막으로 저장이 실제 성공한 pageId로 한다 — AppState의 confluencePageId는
+    // 최초 감지 시점 스냅샷이라 탭이 다른 컨플루언스 페이지로 이동했으면 stale할 수 있다(코드
+    // 리뷰로 확인된 버그, 2026-10-01).
+    let lastAppliedPageId: string | null = null
 
     if (confluenceTabId === null) {
       setTopError('컨플루언스 탭을 찾을 수 없습니다.')
@@ -133,7 +137,8 @@ export function NumberingCheckScreen() {
           newText: item.after_text as string,
         })
         if (response.ok) {
-          appliedFixes.push({ before_text: item.before_text, after_text: item.after_text as string })
+          appliedCount += 1
+          lastAppliedPageId = response.pageId
         } else {
           newRowErrors[item.id] = response.error
         }
@@ -142,25 +147,40 @@ export function NumberingCheckScreen() {
       }
     }
 
-    if (appliedFixes.length === 0) {
-      setRowErrors(newRowErrors)
+    // 개별 적용 실패는 재검증 성공 여부와 무관하게 항상 화면에 반영한다 — 재검증 쪽에서만
+    // throw하고 여기서 못 멈추면, 라이브 페이지엔 이미 반영된 수정의 row 에러가 조용히
+    // 사라져 사용자가 뭐가 실패했는지 알 수 없게 된다(코드 리뷰로 확인된 버그, 2026-10-01).
+    setRowErrors(newRowErrors)
+    const hasFailures = Object.keys(newRowErrors).length > 0
+
+    if (appliedCount === 0) {
       setTopError(`${Object.keys(newRowErrors).length}건 수정에 실패했어요. 다시 시도하거나 체크를 해제할 수 있어요.`)
       setApplying(false)
       return
     }
 
     try {
-      const remaining = await api.applyNumberingFixes(jobId, appliedFixes)
-      const hasFailures = Object.keys(newRowErrors).length > 0
-      setRowErrors(newRowErrors)
+      // 방금 반영한 수정이 실제로 들어간 라이브 페이지를 다시 읽어서 재검증한다 — 예전엔 백엔드가
+      // 따로 들고 있던 사본을 로컬 문자열 치환으로 패치해 재검증했는데, 그 사본이 실제 저장된
+      // 내용과 어긋나면(마크다운 추출 차이, 같은 문구가 본문에 또 있는 경우 등) 어긋난 목록에서
+      // 나온 다음 "넘버링 적용"이 이미 고쳐둔 다른 부분을 엉뚱하게 덮어써 "방금 고친 게 롤백된
+      // 것처럼" 보이는 실사용 버그로 이어졌다(2026-10-01) — 1회차 검증(finishQA)과 동일하게
+      // 항상 라이브 재조회 기준으로만 판단한다.
+      if (lastAppliedPageId === null) throw new Error('문서 페이지 id를 확인할 수 없습니다.')
+      const remaining = await fetchLiveNumberingIssues(confluenceTabId, lastAppliedPageId, jobId)
+      if (remaining === null) throw new Error('문서 최신 내용을 다시 불러오지 못했습니다.')
+
       if (hasFailures) {
         setTopError(`${Object.keys(newRowErrors).length}건 수정에 실패했어요. 다시 시도하거나 체크를 해제할 수 있어요.`)
       }
-      setAppliedNotice(`${appliedFixes.length}건을 문서에 반영했어요. 문서에서 결과를 확인한 뒤 검토를 종료하세요.`)
+      setAppliedNotice(`${appliedCount}건을 문서에 반영했어요. 문서에서 결과를 확인한 뒤 검토를 종료하세요.`)
       // 목록을 재검증 결과로 갱신하되, 화면은 그대로 유지한다(어떤 화면으로도 이동하지 않는다).
       dispatch({ type: 'NUMBERING_ISSUES_LOADED', issues: remaining })
     } catch (err) {
-      setTopError(err instanceof Error ? err.message : String(err))
+      // 이 시점에 던져진 에러는 재검증 단계(라이브 재조회)만 실패한 것이다 — appliedCount건은
+      // 이미 라이브 페이지에 반영됐으니, "아무것도 안 됐다"로 오인하지 않게 그 사실도 같이 보여준다.
+      const reverifyError = err instanceof Error ? err.message : String(err)
+      setTopError(`${appliedCount}건은 반영됐지만, 최신 상태 재확인에 실패했어요: ${reverifyError}`)
     } finally {
       setApplying(false)
     }

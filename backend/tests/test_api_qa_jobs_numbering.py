@@ -62,34 +62,6 @@ async def test_numbering_issues_returns_detected_errors() -> None:
     assert {issue["before_text"] for issue in body} == {"4. 해결 방안", "5. 기대 효과"}
 
 
-async def test_apply_fixes_updates_document_and_reverifies() -> None:
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        job_id = await _create_document_and_job(client)
-
-        before = await client.post(f"/qa-jobs/{job_id}/numbering-issues", json={"raw_text": _DOCUMENT_TEXT})
-        assert len(before.json()) == 2
-
-        applied = [
-            {"before_text": "4. 해결 방안", "after_text": "3. 해결 방안"},
-            {"before_text": "5. 기대 효과", "after_text": "4. 기대 효과"},
-        ]
-        response = await client.post(f"/qa-jobs/{job_id}/numbering-issues/apply", json={"applied": applied})
-
-        assert response.status_code == 200
-        assert response.json() == []
-
-        # apply가 저장한 최신 텍스트로 재조회한다 — _DOCUMENT_TEXT(적용 전 원문)를 다시 넘기면
-        # 방금 반영된 fix를 store에서 도로 덮어써버려 이 재검증 자체가 의미 없어진다.
-        job = await store.get_qa_job(job_id)
-        assert job is not None
-        fixed_document = await store.get_document(job.document_id)
-        assert fixed_document is not None
-
-        after = await client.post(f"/qa-jobs/{job_id}/numbering-issues", json={"raw_text": fixed_document.raw_text})
-        assert after.json() == []
-
-
 async def test_numbering_issues_uses_fresh_text_not_stale_document_text() -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

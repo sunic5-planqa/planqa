@@ -655,25 +655,3 @@ async def get_numbering_issues(job_id: str, request: GetNumberingIssuesRequest) 
     _job, document = await _get_job_document(job_id)
     await store.save_document(document.model_copy(update={"raw_text": request.raw_text}))
     return validate_numbering(request.raw_text)
-
-
-class AppliedNumberingFix(BaseModel):
-    before_text: str
-    after_text: str
-
-
-class ApplyNumberingFixesRequest(BaseModel):
-    applied: list[AppliedNumberingFix]
-
-
-@router.post("/qa-jobs/{job_id}/numbering-issues/apply", response_model=list[NumberingIssue])
-async def apply_numbering_fixes(job_id: str, request: ApplyNumberingFixesRequest) -> list[NumberingIssue]:
-    _job, document = await _get_job_document(job_id)
-    # content script가 Confluence storage HTML에서 쓰는 것과 동일한 정책(첫 매치 1건만 치환)으로
-    # 백엔드가 보관 중인 raw_text도 실제 반영분과 동기화해둔다 — 그래야 재검증이 최신 상태를 보고,
-    # 넘버링 검출 알고리즘을 프론트에 따로 구현할 필요도 없다.
-    updated_text = document.raw_text
-    for fix in request.applied:
-        updated_text = updated_text.replace(fix.before_text, fix.after_text, 1)
-    await store.save_document(document.model_copy(update={"raw_text": updated_text}))
-    return validate_numbering(updated_text)

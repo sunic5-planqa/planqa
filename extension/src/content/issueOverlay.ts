@@ -900,8 +900,23 @@ export async function applyIssueEdits(edits: EditPair[]): Promise<ApplyResult> {
   return result
 }
 
-export async function applyIssueEdit(_issueId: string, oldText: string, newText: string): Promise<ApplyResult> {
-  return applyIssueEdits([{ oldText, newText }])
+// ApplyResult가 아니라 pageId를 포함하는 별도 반환 타입을 쓴다 — 호출부(NumberingCheckScreen)가
+// 저장이 실제로 성공한 "살아있는" pageId를 알아야, 뒤이은 재검증을 AppState의 캐싱된(최초 감지
+// 시점에 고정된) confluencePageId가 아니라 지금 막 저장이 성공한 바로 그 페이지에 대고 할 수
+// 있다 — 탭이 다른 컨플루언스 페이지로 이동했을 때 엉뚱한 문서를 재검증하는 걸 막는다(코드
+// 리뷰로 확인된 버그, 2026-10-01).
+export async function applyIssueEdit(
+  _issueId: string,
+  oldText: string,
+  newText: string,
+): Promise<{ ok: true; pageId: string } | { ok: false; error: string }> {
+  const result = await applyIssueEdits([{ oldText, newText }])
+  if (!result.ok) return result
+  const pageId = extractPageId(location.href)
+  // applyIssueEdits가 이미 성공했다는 건 그 안에서 extractPageId가 null이 아니었다는 뜻이다 —
+  // 그래도 타입을 좁히려고 한 번 더 확인한다.
+  if (!pageId) return { ok: false, error: '컨플루언스 문서 URL이 아닙니다.' }
+  return { ok: true, pageId }
 }
 
 // "검토종료"/"마무리" 직전에 호출 — 이슈를 옮겨다니는 동안 handleSaveClick(저장 버튼)을 거치지

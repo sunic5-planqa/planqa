@@ -95,7 +95,10 @@ export interface ApplyIssueEditRequest {
   newText: string
 }
 
-export type ApplyIssueEditResponse = { ok: true } | { ok: false; error: string }
+// pageId는 저장이 실제로 성공한 라이브 페이지의 id(content script가 지금 탭에서 직접 뽑음) —
+// 호출부가 뒤이어 재검증할 때 AppState의 캐싱된 confluencePageId 대신 이 값을 써야, 탭이 다른
+// 페이지로 이동한 사이에도 항상 방금 저장이 실제로 들어간 바로 그 페이지를 재검증한다.
+export type ApplyIssueEditResponse = { ok: true; pageId: string } | { ok: false; error: string }
 
 export interface ClearActiveSuggestionRequest {
   type: 'CLEAR_ACTIVE_SUGGESTION'

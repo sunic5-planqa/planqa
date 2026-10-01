@@ -517,7 +517,7 @@ describe('applyIssueEdit', () => {
 
     const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toEqual({ ok: true, pageId: ORIGINAL_PAGE_ID })
 
     const putCall = fetchMock.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')
     expect((putCall?.[0] as string)).toContain(ORIGINAL_PAGE_ID)
@@ -539,7 +539,7 @@ describe('applyIssueEdit', () => {
 
     const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toEqual({ ok: true, pageId: ORIGINAL_PAGE_ID })
     const originalGet = fetchMock.mock.calls.find(([url]) => (url as string).includes(ORIGINAL_PAGE_ID))
     expect(originalGet).toBeDefined()
   })
@@ -581,7 +581,7 @@ describe('applyIssueEdit', () => {
 
     const result = await applyIssueEdit('issue-1', CURRENT.text, '4사만 지원, 페이코 미지원')
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toEqual({ ok: true, pageId: ORIGINAL_PAGE_ID })
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
     const putBody = JSON.parse(putCall?.[1]?.body as string)
     expect(putBody.body.storage.value).toBe('<p>4사만 지원, 페이코 미지원</p>')
@@ -596,7 +596,7 @@ describe('applyIssueEdit', () => {
 
     const result = await applyIssueEdit('issue-bullet-prefix', oldText, newText)
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toEqual({ ok: true, pageId: ORIGINAL_PAGE_ID })
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
     const putBody = JSON.parse(putCall?.[1]?.body as string)
     expect(putBody.body.storage.value).toBe(`<ul><li>${newText}</li></ul>`)
@@ -613,7 +613,7 @@ describe('applyIssueEdit', () => {
 
     const result = await applyIssueEdit('issue-entity', oldText, newText)
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toEqual({ ok: true, pageId: ORIGINAL_PAGE_ID })
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
     const putBody = JSON.parse(putCall?.[1]?.body as string)
     expect(putBody.body.storage.value).toBe(
@@ -632,7 +632,7 @@ describe('applyIssueEdit', () => {
 
     const result = await applyIssueEdit('issue-literal-lt', oldText, newText)
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toEqual({ ok: true, pageId: ORIGINAL_PAGE_ID })
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
     const putBody = JSON.parse(putCall?.[1]?.body as string)
     expect(putBody.body.storage.value).toBe(`<p>${newText}</p>`)
@@ -647,7 +647,7 @@ describe('applyIssueEdit', () => {
 
     const result = await applyIssueEdit('issue-literal-entity', oldText, newText)
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toEqual({ ok: true, pageId: ORIGINAL_PAGE_ID })
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
     const putBody = JSON.parse(putCall?.[1]?.body as string)
     expect(putBody.body.storage.value).toBe(`<p>${newText}</p>`)
@@ -662,7 +662,7 @@ describe('applyIssueEdit', () => {
 
     const result = await applyIssueEdit('numbering-issue-1', '4. 해결 방안', '3. 해결 방안')
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toEqual({ ok: true, pageId: ORIGINAL_PAGE_ID })
     expect(document.querySelector('h2')?.textContent).toBe('3. 해결 방안')
     const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'PUT')
     const putBody = JSON.parse(putCall?.[1]?.body as string)
@@ -675,7 +675,7 @@ describe('applyIssueEdit', () => {
 
     const result = await applyIssueEdit('numbering-issue-2', '4. 해결 방안', '3. 해결 방안')
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toEqual({ ok: true, pageId: ORIGINAL_PAGE_ID })
     expect(document.querySelector('h2')?.textContent).toBe('3. 해결 방안')
     expect(document.querySelector('h2 strong')).not.toBeNull()
   })
@@ -686,7 +686,7 @@ describe('applyIssueEdit', () => {
 
     const result = await applyIssueEdit('numbering-issue-3', '4. 해결 방안', '3. 해결 방안')
 
-    expect(result).toEqual({ ok: true })
+    expect(result).toEqual({ ok: true, pageId: ORIGINAL_PAGE_ID })
     expect(document.querySelector('h2')?.textContent).toBe('다른 제목')
   })
 })

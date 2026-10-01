@@ -4,8 +4,6 @@ import type {
   ClearQaPassedBadgeRequest,
   CommitDocumentEditsRequest,
   CommitDocumentEditsResponse,
-  FetchPageMarkdownRequest,
-  FetchPageMarkdownResponse,
   FlushPendingEditsRequest,
   FlushPendingEditsResponse,
   QaPassedBadgeResponse,
@@ -14,6 +12,7 @@ import type {
 import { groupIssuesByCriteria } from '../../state/issueGrouping'
 import { useAppDispatch, useAppState } from '../../state/hooks'
 import { deriveProgress } from '../../state/suggestionProgress'
+import { fetchLiveNumberingIssues } from '../../utils/numberingReverify'
 import { Button } from '../common/Button'
 
 // chrome.tabs.query({active:true})로 매번 다시 찾지 않고 문서를 처음 감지한 탭(confluenceTabId)에
@@ -102,16 +101,14 @@ export function SuggestionSummaryScreen() {
       // 페이지로 이동했다면 stale할 수 있다. 우선 그 값을 쓰고, commit 자체가 실패했을 때만
       // AppState 값으로 폴백한다.
       const targetPageId = commitResponse?.ok ? commitResponse.pageId : confluencePageId
-      let freshText = confluenceMarkdown
-      if (targetPageId) {
-        const pageResponse = await sendToDocumentTab<FetchPageMarkdownRequest, FetchPageMarkdownResponse>(
-          confluenceTabId,
-          { type: 'FETCH_PAGE_MARKDOWN', pageId: targetPageId, preserveHeadingLevels: true },
-        )
-        if (pageResponse?.ok) freshText = pageResponse.markdown
-      }
-
-      const numberingIssues = freshText ? await api.getNumberingIssues(jobId, freshText) : []
+      const liveIssues =
+        targetPageId && confluenceTabId !== null
+          ? await fetchLiveNumberingIssues(confluenceTabId, targetPageId, jobId)
+          : null
+      // 라이브 재조회 자체가 안 됐을 때만(탭/페이지 id를 못 구했거나 응답 실패) 패널이 들고 있던
+      // confluenceMarkdown(AI QA용으로 뽑아둔 것이라 헤딩 레벨이 다를 수 있음)으로 최선을 다해
+      // 재검증한다 — 아예 포기하면 사용자가 넘버링 확인 화면에서 아무 피드백도 못 받는다.
+      const numberingIssues = liveIssues ?? (confluenceMarkdown ? await api.getNumberingIssues(jobId, confluenceMarkdown) : [])
       dispatch({ type: 'NUMBERING_ISSUES_LOADED', issues: numberingIssues })
     } catch {
       dispatch({ type: 'NUMBERING_ISSUES_LOADED', issues: [] })

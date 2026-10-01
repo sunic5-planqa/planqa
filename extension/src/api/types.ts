@@ -175,8 +175,3 @@ export interface NumberingIssueResponse {
   before_text: string
   after_text: string | null
 }
-
-export interface AppliedNumberingFix {
-  before_text: string
-  after_text: string
-}

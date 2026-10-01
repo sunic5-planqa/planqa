@@ -1,6 +1,5 @@
 import { ApiError, NotImplementedError } from './errors'
 import type {
-  AppliedNumberingFix,
   CreateDocumentResponse,
   CreateQAJobRequest,
   CreateQAJobResponse,
@@ -59,12 +58,6 @@ export const api = {
     request<NumberingIssueResponse[]>(`/qa-jobs/${jobId}/numbering-issues`, {
       method: 'POST',
       body: JSON.stringify({ raw_text: rawText }),
-    }),
-
-  applyNumberingFixes: (jobId: string, applied: AppliedNumberingFix[]) =>
-    request<NumberingIssueResponse[]>(`/qa-jobs/${jobId}/numbering-issues/apply`, {
-      method: 'POST',
-      body: JSON.stringify({ applied }),
     }),
 
   updateIssue: (issueId: string, body: UpdateIssueRequest) =>

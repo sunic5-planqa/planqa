@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api/client'
-import type { AppliedNumberingFix, NumberingIssueResponse } from '../../api/types'
+import type { NumberingIssueResponse } from '../../api/types'
 import type {
   ApplyIssueEditRequest,
   ApplyIssueEditResponse,
   ClearQaPassedBadgeRequest,
+  FetchPageMarkdownRequest,
+  FetchPageMarkdownResponse,
   FlushPendingEditsRequest,
   FlushPendingEditsResponse,
   QaPassedBadgeResponse,
@@ -44,7 +46,7 @@ function remapRowErrors(
 // "넘버링 적용"은 체크한 항목만 문서에 반영한 뒤 이 화면에 그대로 머문다(사용자가 실제 문서에서
 // 결과를 확인할 수 있어야 한다). QA 프로세스는 사용자가 "검토종료"를 직접 눌렀을 때만 끝난다.
 export function NumberingCheckScreen() {
-  const { numberingIssues, jobId, confluenceTabId } = useAppState()
+  const { numberingIssues, jobId, confluenceTabId, confluencePageId } = useAppState()
   const dispatch = useAppDispatch()
 
   const [checkedIds, setCheckedIds] = useState<Set<string>>(() => deriveDefaultChecked(numberingIssues))
@@ -117,7 +119,7 @@ export function NumberingCheckScreen() {
     setApplying(true)
 
     const newRowErrors: Record<string, string> = {}
-    const appliedFixes: AppliedNumberingFix[] = []
+    let appliedCount = 0
 
     if (confluenceTabId === null) {
       setTopError('컨플루언스 탭을 찾을 수 없습니다.')
@@ -133,7 +135,7 @@ export function NumberingCheckScreen() {
           newText: item.after_text as string,
         })
         if (response.ok) {
-          appliedFixes.push({ before_text: item.before_text, after_text: item.after_text as string })
+          appliedCount += 1
         } else {
           newRowErrors[item.id] = response.error
         }
@@ -142,7 +144,7 @@ export function NumberingCheckScreen() {
       }
     }
 
-    if (appliedFixes.length === 0) {
+    if (appliedCount === 0) {
       setRowErrors(newRowErrors)
       setTopError(`${Object.keys(newRowErrors).length}건 수정에 실패했어요. 다시 시도하거나 체크를 해제할 수 있어요.`)
       setApplying(false)
@@ -150,13 +152,26 @@ export function NumberingCheckScreen() {
     }
 
     try {
-      const remaining = await api.applyNumberingFixes(jobId, appliedFixes)
+      // 방금 반영한 수정이 실제로 들어간 라이브 페이지를 다시 읽어서 재검증한다 — 예전엔 백엔드가
+      // 따로 들고 있던 사본을 로컬 문자열 치환으로 패치해 재검증했는데, 그 사본이 실제 저장된
+      // 내용과 어긋나면(마크다운 추출 차이, 같은 문구가 본문에 또 있는 경우 등) 어긋난 목록에서
+      // 나온 다음 "넘버링 적용"이 이미 고쳐둔 다른 부분을 엉뚱하게 덮어써 "방금 고친 게 롤백된
+      // 것처럼" 보이는 실사용 버그로 이어졌다(2026-10-01) — 1회차 검증(finishQA)과 동일하게
+      // 항상 라이브 재조회 기준으로만 판단한다.
+      if (confluencePageId === null) throw new Error('문서 페이지 id를 확인할 수 없습니다.')
+      const pageResponse = await chrome.tabs.sendMessage<FetchPageMarkdownRequest, FetchPageMarkdownResponse>(
+        confluenceTabId,
+        { type: 'FETCH_PAGE_MARKDOWN', pageId: confluencePageId, preserveHeadingLevels: true },
+      )
+      if (!pageResponse.ok) throw new Error('문서 최신 내용을 다시 불러오지 못했습니다.')
+
+      const remaining = await api.getNumberingIssues(jobId, pageResponse.markdown)
       const hasFailures = Object.keys(newRowErrors).length > 0
       setRowErrors(newRowErrors)
       if (hasFailures) {
         setTopError(`${Object.keys(newRowErrors).length}건 수정에 실패했어요. 다시 시도하거나 체크를 해제할 수 있어요.`)
       }
-      setAppliedNotice(`${appliedFixes.length}건을 문서에 반영했어요. 문서에서 결과를 확인한 뒤 검토를 종료하세요.`)
+      setAppliedNotice(`${appliedCount}건을 문서에 반영했어요. 문서에서 결과를 확인한 뒤 검토를 종료하세요.`)
       // 목록을 재검증 결과로 갱신하되, 화면은 그대로 유지한다(어떤 화면으로도 이동하지 않는다).
       dispatch({ type: 'NUMBERING_ISSUES_LOADED', issues: remaining })
     } catch (err) {
